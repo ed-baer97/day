@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Дневник: Комплексные числа</title>
+  <style>
+    body { 
+      font-family: 'Comic Sans MS', cursive; 
+      background: #f0f8ff; 
+      margin: 0; 
+      padding: 20px; 
+      line-height: 1.6;
+    }
+    h1 { color: #4a148c; text-align: center; font-size: 2.2em; }
+    h2 { color: #1976d2; margin-top: 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    .tabs { 
+      display: flex; 
+      justify-content: center; 
+      margin: 30px 0; 
+      flex-wrap: wrap; 
+      gap: 10px;
+    }
+    .tab { 
+      padding: 14px 24px; 
+      background: #bbdefb; 
+      border-radius: 12px; 
+      cursor: pointer; 
+      transition: 0.3s; 
+      font-weight: bold;
+      min-width: 120px;
+      text-align: center;
+    }
+    .tab:hover { background: #2196f3; color: white; }
+    .tab.active { background: #1976d2; color: white; }
+
+    .content { 
+      display: none; 
+      background: white; 
+      padding: 25px; 
+      border-radius: 18px; 
+      box-shadow: 0 6px 15px rgba(0,0,0,0.1); 
+      margin-bottom: 20px;
+    }
+    .content.active { display: block; }
+
+    .entry {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: flex-start;
+    }
+    .entry-text {
+      flex: 2;
+      min-width: 300px;
+    }
+    .entry-photo {
+      flex: 1;
+      min-width: 220px;
+      text-align: center;
+    }
+    .entry-photo img {
+      width: 100%;
+      max-width: 250px;
+      border-radius: 14px;
+      border: 3px solid #ddd;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .entry-photo p {
+      font-size: 0.9em;
+      color: #666;
+      margin-top: 6px;
+    }
+
+    .phase { 
+      padding: 12px; 
+      margin: 12px 0; 
+      border-radius: 10px; 
+      color: white; 
+      font-weight: bold; 
+      text-align: center;
+      font-size: 1.1em;
+    }
+    .btn { 
+      background: #ff9800; 
+      color: white; 
+      padding: 12px 24px; 
+      border: none; 
+      border-radius: 12px; 
+      cursor: pointer; 
+      font-size: 1em;
+      margin: 15px 0;
+      display: inline-block;
+    }
+    .btn:hover { background: #f57c00; }
+    .highlight { color: #d32f2f; font-weight: bold; }
+    .footer { text-align: center; margin-top: 40px; color: #555; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>Дневник исследовательской работы</h1>
+    <p style="text-align:center; color:#555; font-size:1.2em;">
+      «Комплексные числа — ключ к квантовой механике»<br>
+      <i>1 октября – 13 ноября 2025</i>
+    </p>
+
+    <div class="tabs">
+      <div class="tab active" onclick="openDay('day1')">1 октября</div>
+      <div class="tab" onclick="openDay('day2')">8 октября</div>
+      <div class="tab" onclick="openDay('day3')">15 октября</div>
+      <div class="tab" onclick="openDay('day4')">22 октября</div>
+      <div class="tab" onclick="openDay('day5')">5 ноября</div>
+      <div class="tab" onclick="openDay('day6')">7 ноября</div>
+      <div class="tab" onclick="openDay('day7')">10 ноября</div>
+      <div class="tab" onclick="openDay('day8')">13 ноября</div>
+    </div>
+
+    <!-- ДЕНЬ 1 -->
+    <div id="day1" class="content active">
+      <h2>1 октября: Какие числа бывают?</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Я начал с простого: <span class="highlight">какие числа бывают</span>?</p>
+          <p>Нарисовал числовую прямую:</p>
+          <ul>
+            <li>натуральные (1, 2, 3...)</li>
+            <li>целые (..., -1, 0, 1...)</li>
+            <li>дроби → рациональные</li>
+            <li>иррациональные (√2, π)</li>
+            <li>→ <b>действительные</b> — всё на <b>одной прямой</b>!</li>
+          </ul>
+          <p>Но я подумал: <b>а как описать вращение?</b> Планета крутится, волна колеблется — <b>прямая не хватает</b>!</p>
+          <button class="btn" onclick="alert('Прямая не хватает для круга!')">Вау!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/1.jpeg" alt="Я работаю над числовой прямой">
+          <p>Работаю над схемой числовой прямой</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ДЕНЬ 2 -->
+    <div id="day2" class="content">
+      <h2>8 октября: Появился i!</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Я понял: нужна <b>вторая ось</b> — <span class="highlight">мнимая</span>!</p>
+          <div class="phase" style="background:#f44336;">Re — влево-вправо</div>
+          <div class="phase" style="background:#4caf50;">Im — вверх-вниз</div>
+          <p><b>i</b> — это <b>поворот на 90°</b>!</p>
+          <button class="btn" onclick="alert('i — это моторчик вращения!')">Попробовать!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/2.jpeg" alt="Рисую оси Re и Im">
+          <p>Рисую оси Re и Im в тетради</p>
+        </div>
+      </div>
+    </div>
+    <!-- ДЕНЬ 3 -->
+    <div id="day3" class="content">
+      <h2>15 октября: ψ = a + bi</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Волновая функция: <b>ψ = a + bi</b></p>
+          <p><b>a</b> — высота волны, <b>bi</b> — <b>фаза</b>.</p>
+          <p>Придумал: <b>фаза = цвет</b>!</p>
+          <div class="phase" style="background:#FFD700;">Жёлтый → вправо</div>
+          <div class="phase" style="background:#4CAF50;">Зелёный → вверх</div>
+          <button class="btn" onclick="alert('Цвет — это компас частицы!')">Круто!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/3.jpeg" alt="Работаю над формулой ψ">
+          <p>Моя схема ψ = a + bi</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ДЕНЬ 4 -->
+    <div id="day4" class="content">
+      <h2>22 октября: Частица = волна!</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Я понял: <b>частица — это волна</b>!</p>
+          <p>Волна — это <b>"паспорт"</b> частицы.</p>
+          <button class="btn" onclick="alert('Без волны — нет квантовой механики!')">Вау!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/4.jpeg" alt="Моделирую волну">
+          <p>Экспериментирую с волной в Python</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ДЕНЬ 5 -->
+    <div id="day5" class="content">
+      <h2>5 ноября: Интерференция</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Две волны встречаются → <b>интерференция</b>!</p>
+          <p>Одинаковый цвет → <b>дружат</b>, волна больше!</p>
+          <p>Разные цвета → <b>гаснут</b>!</p>
+          <button class="btn" onclick="alert('Фаза решает всё!')">Клик!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/5.jpeg" alt="Работаю с интерференцией">
+          <p>Наблюдаю эффект интерференции</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ДЕНЬ 6 -->
+    <div id="day6" class="content">
+      <h2>7 ноября: Суперпозиция</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Частица может быть <b>в двух местах сразу</b>!</p>
+          <p>Жёлтая + синяя = <b>две волны</b> → суперпозиция!</p>
+          <p>Как кот Шрёдингера — и здесь, и там!</p>
+          <button class="btn" onclick="alert('Квантовая магия!')">Вау!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/6.jpeg" alt="Моделирую суперпозицию">
+          <p>Пробую объединить две волны</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ДЕНЬ 7 -->
+    <div id="day7" class="content">
+      <h2>10 ноября: Фаза = компас</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Цвет волны — это <b>фаза</b> — это <b>направление</b>!</p>
+          <p>Оживил волну в плоскости Re-Im — цвет показывает движение!</p>
+          <button class="btn" onclick="alert('Фаза — это компас!')">Понял!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/7.gif" alt="Работаю с фазой волны">
+          <p>Исследую фазу волновой функции</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ДЕНЬ 8 -->
+    <div id="day8" class="content">
+      <h2>13 ноября: Финал!</h2>
+      <div class="entry">
+        <div class="entry-text">
+          <p>Подготовил презентацию и речь.</p>
+          <p><b>Завтра — выступление!</b></p>
+          <p style="font-size:1.3em; color:#4a148c; text-align:center;">
+            <b>Без i — частица стоит.<br>С i — она танцует!</b>
+          </p>
+          <button class="btn" onclick="alert('Ты — квантовый гений!')">Победа!</button>
+        </div>
+        <div class="entry-photo">
+          <img src="images/8.gif" alt="Готовлю презентацию">
+          <p>Финальная подготовка к защите проекта</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>© 2025 | [Твоё имя] | 5 класс | Все иллюстрации и фото — мои</p>
+    </div>
+  </div>
+
+  <script>
+    function openDay(dayId) {
+      document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById(dayId).classList.add('active');
+      document.querySelector(`.tab[onclick="openDay('${dayId}')"]`).classList.add('active');
+    }
+  </script>
+
+</body>
+</html>
