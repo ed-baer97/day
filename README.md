@@ -44,7 +44,8 @@ npm install
 npm run dev
 ```
 
-UI: `http://localhost:5173` — карта, панели газовоза/АГЗС, поиск цифрового следа партии.  
+UI: `http://localhost:5173` — **интерактивный мок с симуляцией процесса** (play/pause/скорость/сброс).  
+Газовозы едут по маршруту, растёт цифровой след, обновляются остатки АГЗС и иногда появляются расхождения. Данные in-memory на фронте — Postgres/GPS/Topaz не требуются.  
 Тема и токены — по [LogHub](https://github.com/ed-baer97/LogHub) (Caspian/forest: `#0b100e`, teal `#2ec4b6`, Manrope + Fraunces).
 
 ### Тесты баланса

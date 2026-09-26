@@ -25,11 +25,11 @@ export default function TruckPanel({
   onClose: () => void;
 }) {
   return (
-    <section className="panel">
+    <div className="detail-embed">
       <div className="panel-head">
         <h2>Газовоз</h2>
         <button type="button" className="btn secondary small" onClick={onClose}>
-          Закрыть
+          К списку
         </button>
       </div>
       <div className="panel-body">
@@ -70,6 +70,6 @@ export default function TruckPanel({
           </>
         )}
       </div>
-    </section>
+    </div>
   );
 }
