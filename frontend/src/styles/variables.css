@@ -1,0 +1,618 @@
+/* LogHub design tokens — adapted for Цифровой след LPG
+   Source: https://github.com/ed-baer97/LogHub frontend/src/styles.css */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b100e;
+  --bg-2: #121a16;
+  --panel: rgba(16, 26, 22, 0.88);
+  --ink: #eef3ea;
+  --muted: #8b9a90;
+  --sea: #2ec4b6;
+  --sea-2: #147f78;
+  --dust: #e0a45a;
+  --coral: #e07a5f;
+  --line: rgba(232, 239, 230, 0.08);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  --radius: 18px;
+  --font: "Manrope", system-ui, sans-serif;
+  --serif: "Fraunces", Georgia, serif;
+  --topbar: rgba(11, 16, 14, 0.92);
+  --side: linear-gradient(180deg, #101915 0%, #0b100e 100%);
+  --input: #0e1512;
+  --modal: #121a16;
+  --modal-scrim: rgba(6, 10, 8, 0.72);
+  --btn-fg: #06221f;
+  --hover-fill: rgba(255, 255, 255, 0.03);
+  --role-fill: rgba(255, 255, 255, 0.02);
+  --badge-done: rgba(255, 255, 255, 0.08);
+  --toast-ok-bg: #14332e;
+  --toast-ok-fg: #9ee8df;
+  --toast-err-bg: #3a1c18;
+  --toast-err-fg: #f0b4a8;
+  --skel-a: #121a16;
+  --skel-b: #1c2a24;
+  --popup: #141c18;
+  --truck-label-bg: rgba(11, 16, 14, 0.88);
+  --truck-label-fg: #eef3ea;
+  --mark-deep: #0b4a46;
+  --map-route: #2ec4b6;
+  --map-trail: #e0a45a;
+  --ok: #2ec4b6;
+  --warn: #e0a45a;
+  --danger: #e07a5f;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef3ea;
+  --bg-2: #ffffff;
+  --panel: rgba(255, 255, 255, 0.92);
+  --ink: #14201a;
+  --muted: #3f5248;
+  --sea: #147f78;
+  --sea-2: #0e5c57;
+  --dust: #c4842e;
+  --coral: #c45a42;
+  --line: rgba(20, 32, 26, 0.12);
+  --shadow: 0 16px 40px rgba(20, 40, 32, 0.12);
+  --topbar: rgba(238, 243, 234, 0.92);
+  --side: linear-gradient(180deg, #f7faf6 0%, #eef3ea 100%);
+  --input: #ffffff;
+  --modal: #ffffff;
+  --modal-scrim: rgba(20, 32, 26, 0.45);
+  --btn-fg: #f4fffd;
+  --hover-fill: rgba(20, 32, 26, 0.05);
+  --role-fill: rgba(20, 32, 26, 0.03);
+  --badge-done: rgba(20, 32, 26, 0.08);
+  --toast-ok-bg: #d7f3ee;
+  --toast-ok-fg: #0e5c57;
+  --toast-err-bg: #f8ddd6;
+  --toast-err-fg: #8a2f1e;
+  --skel-a: #e4ebe4;
+  --skel-b: #f7faf6;
+  --popup: #ffffff;
+  --truck-label-bg: rgba(255, 255, 255, 0.92);
+  --truck-label-fg: #14201a;
+  --mark-deep: #0e5c57;
+  --map-route: #147f78;
+  --map-trail: #c4842e;
+  --ok: #147f78;
+  --warn: #c4842e;
+  --danger: #c45a42;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+}
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+.app {
+  min-height: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--topbar);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(12px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand .mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--sea), var(--mark-deep));
+  box-shadow: 0 0 0 4px rgba(46, 196, 182, 0.12);
+  flex: none;
+}
+.brand h1 {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 500;
+  margin: 0;
+}
+.brand span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stats-chip {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stats-chip strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.btn {
+  border: 0;
+  background: var(--sea);
+  color: var(--btn-fg);
+  font-weight: 700;
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.btn.secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.btn.small {
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+.page.land {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.map-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.map-wrap {
+  position: absolute;
+  inset: 0;
+}
+.map-wrap .maplibregl-map {
+  width: 100%;
+  height: 100%;
+}
+
+.side {
+  position: absolute;
+  z-index: 8;
+  left: 16px;
+  top: 16px;
+  bottom: 16px;
+  width: min(400px, calc(100% - 32px));
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+.side > * {
+  pointer-events: auto;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+}
+.panel-body {
+  padding: 12px 16px 16px;
+  overflow: auto;
+  max-height: min(70vh, 560px);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot.factory {
+  background: var(--dust);
+}
+.dot.station {
+  background: var(--sea);
+}
+.dot.truck {
+  background: var(--ink);
+  box-shadow: 0 0 0 2px var(--sea-2);
+}
+.dot.alert {
+  background: var(--coral);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  font-size: 13px;
+  margin: 0;
+}
+.kv dt {
+  color: var(--muted);
+  margin: 0;
+}
+.kv dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--hover-fill);
+}
+.badge.ok {
+  color: var(--ok);
+}
+.badge.warn {
+  color: var(--warn);
+}
+.badge.danger {
+  color: var(--danger);
+}
+
+.trail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.trail-list li {
+  padding-left: 14px;
+  border-left: 2px solid var(--sea-2);
+}
+.trail-list .when {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+.trail-list .title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.trail-list .desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.kicker {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--sea);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+}
+.empty strong {
+  display: block;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.empty p {
+  margin: 0;
+}
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  max-width: 320px;
+}
+.toast.ok {
+  background: var(--toast-ok-bg);
+  color: var(--toast-ok-fg);
+}
+.toast.err {
+  background: var(--toast-err-bg);
+  color: var(--toast-err-fg);
+}
+
+.maplibregl-popup-content {
+  background: var(--popup);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow);
+}
+
+.search-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.search-row input {
+  flex: 1;
+  background: var(--input);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.map-marker {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  padding: 0;
+}
+.map-marker.factory {
+  background: var(--dust);
+  width: 16px;
+  height: 16px;
+}
+.map-marker.station {
+  background: var(--sea);
+  width: 18px;
+  height: 18px;
+}
+.map-marker.truck {
+  background: var(--ink);
+  border-color: var(--sea);
+  width: 14px;
+  height: 14px;
+}
+.map-marker.selected {
+  outline: 2px solid var(--dust);
+  outline-offset: 2px;
+}
+.map-marker.alert {
+  background: var(--coral);
+  width: 16px;
+  height: 16px;
+  animation: pulse-alert 1.2s ease-in-out infinite;
+}
+@keyframes pulse-alert {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 0.75;
+  }
+}
+
+.text-danger {
+  color: var(--coral) !important;
+}
+
+.sim-bar {
+  padding: 0;
+}
+.sim-bar-inner {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sim-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.speed-group {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+.sim-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sim-meta strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tabs.hud-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px 0;
+}
+.tabs .tab {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 7px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tabs .tab.active {
+  background: var(--sea);
+  color: var(--btn-fg);
+  border-color: transparent;
+}
+
+.side {
+  overflow: auto;
+}
+.side .panel .panel {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.side .panel .panel .panel-head {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+
+.object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.object-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 7px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.object-row em {
+  margin-left: auto;
+  font-style: normal;
+  color: var(--muted);
+  font-size: 11px;
+}
+.object-row:hover,
+.object-row.active {
+  border-color: var(--line);
+  background: var(--hover-fill);
+}
+.object-row.active {
+  border-color: rgba(46, 196, 182, 0.55);
+}
+
+.truck-label {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--truck-label-bg);
+  color: var(--truck-label-fg);
+  padding: 2px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  .side {
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: 10px;
+    width: auto;
+    max-width: none;
+    max-height: 45vh;
+  }
+  .panel-body {
+    max-height: 32vh;
+  }
+  .brand span {
+    display: none;
+  }
+  .stats-chip {
+    display: none;
+  }
+}
