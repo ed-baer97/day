@@ -26,6 +26,16 @@ export default function App() {
   const { overview, route, state } = useSim();
   const [selection, setSelection] = useState<Selection>({ kind: "truck", id: IDS.truckA });
   const [tab, setTab] = useState<Tab>("detail");
+  const seenEvents = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    for (const ev of state.events) {
+      if (!seenEvents.current.has(ev.id)) {
+        seenEvents.current.add(ev.id);
+        toast.err(`${ev.title}: ${ev.delta_liters ?? ""} л`);
+      }
+    }
+  }, [state.events, toast]);
 
   const truck = useMemo(() => {
     if (selection?.kind !== "truck") return null;
