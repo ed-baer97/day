@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { BatchTrail } from "../types";
 import Empty from "./Empty";
@@ -10,10 +10,12 @@ export default function BatchTrailPanel() {
   const [busy, setBusy] = useState(false);
   const toast = useToast();
 
-  async function load() {
+  async function load(nextCode = code) {
+    const q = nextCode.trim();
+    if (!q) return;
     setBusy(true);
     try {
-      const data = await api.trailByCode(code.trim());
+      const data = await api.trailByCode(q);
       setTrail(data);
       toast.ok(`След ${data.batch.trail_code}`);
     } catch (e) {
@@ -23,6 +25,11 @@ export default function BatchTrailPanel() {
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    void load("LPG-2026-00041");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- demo preload once
+  }, []);
 
   return (
     <section className="panel">

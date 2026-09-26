@@ -120,32 +120,12 @@ def create_batch(body: BatchCreate) -> BatchOut:
     return BatchOut(**{k: v for k, v in record.items() if k != "events"})
 
 
-@router.get("/{batch_id}", response_model=BatchOut)
-def get_batch(batch_id: UUID) -> BatchOut:
-    b = _DEMO_BATCHES.get(batch_id)
-    if not b:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    return BatchOut(**{k: v for k, v in b.items() if k != "events"})
-
-
 @router.get("/by-code/{trail_code}", response_model=BatchOut)
 def get_batch_by_code(trail_code: str) -> BatchOut:
     for b in _DEMO_BATCHES.values():
         if b["trail_code"] == trail_code:
             return BatchOut(**{k: v for k, v in b.items() if k != "events"})
     raise HTTPException(status_code=404, detail="Batch not found")
-
-
-@router.get("/{batch_id}/trail", response_model=BatchTrailOut)
-def get_batch_trail(batch_id: UUID) -> BatchTrailOut:
-    b = _DEMO_BATCHES.get(batch_id)
-    if not b:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    return BatchTrailOut(
-        batch=BatchOut(**{k: v for k, v in b.items() if k != "events"}),
-        chain=trail_chain_labels(),
-        events=[BatchTrailEventOut(**e) for e in b["events"]],
-    )
 
 
 @router.get("/by-code/{trail_code}/trail", response_model=BatchTrailOut)
@@ -158,3 +138,23 @@ def get_trail_by_code(trail_code: str) -> BatchTrailOut:
                 events=[BatchTrailEventOut(**e) for e in b["events"]],
             )
     raise HTTPException(status_code=404, detail="Batch not found")
+
+
+@router.get("/{batch_id}", response_model=BatchOut)
+def get_batch(batch_id: UUID) -> BatchOut:
+    b = _DEMO_BATCHES.get(batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return BatchOut(**{k: v for k, v in b.items() if k != "events"})
+
+
+@router.get("/{batch_id}/trail", response_model=BatchTrailOut)
+def get_batch_trail(batch_id: UUID) -> BatchTrailOut:
+    b = _DEMO_BATCHES.get(batch_id)
+    if not b:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return BatchTrailOut(
+        batch=BatchOut(**{k: v for k, v in b.items() if k != "events"}),
+        chain=trail_chain_labels(),
+        events=[BatchTrailEventOut(**e) for e in b["events"]],
+    )

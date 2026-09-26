@@ -430,30 +430,70 @@ select {
 }
 
 .map-marker {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   border: 2px solid var(--bg);
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  padding: 0;
 }
 .map-marker.factory {
   background: var(--dust);
+  width: 16px;
+  height: 16px;
 }
 .map-marker.station {
   background: var(--sea);
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 .map-marker.truck {
   background: var(--ink);
   border-color: var(--sea);
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 .map-marker.selected {
   outline: 2px solid var(--dust);
   outline-offset: 2px;
+}
+
+.object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.object-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 7px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.object-row em {
+  margin-left: auto;
+  font-style: normal;
+  color: var(--muted);
+  font-size: 11px;
+}
+.object-row:hover,
+.object-row.active {
+  border-color: var(--line);
+  background: var(--hover-fill);
+}
+.object-row.active {
+  border-color: rgba(46, 196, 182, 0.55);
 }
 
 .truck-label {

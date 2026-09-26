@@ -25,10 +25,18 @@ export default function App() {
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     void api
       .mapOverview()
-      .then(setOverview)
-      .catch((e) => toast.err(e instanceof Error ? e.message : "Ошибка карты"));
+      .then((data) => {
+        if (!cancelled) setOverview(data);
+      })
+      .catch((e) => {
+        if (!cancelled) toast.err(e instanceof Error ? e.message : "Ошибка карты");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [toast]);
 
   useEffect(() => {
@@ -37,20 +45,32 @@ export default function App() {
       setStation(null);
       return;
     }
+    let cancelled = false;
     setLoadingDetail(true);
     const load =
       selection.kind === "truck"
         ? api.truck(selection.id).then((d) => {
-            setTruck(d);
-            setStation(null);
+            if (!cancelled) {
+              setTruck(d);
+              setStation(null);
+            }
           })
         : api.station(selection.id).then((d) => {
-            setStation(d);
-            setTruck(null);
+            if (!cancelled) {
+              setStation(d);
+              setTruck(null);
+            }
           });
     void load
-      .catch((e) => toast.err(e instanceof Error ? e.message : "Ошибка загрузки"))
-      .finally(() => setLoadingDetail(false));
+      .catch((e) => {
+        if (!cancelled) toast.err(e instanceof Error ? e.message : "Ошибка загрузки");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selection, toast]);
 
   function onSelect(point: MapPoint) {
@@ -61,6 +81,8 @@ export default function App() {
       toast.ok(`Завод: ${point.name}`);
     }
   }
+
+  const listPoints = (overview?.points ?? []).filter((p) => p.kind !== "factory");
 
   return (
     <div className="app">
@@ -120,6 +142,23 @@ export default function App() {
                 <i className="dot alert" /> расхождение
               </span>
             </div>
+            <div className="panel-body" style={{ paddingTop: 0, maxHeight: 160 }}>
+              <ul className="object-list">
+                {listPoints.map((p) => (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      className={`object-row${selection?.id === p.id ? " active" : ""}`}
+                      onClick={() => onSelect(p)}
+                    >
+                      <i className={`dot ${p.kind}`} />
+                      <span>{p.name}</span>
+                      <em>{p.status}</em>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           </section>
 
           {selection?.kind === "truck" && (
@@ -136,7 +175,7 @@ export default function App() {
               onClose={() => setSelection(null)}
             />
           )}
-          {!selection && <BatchTrailPanel />}
+          {selection?.kind !== "truck" && selection?.kind !== "station" && <BatchTrailPanel />}
         </aside>
       </main>
     </div>
