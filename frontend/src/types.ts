@@ -56,16 +56,48 @@ export interface StationDetail {
   lon: number;
   is_active: boolean;
   tanks: Tank[];
+  /** Остаток на начало суток (книга) */
+  opening_remainder_liters: number;
   remainder_liters?: number | null;
   capacity_liters?: number | null;
+  /** Доставлено газовозами за сутки */
   receipts_day_liters: number;
+  /** Прошло через колонки (продажи) за сутки */
   consumption_day_liters: number;
   consumption_week_liters: number;
   consumption_month_liters: number;
   sales_day_count: number;
+  /** Сколько раз газовоз слил на АГЗС за сутки */
+  delivery_count_day: number;
+  /** Средний объём одной заправки клиента, л */
+  avg_fill_liters: number;
+  recent_fills: { liters: number; occurred_at: string }[];
+  recent_deliveries: { plate: string; liters: number; occurred_at: string }[];
   active_trucks: { plate: string; status: string }[];
   balance_status: string;
   calculated_vs_actual_delta?: number | null;
+}
+
+/** Сверка АГЗС: доставка ↔ хранилище ↔ колонки */
+export interface StationBalance {
+  delivered: number;
+  storage_actual: number;
+  through_pumps: number;
+  opening: number;
+  /** opening + delivered − pumps */
+  book_remainder: number;
+  /** actual − book */
+  delta: number;
+  status: "ok" | "warn" | "shortage" | "surplus";
+}
+
+export interface FleetStats {
+  delivered_liters_day: number;
+  delivery_trips_day: number;
+  sold_liters_day: number;
+  fills_day: number;
+  trucks_in_transit: number;
+  stations_active: number;
 }
 
 export interface BatchTrailEvent {

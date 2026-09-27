@@ -14,9 +14,9 @@ router = APIRouter(prefix="/map", tags=["map"])
 _FACTORIES = [
     {
         "id": UUID("f1111111-1111-1111-1111-111111111101"),
-        "name": "Завод Тольятти",
-        "lat": 53.5078,
-        "lon": 49.4204,
+        "name": "КазГаз",
+        "lat": 43.3685,
+        "lon": 52.7930,
         "status": "online",
     }
 ]
