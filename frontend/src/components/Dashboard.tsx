@@ -1,13 +1,16 @@
 import { useMemo } from "react";
-import { fleetStats, stationBalance, stationHourly } from "../sim/engine";
+import { fiscalCheck, fleetStats, stationBalance, stationHourly } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import {
   balBadge,
   balText,
+  fiscalBadge,
+  fiscalText,
   liters,
   phaseLabel,
   shortStationName,
   signedLiters,
+  tenge,
 } from "../format";
 import { BarChart } from "./Charts";
 import StationDetailPage from "./StationDetailPage";
@@ -32,8 +35,11 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
   const stations = useMemo(
     () =>
       state.stations
-        .map((s) => ({ d: s.detail, bal: stationBalance(s.detail) }))
-        .sort((a, b) => Math.abs(b.bal.delta) - Math.abs(a.bal.delta)),
+        .map((s) => ({ d: s.detail, bal: stationBalance(s.detail), fc: fiscalCheck(s.detail) }))
+        .sort(
+          (a, b) =>
+            Math.abs(b.bal.delta) + b.fc.gap_liters - (Math.abs(a.bal.delta) + a.fc.gap_liters)
+        ),
     [state.stations]
   );
 
@@ -71,9 +77,17 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
           <em>из {state.trucks.length} газовозов</em>
         </div>
         <div className="dash-kpi">
-          <span>Расхождения</span>
+          <span>Расхождения в хранилище</span>
           <strong className={mismatch ? "text-danger" : ""}>{mismatch}</strong>
           <em>из {stats.stations_active} АГЗС</em>
+        </div>
+        <div className="dash-kpi">
+          <span>КГД не видит</span>
+          <strong className={stats.gap_liters ? "text-danger" : ""}>{liters(stats.gap_liters)}</strong>
+          <em>
+            {tenge(stats.gap_kzt)} · без чека {liters(stats.unreceipted_liters)} · ККМ офлайн{" "}
+            {stats.kkm_offline}
+          </em>
         </div>
       </div>
 
@@ -100,7 +114,7 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
       <section className="dash-section">
         <h3>АГЗС</h3>
         <ul className="st-list">
-          {stations.map(({ d, bal }) => {
+          {stations.map(({ d, bal, fc }) => {
             const fill = d.capacity_liters
               ? Math.min(100, Math.round((bal.storage_actual / d.capacity_liters) * 100))
               : 0;
@@ -127,9 +141,14 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
                     <strong>{liters(bal.through_pumps)}</strong>
                     <span>колонки · {d.sales_day_count} запр.</span>
                   </div>
-                  <span className={`badge ${balBadge(bal.status)}`}>
-                    {bal.status === "ok" ? balText(bal.status) : signedLiters(bal.delta)}
-                  </span>
+                  <div className="st-row-badges">
+                    <span className={`badge ${balBadge(bal.status)}`}>
+                      ёмкость {bal.status === "ok" ? balText(bal.status) : signedLiters(bal.delta)}
+                    </span>
+                    <span className={`badge ${fiscalBadge(fc.status)}`}>
+                      КГД {fc.status === "ok" ? "сходится" : `−${liters(fc.gap_liters)}`}
+                    </span>
+                  </div>
                   <span className="st-row-chevron" aria-hidden>
                     ›
                   </span>
@@ -138,6 +157,52 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
             );
           })}
         </ul>
+      </section>
+
+      <section className="dash-section">
+        <h3>Сверка колонок с КГД</h3>
+        <div className="dash-table-wrap">
+          <table className="dash-table">
+            <thead>
+              <tr>
+                <th>АГЗС</th>
+                <th>Счётчики ТРК</th>
+                <th>Чеки ККМ</th>
+                <th>ОФД → КГД</th>
+                <th>Расхождение</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stations.map(({ d, fc }) => (
+                <tr key={d.id} className="dash-row-link" onClick={() => onOpenStation(d.id)}>
+                  <td>
+                    <strong>{d.name}</strong>
+                    <div className="dash-muted">{d.pumps.length} ТРК</div>
+                  </td>
+                  <td>
+                    {liters(fc.counter_liters)}
+                    <div className="dash-muted">{fc.fills} заправок</div>
+                  </td>
+                  <td>
+                    {liters(fc.kkm_liters)}
+                    <div className="dash-muted">{fc.kkm_receipts} чеков</div>
+                  </td>
+                  <td>
+                    {liters(fc.ofd_liters)}
+                    <div className="dash-muted">{tenge(fc.ofd_amount_kzt)}</div>
+                  </td>
+                  <td>
+                    <span className={`badge ${fiscalBadge(fc.status)}`}>
+                      {fc.status === "ok"
+                        ? fiscalText(fc.status)
+                        : `${fiscalText(fc.status)} · ${liters(fc.gap_liters)}`}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="dash-section">

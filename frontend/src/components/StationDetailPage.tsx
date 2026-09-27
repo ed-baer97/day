@@ -3,6 +3,7 @@ import { stationBalance, stationHourly } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import { balBadge, balText, liters, signedLiters, timeHM } from "../format";
 import { BarChart, LineChart } from "./Charts";
+import FiscalCheckTable from "./FiscalCheckTable";
 import StationBalanceCard from "./StationBalanceCard";
 
 export default function StationDetailPage({
@@ -56,6 +57,11 @@ export default function StationDetailPage({
 
       <section className="dash-section">
         <StationBalanceCard station={station} />
+      </section>
+
+      <section className="dash-section">
+        <h3>Сверка колонок с КГД</h3>
+        <FiscalCheckTable station={station} />
       </section>
 
       <div className="st-grid">

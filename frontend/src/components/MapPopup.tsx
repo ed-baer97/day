@@ -1,4 +1,6 @@
 import type { StationDetail, TruckDetail } from "../types";
+import { fiscalCheck } from "../sim/engine";
+import { fiscalBadge, fiscalText } from "../format";
 import StationBalanceCard from "./StationBalanceCard";
 
 function liters(v?: number | null) {
@@ -63,6 +65,19 @@ export default function MapPopup({
           <p className="kicker">АГЗС</p>
           <h2>{station.name}</h2>
           <StationBalanceCard station={station} compact />
+          {(() => {
+            const fc = fiscalCheck(station);
+            return (
+              <div className="map-popup-fiscal">
+                <span>ТРК → ККМ → ОФД → КГД</span>
+                <span className={`badge ${fiscalBadge(fc.status)}`}>
+                  {fc.status === "ok"
+                    ? fiscalText(fc.status)
+                    : `${fiscalText(fc.status)} · ${liters(fc.gap_liters)}`}
+                </span>
+              </div>
+            );
+          })()}
           {onOpenStation && (
             <button
               type="button"

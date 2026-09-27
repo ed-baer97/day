@@ -76,6 +76,60 @@ export interface StationDetail {
   active_trucks: { plate: string; status: string }[];
   balance_status: string;
   calculated_vs_actual_delta?: number | null;
+  price_kzt_per_liter: number;
+  pumps: PumpFiscal[];
+}
+
+/**
+ * Колонка (ТРК) и её онлайн-ККМ.
+ * Цепочка: счётчик ТРК → чек на ККМ → ОФД → КГД.
+ */
+export interface PumpFiscal {
+  id: string;
+  code: string;
+  kkm_serial: string;
+  /** false — ККМ в автономном режиме, чеки копятся и не уходят в ОФД */
+  kkm_online: boolean;
+  counter_liters: number;
+  /** незавершённая заправка: уже на счётчике, чек ещё не пробит */
+  pouring_liters: number;
+  fills: number;
+  /** пробито на ККМ */
+  kkm_liters: number;
+  kkm_receipts: number;
+  kkm_amount_kzt: number;
+  /** получено ОФД и передано в КГД */
+  ofd_liters: number;
+  ofd_receipts: number;
+  ofd_last_at: string;
+}
+
+export type FiscalStatus = "ok" | "no_receipt" | "not_sent";
+
+export interface PumpFiscalCheck extends PumpFiscal {
+  /** счётчик − ККМ: продано без чека */
+  unreceipted_liters: number;
+  /** ККМ − ОФД: чеки не дошли до ОФД/КГД */
+  unsent_liters: number;
+  unsent_receipts: number;
+  status: FiscalStatus;
+}
+
+export interface FiscalCheck {
+  counter_liters: number;
+  fills: number;
+  kkm_liters: number;
+  kkm_receipts: number;
+  ofd_liters: number;
+  ofd_receipts: number;
+  ofd_amount_kzt: number;
+  unreceipted_liters: number;
+  unsent_liters: number;
+  /** всё, чего не видит КГД: без чека + не передано */
+  gap_liters: number;
+  gap_kzt: number;
+  status: FiscalStatus;
+  pumps: PumpFiscalCheck[];
 }
 
 /** Сверка АГЗС: доставка ↔ хранилище ↔ колонки */

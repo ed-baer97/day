@@ -1,4 +1,16 @@
-import type { StationBalance } from "./types";
+import type { FiscalStatus, StationBalance } from "./types";
+
+export function fiscalBadge(status: FiscalStatus) {
+  if (status === "ok") return "ok";
+  if (status === "not_sent") return "warn";
+  return "danger";
+}
+
+export function fiscalText(status: FiscalStatus) {
+  if (status === "ok") return "сходится";
+  if (status === "not_sent") return "не передано в ОФД";
+  return "продажа без чека";
+}
 
 export function liters(v?: number | null) {
   if (v == null || Number.isNaN(v)) return "—";
@@ -33,6 +45,10 @@ export function phaseLabel(status?: string | null) {
     idle: "ожидание",
   };
   return status ? map[status] ?? status : "—";
+}
+
+export function tenge(v: number) {
+  return `${Math.round(v).toLocaleString("ru-RU")} ₸`;
 }
 
 export function timeHM(iso: string) {

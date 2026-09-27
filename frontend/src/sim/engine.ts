@@ -2,7 +2,16 @@
  * Движение газовозов — копия рабочей схемы GazTrail (pitch) + LogHub:
  * 1) погрузка  2) полный OSRM-маршрут на карте  3) along(progress) по длине линии
  */
-import type { BatchTrailEvent, MapOverview, MapPoint, StationBalance, StationDetail } from "../types";
+import type {
+  BatchTrailEvent,
+  FiscalCheck,
+  FiscalStatus,
+  PumpFiscalCheck,
+  MapOverview,
+  MapPoint,
+  StationBalance,
+  StationDetail,
+} from "../types";
 import { along, alongPrefix, type Coord } from "./geo";
 import { createSeed, IDS, type SimState, type SimTruck, type TripPhase } from "./seed";
 
@@ -51,6 +60,50 @@ export function stationBalance(d: StationDetail): StationBalance {
     book_remainder,
     delta,
     status,
+  };
+}
+
+/** Допуск на округление, л */
+const FISCAL_TOLERANCE_L = 1;
+
+/** Счётчик ТРК → чек на ККМ → ОФД → КГД */
+export function fiscalCheck(d: StationDetail): FiscalCheck {
+  const pumps: PumpFiscalCheck[] = d.pumps.map((p) => {
+    const noReceipt = Math.round(p.counter_liters - p.pouring_liters - p.kkm_liters);
+    const unreceipted = noReceipt >= FISCAL_TOLERANCE_L ? noReceipt : 0;
+    const unsent = Math.round(p.kkm_liters - p.ofd_liters);
+    const unsentReceipts = p.kkm_receipts - p.ofd_receipts;
+    const status: FiscalStatus = unreceipted
+      ? "no_receipt"
+      : unsentReceipts > 0
+        ? "not_sent"
+        : "ok";
+    return {
+      ...p,
+      unreceipted_liters: unreceipted,
+      unsent_liters: unsentReceipts > 0 ? unsent : 0,
+      unsent_receipts: Math.max(0, unsentReceipts),
+      status,
+    };
+  });
+  const sum = (f: (p: PumpFiscalCheck) => number) => pumps.reduce((s, p) => s + f(p), 0);
+  const unreceipted = sum((p) => p.unreceipted_liters);
+  const unsent = sum((p) => p.unsent_liters);
+  const gap = unreceipted + unsent;
+  return {
+    counter_liters: sum((p) => p.counter_liters),
+    fills: sum((p) => p.fills),
+    kkm_liters: sum((p) => p.kkm_liters),
+    kkm_receipts: sum((p) => p.kkm_receipts),
+    ofd_liters: sum((p) => p.ofd_liters),
+    ofd_receipts: sum((p) => p.ofd_receipts),
+    ofd_amount_kzt: Math.round(sum((p) => p.ofd_liters) * d.price_kzt_per_liter),
+    unreceipted_liters: unreceipted,
+    unsent_liters: unsent,
+    gap_liters: gap,
+    gap_kzt: Math.round(gap * d.price_kzt_per_liter),
+    status: unreceipted ? "no_receipt" : unsent ? "not_sent" : "ok",
+    pumps,
   };
 }
 
@@ -158,10 +211,41 @@ function recordSaleDrip(
   fillSize = 28
 ) {
   if (liters <= 0) return;
-  station.detail.consumption_day_liters += liters;
+  const d = station.detail;
+  d.consumption_day_liters += liters;
   station.saleAcc += liters;
+  const pumpAt = () => d.pumps[d.sales_day_count % Math.max(1, d.pumps.length)];
+  const pouring = pumpAt();
+  if (pouring) {
+    pouring.counter_liters += liters;
+    pouring.pouring_liters += liters;
+  }
   while (station.saleAcc >= fillSize) {
     station.saleAcc -= fillSize;
+    const pump = pumpAt();
+    if (pump) {
+      // сверх объёма заправки — это уже следующий клиент на следующей ТРК
+      const carry = Math.max(0, pump.pouring_liters - fillSize);
+      pump.pouring_liters = 0;
+      pump.counter_liters -= carry;
+      const next = d.pumps[(d.sales_day_count + 1) % d.pumps.length];
+      next.counter_liters += carry;
+      next.pouring_liters += carry;
+      pump.fills += 1;
+      const idx = d.pumps.indexOf(pump);
+      const skip =
+        station.unfiscal?.pump === idx && pump.fills % station.unfiscal.every === 0;
+      if (!skip) {
+        pump.kkm_liters += fillSize;
+        pump.kkm_receipts += 1;
+        pump.kkm_amount_kzt += Math.round(fillSize * d.price_kzt_per_liter);
+        if (pump.kkm_online) {
+          pump.ofd_liters += fillSize;
+          pump.ofd_receipts += 1;
+          pump.ofd_last_at = now;
+        }
+      }
+    }
     station.detail.sales_day_count += 1;
     station.detail.recent_fills = [
       { liters: fillSize, occurred_at: now },
@@ -566,7 +650,17 @@ export function mapRoutes(state: SimState, focusId?: string | null): MapRouteLay
 export function fleetStats(state: SimState) {
   const sold = state.stations.reduce((s, st) => s + st.detail.consumption_day_liters, 0);
   const fills = state.stations.reduce((s, st) => s + st.detail.sales_day_count, 0);
+  const fiscal = state.stations.map((s) => fiscalCheck(s.detail));
   return {
+    unreceipted_liters: fiscal.reduce((s, f) => s + f.unreceipted_liters, 0),
+    unsent_liters: fiscal.reduce((s, f) => s + f.unsent_liters, 0),
+    gap_liters: fiscal.reduce((s, f) => s + f.gap_liters, 0),
+    gap_kzt: fiscal.reduce((s, f) => s + f.gap_kzt, 0),
+    fiscal_mismatch_stations: fiscal.filter((f) => f.status !== "ok").length,
+    kkm_offline: state.stations.reduce(
+      (s, st) => s + st.detail.pumps.filter((p) => !p.kkm_online).length,
+      0
+    ),
     delivered_liters_day: Math.round(state.stats.delivered_liters_day),
     delivery_trips_day: state.stats.delivery_trips_day,
     sold_liters_day: Math.round(sold),

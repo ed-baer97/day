@@ -346,6 +346,84 @@ select {
   margin-top: 12px;
   width: 100%;
 }
+.map-popup-fiscal {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.st-row-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.fiscal-chain {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.fiscal-step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.fiscal-step span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.fiscal-step strong {
+  font-size: 15px;
+}
+.fiscal-step em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+.fiscal-link {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+}
+.fiscal-link.bad {
+  color: var(--danger);
+  font-weight: 700;
+}
+.fiscal-link.warn {
+  color: var(--warn);
+  font-weight: 700;
+}
+@media (max-width: 720px) {
+  .fiscal-chain {
+    grid-template-columns: 1fr;
+  }
+}
+.dash-total td {
+  font-weight: 700;
+  background: var(--hover-fill);
+}
+.dash-row-link {
+  cursor: pointer;
+}
+.dash-row-link:hover td {
+  background: var(--hover-fill);
+}
 
 .dash-card {
   background: var(--panel);
@@ -571,7 +649,7 @@ select {
 }
 .dash-kpis {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 28px;
 }

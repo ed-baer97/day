@@ -1,4 +1,10 @@
-import type { BatchTrailEvent, DiscrepancyEvent, StationDetail, TruckDetail } from "../types";
+import type {
+  BatchTrailEvent,
+  DiscrepancyEvent,
+  PumpFiscal,
+  StationDetail,
+  TruckDetail,
+} from "../types";
 import { along, type Coord } from "./geo";
 import { ROUTE_A, ROUTE_B, ROUTE_A_M, ROUTE_B_M } from "./routes";
 
@@ -29,6 +35,8 @@ export interface SimStation {
   detail: StationDetail;
   /** накопление продаж до одной «заправки» клиента */
   saleAcc: number;
+  /** демо: каждая N-я заправка на этой ТРК уходит без чека */
+  unfiscal?: { pump: number; every: number };
 }
 
 export interface SimFactory {
@@ -80,8 +88,15 @@ function iso(ms: number) {
   return new Date(ms).toISOString();
 }
 
-function stationDetail(partial: StationDetail, saleAcc = 0): SimStation {
-  return { detail: partial, saleAcc };
+/** Розничная цена LPG, ₸/л (демо) */
+export const PRICE_KZT = 115;
+
+function stationDetail(
+  partial: StationDetail,
+  saleAcc = 0,
+  unfiscal?: SimStation["unfiscal"]
+): SimStation {
+  return { detail: partial, saleAcc, unfiscal };
 }
 
 function baseStation(
@@ -101,13 +116,68 @@ function baseStation(
   recentDeliveries: { plate: string; liters: number; atOffsetMs: number }[],
   tanks: StationDetail["tanks"],
   baseMs: number,
-  /** искусственный дисбаланс: недостача (+) в колонках vs хранилище */
-  leakLiters = 0
+  opts: {
+    /** недостача в хранилище, л */
+    leak?: number;
+    pumpCount?: number;
+    /** продано без чека на ТРК с индексом pump */
+    unfiscalSeed?: { pump: number; liters: number; fills: number };
+    unfiscalLive?: { pump: number; every: number };
+    /** ККМ в автономном режиме: чеки пробиты, но не ушли в ОФД */
+    kkmOffline?: { pump: number; liters: number; receipts: number; sinceMs: number };
+  } = {}
 ): SimStation {
+  const leakLiters = opts.leak ?? 0;
   const avg =
     fills.length > 0
       ? Math.round(fills.reduce((s, f) => s + f.liters, 0) / fills.length)
       : 28;
+  const price = PRICE_KZT;
+  const n = opts.pumpCount ?? 2;
+  const pumps: PumpFiscal[] = Array.from({ length: n }, (_, i) => {
+    const share = i === n - 1 ? 1 - (n - 1) / n : 1 / n;
+    const counter = Math.round(consumption.day * share);
+    const pumpFills = i === n - 1 ? sales - Math.floor(sales / n) * (n - 1) : Math.floor(sales / n);
+    return {
+      id: `${id}-p${i + 1}`,
+      code: `ТРК-${i + 1}`,
+      kkm_serial: `${code}-K${i + 1}`,
+      kkm_online: true,
+      counter_liters: counter,
+      pouring_liters: 0,
+      fills: pumpFills,
+      kkm_liters: counter,
+      kkm_receipts: pumpFills,
+      kkm_amount_kzt: 0,
+      ofd_liters: counter,
+      ofd_receipts: pumpFills,
+      ofd_last_at: iso(baseMs),
+    };
+  });
+  // остаток счётчиков после округления — на последнюю ТРК
+  const last = pumps[n - 1];
+  const fix = consumption.day - pumps.reduce((s, p) => s + p.counter_liters, 0);
+  last.counter_liters += fix;
+  last.kkm_liters += fix;
+  last.ofd_liters += fix;
+
+  const miss = opts.unfiscalSeed;
+  if (miss && pumps[miss.pump]) {
+    const p = pumps[miss.pump];
+    p.kkm_liters -= miss.liters;
+    p.kkm_receipts -= miss.fills;
+    p.ofd_liters -= miss.liters;
+    p.ofd_receipts -= miss.fills;
+  }
+  const off = opts.kkmOffline;
+  if (off && pumps[off.pump]) {
+    const p = pumps[off.pump];
+    p.kkm_online = false;
+    p.ofd_liters -= off.liters;
+    p.ofd_receipts -= off.receipts;
+    p.ofd_last_at = iso(baseMs - off.sinceMs);
+  }
+  for (const p of pumps) p.kkm_amount_kzt = Math.round(p.kkm_liters * price);
   // opening + delivered − pumps = book; actual = remainder (с учётом leak)
   const opening = Math.max(0, Math.round(remainder - deliveryLiters + consumption.day + leakLiters));
   const actual = remainder;
@@ -157,7 +227,9 @@ function baseStation(
     active_trucks: [],
     balance_status,
     calculated_vs_actual_delta: Math.round(delta * 10) / 10,
-  });
+    price_kzt_per_liter: price,
+    pumps,
+  }, 0, opts.unfiscalLive);
 }
 
 function pos(route: Coord[], t: number) {
@@ -269,7 +341,7 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
         },
       ],
       baseMs,
-      220
+      { leak: 220, pumpCount: 3 }
     ),
     baseStation(
       IDS.stationS,
@@ -302,7 +374,8 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
           last_measured_at: iso(baseMs),
         },
       ],
-      baseMs
+      baseMs,
+      { unfiscalLive: { pump: 1, every: 3 } }
     ),
     baseStation(
       IDS.stationZhanaozen,
@@ -341,7 +414,8 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
       [{ liters: 24, atOffsetMs: 400_000 }],
       [],
       [],
-      baseMs
+      baseMs,
+      { kkmOffline: { pump: 0, liters: 52, receipts: 2, sinceMs: 4_800_000 } }
     ),
     baseStation(
       IDS.stationFort,
@@ -384,7 +458,8 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
       ],
       [],
       [],
-      baseMs
+      baseMs,
+      { pumpCount: 3, unfiscalSeed: { pump: 1, liters: 95, fills: 3 } }
     ),
     baseStation(
       IDS.stationShetpe,
