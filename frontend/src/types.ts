@@ -36,6 +36,9 @@ export interface TruckDetail {
   recent_positions?: { lat: number; lon: number; recorded_at: string }[];
 }
 
+export type LinkQuality = "good" | "fair" | "weak";
+export type SensorStatus = "ok" | "warn" | "offline";
+
 export interface Tank {
   id: string;
   code: string;
@@ -43,8 +46,13 @@ export interface Tank {
   has_electronic_sensor: boolean;
   actual_remainder_liters?: number | null;
   calculated_remainder_liters?: number | null;
+  /** Цифровой уровень: Rochester Junior снимает SRG-1-WAVE */
   level_source: string;
   last_measured_at?: string | null;
+  temperature_c: number;
+  /** Смартфон АГЗС, через который уходит замер */
+  phone_label: string;
+  link_quality: LinkQuality;
 }
 
 export interface StationDetail {
@@ -71,7 +79,7 @@ export interface StationDetail {
   delivery_count_day: number;
   /** Средний объём одной заправки клиента, л */
   avg_fill_liters: number;
-  recent_fills: { liters: number; occurred_at: string }[];
+  recent_fills: FillEvent[];
   recent_deliveries: { plate: string; liters: number; occurred_at: string }[];
   active_trucks: { plate: string; status: string }[];
   balance_status: string;
@@ -84,12 +92,21 @@ export interface StationDetail {
  * Колонка (ТРК) и её онлайн-ККМ.
  * Цепочка: счётчик ТРК → чек на ККМ → ОФД → КГД.
  */
+export interface FillEvent {
+  liters: number;
+  occurred_at: string;
+  pump_code: string;
+  price_kzt_per_liter: number;
+}
+
 export interface PumpFiscal {
   id: string;
   code: string;
   kkm_serial: string;
   /** false — ККМ в автономном режиме, чеки копятся и не уходят в ОФД */
   kkm_online: boolean;
+  /** Связь Topaz-119-28M → RS-232 → LTE-шлюз */
+  link_status: SensorStatus;
   counter_liters: number;
   /** незавершённая заправка: уже на счётчике, чек ещё не пробит */
   pouring_liters: number;
@@ -172,6 +189,59 @@ export interface BatchTrail {
   };
   chain: string[];
   events: BatchTrailEvent[];
+}
+
+export type SupplyStatus = "loading" | "in_transit" | "unloading" | "accepted" | "selling";
+
+/** Одна поставка LPG: все объёмы цепочки ссылаются на supply_id. */
+export interface LpgSupply {
+  supply_id: string;
+  /** Живой рейс симуляции — объёмы на газовозе обновляются */
+  live: boolean;
+  status: SupplyStatus;
+  factory_id: string;
+  factory_name: string;
+  truck_id: string;
+  plate: string;
+  station_id: string;
+  station_name: string;
+  tank_id: string;
+  tank_code: string;
+  shipped_at: string;
+  waybill: string;
+  shipped_liters: number;
+  shipped_temp_c: number;
+  route_name: string;
+  departed_at: string | null;
+  arrived_at: string | null;
+  delivered_liters: number | null;
+  truck_temp_c: number | null;
+  gps_lat: number | null;
+  gps_lon: number | null;
+  gps_at: string | null;
+  gps_status: SensorStatus;
+  quantity_sensor: SensorStatus;
+  temp_sensor: SensorStatus;
+  accepted_liters: number | null;
+  accepted_at: string | null;
+  dispensed_liters: number;
+  fiscal_liters: number;
+  fiscal_receipts: number;
+  fiscal_amount_kzt: number;
+  fiscal_period: string;
+  fiscal_updated_at: string | null;
+  operations: SupplyOperation[];
+}
+
+export interface SupplyOperation {
+  id: string;
+  pump_code: string;
+  volume_liters: number;
+  price_kzt_per_liter: number;
+  amount_kzt: number;
+  occurred_at: string;
+  state: "done" | "pouring";
+  link_status: SensorStatus;
 }
 
 export interface DiscrepancyEvent {

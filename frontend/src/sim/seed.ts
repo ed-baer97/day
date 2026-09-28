@@ -1,8 +1,12 @@
 import type {
   BatchTrailEvent,
   DiscrepancyEvent,
+  LinkQuality,
+  LpgSupply,
   PumpFiscal,
   StationDetail,
+  SupplyOperation,
+  Tank,
   TruckDetail,
 } from "../types";
 import { along, type Coord } from "./geo";
@@ -59,6 +63,7 @@ export interface SimState {
   factories: SimFactory[];
   trucks: SimTruck[];
   stations: SimStation[];
+  supplies: LpgSupply[];
   batch: SimBatch;
   events: DiscrepancyEvent[];
   clockLabel: string;
@@ -82,6 +87,7 @@ export const IDS = {
   truckA: "c1111111-1111-1111-1111-111111111101",
   truckB: "c1111111-1111-1111-1111-111111111102",
   batch: "e1111111-1111-1111-1111-111111111101",
+  supplyDemo: "SUP-2026-0040",
 } as const;
 
 function iso(ms: number) {
@@ -114,7 +120,7 @@ function baseStation(
   deliveryLiters: number,
   fills: { liters: number; atOffsetMs: number }[],
   recentDeliveries: { plate: string; liters: number; atOffsetMs: number }[],
-  tanks: StationDetail["tanks"],
+  tanks: Array<Omit<Tank, "temperature_c" | "phone_label" | "link_quality">>,
   baseMs: number,
   opts: {
     /** недостача в хранилище, л */
@@ -125,6 +131,8 @@ function baseStation(
     unfiscalLive?: { pump: number; every: number };
     /** ККМ в автономном режиме: чеки пробиты, но не ушли в ОФД */
     kkmOffline?: { pump: number; liters: number; receipts: number; sinceMs: number };
+    tempC?: number;
+    linkQuality?: LinkQuality;
   } = {}
 ): SimStation {
   const leakLiters = opts.leak ?? 0;
@@ -143,6 +151,7 @@ function baseStation(
       code: `ТРК-${i + 1}`,
       kkm_serial: `${code}-K${i + 1}`,
       kkm_online: true,
+      link_status: "ok",
       counter_liters: counter,
       pouring_liters: 0,
       fills: pumpFills,
@@ -177,7 +186,10 @@ function baseStation(
     p.ofd_receipts -= off.receipts;
     p.ofd_last_at = iso(baseMs - off.sinceMs);
   }
-  for (const p of pumps) p.kkm_amount_kzt = Math.round(p.kkm_liters * price);
+  for (const p of pumps) {
+    p.kkm_amount_kzt = Math.round(p.kkm_liters * price);
+    p.link_status = p.kkm_online ? "ok" : "offline";
+  }
   // opening + delivered − pumps = book; actual = remainder (с учётом leak)
   const opening = Math.max(0, Math.round(remainder - deliveryLiters + consumption.day + leakLiters));
   const actual = remainder;
@@ -187,14 +199,31 @@ function baseStation(
   const balance_status =
     abs < 40 ? "ok" : abs < 120 ? "measurement_error" : delta < 0 ? "shortage" : "surplus";
 
-  const tanksSynced =
+  const rawTanks =
     tanks.length > 0
-      ? tanks.map((t) => ({
-          ...t,
-          actual_remainder_liters: actual,
-          calculated_remainder_liters: book,
-        }))
-      : tanks;
+      ? tanks
+      : [
+          {
+            id: `${id}-r1`,
+            code: "R-1",
+            capacity_liters: capacity,
+            has_electronic_sensor: true,
+            actual_remainder_liters: actual,
+            calculated_remainder_liters: book,
+            level_source: "SRG-1-WAVE",
+            last_measured_at: iso(baseMs),
+          },
+        ];
+  const tanksSynced = rawTanks.map((t) => ({
+    ...t,
+    actual_remainder_liters: actual,
+    calculated_remainder_liters: book,
+    level_source: "SRG-1-WAVE",
+    has_electronic_sensor: true,
+    temperature_c: opts.tempC ?? 15.8,
+    phone_label: "смартфон АГЗС",
+    link_quality: opts.linkQuality ?? ("good" as const),
+  }));
 
   return stationDetail({
     id,
@@ -215,9 +244,11 @@ function baseStation(
     sales_day_count: sales,
     delivery_count_day: deliveries,
     avg_fill_liters: avg,
-    recent_fills: fills.map((f) => ({
+    recent_fills: fills.map((f, i) => ({
       liters: f.liters,
       occurred_at: iso(baseMs - f.atOffsetMs),
+      pump_code: `Колонка №${(i % n) + 1}`,
+      price_kzt_per_liter: price,
     })),
     recent_deliveries: recentDeliveries.map((d) => ({
       plate: d.plate,
@@ -341,7 +372,7 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
         },
       ],
       baseMs,
-      { leak: 220, pumpCount: 3 }
+      { leak: 220, pumpCount: 3, tempC: 16.2 }
     ),
     baseStation(
       IDS.stationS,
@@ -375,7 +406,7 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
         },
       ],
       baseMs,
-      { unfiscalLive: { pump: 1, every: 3 } }
+      { unfiscalLive: { pump: 1, every: 3 }, tempC: 17.1, linkQuality: "fair" }
     ),
     baseStation(
       IDS.stationZhanaozen,
@@ -477,7 +508,8 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
       [{ liters: 26, atOffsetMs: 500_000 }],
       [],
       [],
-      baseMs
+      baseMs,
+      { linkQuality: "fair", tempC: 14.4 }
     ),
   ];
 
@@ -514,11 +546,146 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
     ],
   };
 
+  const day = (ms: number) => new Date(ms).toLocaleDateString("ru-RU");
+  const price = PRICE_KZT;
+  const demoOps: SupplyOperation[] = [
+    { liters: 18.4, pump: 1, ago: 0, pouring: true },
+    { liters: 36.2, pump: 1, ago: 6 * 60_000 },
+    { liters: 28.0, pump: 2, ago: 14 * 60_000 },
+    { liters: 41.5, pump: 1, ago: 22 * 60_000 },
+    { liters: 24.8, pump: 3, ago: 35 * 60_000 },
+    { liters: 33.0, pump: 1, ago: 48 * 60_000 },
+  ].map((row, i) => ({
+    id: `op-demo-${i}`,
+    pump_code: `Колонка №${row.pump}`,
+    volume_liters: row.liters,
+    price_kzt_per_liter: price,
+    amount_kzt: Math.round(row.liters * price),
+    occurred_at: iso(baseMs - row.ago),
+    state: row.pouring ? "pouring" : "done",
+    link_status: "ok" as const,
+  }));
+
+  const settled: LpgSupply = {
+    supply_id: IDS.supplyDemo,
+    live: false,
+    status: "selling",
+    factory_id: IDS.factory,
+    factory_name: factory.name,
+    truck_id: IDS.truckA,
+    plate: truckA.detail.plate_number,
+    station_id: IDS.stationN,
+    station_name: "АГЗС Актау · 12 мкр",
+    tank_id: IDS.tankN,
+    tank_code: "R-1",
+    shipped_at: iso(baseMs - 26 * 3_600_000),
+    waybill: "НК-10481",
+    shipped_liters: 10_000,
+    shipped_temp_c: 12.6,
+    route_name: "КазГаз → АГЗС Актау · 12 мкр",
+    departed_at: iso(baseMs - 25 * 3_600_000),
+    arrived_at: iso(baseMs - 18 * 3_600_000),
+    delivered_liters: 9_920,
+    truck_temp_c: 14.8,
+    gps_lat: 43.6479,
+    gps_lon: 51.248,
+    gps_at: iso(baseMs - 18 * 3_600_000),
+    gps_status: "ok",
+    quantity_sensor: "ok",
+    temp_sensor: "ok",
+    accepted_liters: 9_900,
+    accepted_at: iso(baseMs - 17.5 * 3_600_000),
+    dispensed_liters: 7_200,
+    fiscal_liters: 7_050,
+    fiscal_receipts: 252,
+    fiscal_amount_kzt: 7_050 * price,
+    fiscal_period: `${day(baseMs - 26 * 3_600_000)} — ${day(baseMs)}`,
+    fiscal_updated_at: iso(baseMs),
+    operations: demoOps,
+  };
+
+  const liveA: LpgSupply = {
+    supply_id: "SUP-2026-0041",
+    live: true,
+    status: "in_transit",
+    factory_id: IDS.factory,
+    factory_name: factory.name,
+    truck_id: IDS.truckA,
+    plate: truckA.detail.plate_number,
+    station_id: IDS.stationN,
+    station_name: truckA.detail.destination_name ?? "АГЗС Актау · 12 мкр",
+    tank_id: IDS.tankN,
+    tank_code: "R-1",
+    shipped_at: iso(baseMs - 40 * 60_000),
+    waybill: "LPG-2026-00041",
+    shipped_liters: 16_580,
+    shipped_temp_c: 13.1,
+    route_name: `${truckA.detail.origin_name} → ${truckA.detail.destination_name}`,
+    departed_at: truckA.detail.departed_at ?? null,
+    arrived_at: null,
+    delivered_liters: truckA.cargo,
+    truck_temp_c: 14.4,
+    gps_lat: truckA.detail.lat ?? null,
+    gps_lon: truckA.detail.lon ?? null,
+    gps_at: truckA.detail.recorded_at ?? null,
+    gps_status: "ok",
+    quantity_sensor: "ok",
+    temp_sensor: "ok",
+    accepted_liters: null,
+    accepted_at: null,
+    dispensed_liters: 0,
+    fiscal_liters: 0,
+    fiscal_receipts: 0,
+    fiscal_amount_kzt: 0,
+    fiscal_period: "",
+    fiscal_updated_at: null,
+    operations: [],
+  };
+
+  const liveB: LpgSupply = {
+    supply_id: "SUP-2026-0042",
+    live: true,
+    status: "in_transit",
+    factory_id: IDS.factory,
+    factory_name: factory.name,
+    truck_id: IDS.truckB,
+    plate: truckB.detail.plate_number,
+    station_id: IDS.stationS,
+    station_name: truckB.detail.destination_name ?? "АГЗС Жетыбай",
+    tank_id: IDS.tankS,
+    tank_code: "R-1",
+    shipped_at: iso(baseMs - 70 * 60_000),
+    waybill: "LPG-2026-00042",
+    shipped_liters: 12_080,
+    shipped_temp_c: 12.9,
+    route_name: `${truckB.detail.origin_name} → ${truckB.detail.destination_name}`,
+    departed_at: truckB.detail.departed_at ?? null,
+    arrived_at: null,
+    delivered_liters: truckB.cargo,
+    truck_temp_c: 15.2,
+    gps_lat: truckB.detail.lat ?? null,
+    gps_lon: truckB.detail.lon ?? null,
+    gps_at: truckB.detail.recorded_at ?? null,
+    gps_status: "ok",
+    quantity_sensor: "ok",
+    temp_sensor: "ok",
+    accepted_liters: null,
+    accepted_at: null,
+    dispensed_liters: 0,
+    fiscal_liters: 0,
+    fiscal_receipts: 0,
+    fiscal_amount_kzt: 0,
+    fiscal_period: "",
+    fiscal_updated_at: null,
+    operations: [],
+  };
+
   return {
     simTimeMs: baseMs,
     factories: [factory],
     trucks: [truckA, truckB],
     stations,
+    supplies: [settled, liveA, liveB],
     batch,
     events: [],
     clockLabel: iso(baseMs),

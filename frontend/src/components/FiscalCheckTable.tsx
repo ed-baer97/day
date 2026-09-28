@@ -1,13 +1,32 @@
 import { fiscalCheck } from "../sim/engine";
 import type { StationDetail } from "../types";
-import { fiscalBadge, fiscalText, liters, tenge, timeHM } from "../format";
+import { dateTime, fiscalBadge, fiscalText, liters, tenge, timeHM } from "../format";
+import { SRC } from "../sources";
 
 /** Счётчик ТРК → чек на онлайн-ККМ → ОФД → КГД */
 export default function FiscalCheckTable({ station }: { station: StationDetail }) {
   const fc = fiscalCheck(station);
+  const updated = fc.pumps.map((p) => p.ofd_last_at).sort().at(-1);
 
   return (
     <div className="fiscal">
+      <p className="stage-vol">
+        По фискальным данным: <strong>{liters(fc.ofd_liters)}</strong>
+      </p>
+      <dl className="kv fiscal-meta">
+        <dt>Количество чеков</dt>
+        <dd>{fc.ofd_receipts}</dd>
+        <dt>Сумма</dt>
+        <dd>{tenge(fc.ofd_amount_kzt)}</dd>
+        <dt>Период</dt>
+        <dd>текущие сутки</dd>
+        <dt>Обновлено</dt>
+        <dd>{updated ? dateTime(updated) : "—"}</dd>
+      </dl>
+      <p className="src-line">
+        <span>Источник</span>
+        {SRC.fiscal}
+      </p>
       <div className="fiscal-chain">
         <div className="fiscal-step">
           <span>Счётчики ТРК</span>

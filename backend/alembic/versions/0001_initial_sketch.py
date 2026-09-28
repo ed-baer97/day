@@ -88,12 +88,34 @@ def upgrade() -> None:
         sa.Column("notes", sa.Text()),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
+    op.create_table(
+        "supplies",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("supply_id", sa.String(64), unique=True, nullable=False),
+        sa.Column("status", sa.String(32), server_default="loading"),
+        sa.Column("factory_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("factories.id")),
+        sa.Column("truck_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("trucks.id")),
+        sa.Column("station_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("stations.id")),
+        sa.Column("tank_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tanks.id")),
+        sa.Column("batch_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("batches.id")),
+        sa.Column("waybill", sa.String(64)),
+        sa.Column("shipped_at", sa.DateTime(timezone=True)),
+        sa.Column("shipped_liters", sa.Float()),
+        sa.Column("delivered_liters", sa.Float()),
+        sa.Column("accepted_liters", sa.Float()),
+        sa.Column("dispensed_liters", sa.Float()),
+        sa.Column("fiscal_liters", sa.Float()),
+        sa.Column("shipped_temp_c", sa.Float()),
+        sa.Column("delivered_temp_c", sa.Float()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
     # Remaining tables (dispensers, dispense_records, trips, positions,
     # trail_events, balance_snapshots, discrepancy_events, sales) —
     # see SQLAlchemy models in app/models/; autogenerate in MVP-1.
 
 
 def downgrade() -> None:
+    op.drop_table("supplies")
     op.drop_table("batches")
     op.drop_table("trucks")
     op.drop_table("tanks")

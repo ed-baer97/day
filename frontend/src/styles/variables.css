@@ -1195,4 +1195,185 @@ select {
   .nav-page {
     padding: 7px 12px;
   }
+  .supply-vols {
+    grid-template-columns: 1fr 1fr;
+  }
 }
+
+.supply-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.supply-pick {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.supply-pick.active {
+  border-color: var(--sea);
+  color: var(--sea);
+}
+.supply-vols {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin: 0 0 18px;
+}
+.supply-vol {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.supply-vol span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.supply-vol strong {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 500;
+}
+.supply-vol em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+.stage {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px 16px;
+  margin-bottom: 12px;
+}
+.stage-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.stage-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.stage-n {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--hover-fill);
+  color: var(--sea);
+  font-size: 12px;
+  font-weight: 700;
+  flex: none;
+}
+.stage-kicker {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stage-vol {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.stage-vol strong {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--ink);
+  margin-left: 6px;
+}
+.stage-delta {
+  margin: -4px 0 10px;
+  font-size: 13px;
+  color: var(--coral);
+}
+.stage-wait {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.src-line {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.src-line > span {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sea);
+}
+.src-tag {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--sea);
+}
+.col-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.column-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px 16px;
+}
+.stage .column-card {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+}
+.column-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.column-more {
+  margin-top: 10px;
+}
+.ops {
+  margin-top: 10px;
+  overflow-x: auto;
+}
+.tank-gauge {
+  align-items: flex-start;
+  margin-top: 8px;
+}
+.gauge-fields {
+  flex: 1;
+}
+.fiscal-meta {
+  margin-bottom: 4px;
+}
+.map-popup {
+  max-height: min(72vh, 560px);
+  overflow: auto;
+}
+.map-popup .stage-vol strong {
+  font-size: 22px;
+}
+

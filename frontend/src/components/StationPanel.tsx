@@ -74,8 +74,7 @@ export default function StationPanel({
                     {t.code} · {liters(t.actual_remainder_liters)} / {liters(t.capacity_liters)}
                   </span>
                   <span className="desc">
-                    источник: {t.level_source}
-                    {t.has_electronic_sensor ? " · EX-датчик" : " · поплавок"}
+                    источник: {t.level_source} · Rochester Junior · {t.phone_label}
                     {" · расчёт "}
                     {liters(t.calculated_remainder_liters)}
                   </span>

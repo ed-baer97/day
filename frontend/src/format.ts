@@ -1,4 +1,4 @@
-import type { FiscalStatus, StationBalance } from "./types";
+import type { FiscalStatus, LinkQuality, SensorStatus, StationBalance, SupplyStatus } from "./types";
 
 export function fiscalBadge(status: FiscalStatus) {
   if (status === "ok") return "ok";
@@ -57,4 +57,51 @@ export function timeHM(iso: string) {
 
 export function shortStationName(name: string) {
   return name.replace(/^АГЗС\s+/, "");
+}
+
+export function dateTime(iso?: string | null) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function celsius(v?: number | null) {
+  if (v == null || Number.isNaN(v)) return "—";
+  return `${v.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`;
+}
+
+/** Разница текущего объёма с предыдущим звеном, например «−80 л к отгрузке». */
+export function vsBase(current: number, base: number, what: string) {
+  const d = Math.round(current - base);
+  const text = `${d > 0 ? "+" : ""}${d.toLocaleString("ru-RU")} л`;
+  return `${text} к ${what}`;
+}
+
+export function columnLabel(code: string) {
+  const n = code.match(/(\d+)\s*$/)?.[1];
+  return n ? `Колонка №${n}` : code;
+}
+
+export function linkText(q: LinkQuality) {
+  if (q === "good") return "хорошая";
+  if (q === "fair") return "удовлетворительная";
+  return "слабая";
+}
+
+export function sensorText(s: SensorStatus) {
+  if (s === "ok") return "норма";
+  if (s === "warn") return "внимание";
+  return "нет связи";
+}
+
+export function supplyStatusText(status: SupplyStatus) {
+  if (status === "loading") return "погрузка";
+  if (status === "in_transit") return "в пути";
+  if (status === "unloading") return "слив";
+  if (status === "accepted") return "принято";
+  return "реализация";
 }

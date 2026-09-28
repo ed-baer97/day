@@ -2,10 +2,12 @@
  * Движение газовозов — копия рабочей схемы GazTrail (pitch) + LogHub:
  * 1) погрузка  2) полный OSRM-маршрут на карте  3) along(progress) по длине линии
  */
+import { columnLabel } from "../format";
 import type {
   BatchTrailEvent,
   FiscalCheck,
   FiscalStatus,
+  LpgSupply,
   PumpFiscalCheck,
   MapOverview,
   MapPoint,
@@ -165,6 +167,7 @@ function syncStationDerived(st: SimState) {
     const tank = s.detail.tanks[0];
     if (tank) {
       tank.calculated_remainder_liters = bal.book_remainder;
+      tank.last_measured_at = new Date(st.simTimeMs).toISOString();
       s.detail.remainder_liters = tank.actual_remainder_liters ?? bal.storage_actual;
       s.detail.tanks = [{ ...tank }];
     } else {
@@ -202,6 +205,98 @@ function recordDelivery(
   ].slice(0, 8);
   state.stats.delivery_trips_day += 1;
   state.stats.delivered_liters_day += vol;
+  acceptSupply(state, truck, vol, now);
+}
+
+function acceptSupply(state: SimState, truck: SimTruck, liters: number, now: string) {
+  const supply = state.supplies.find((s) => s.live && s.truck_id === truck.detail.id);
+  if (!supply) return;
+  const vol = Math.round(liters);
+  supply.delivered_liters = vol;
+  supply.accepted_liters = vol;
+  supply.accepted_at = now;
+  supply.arrived_at = supply.arrived_at ?? now;
+  supply.status = "accepted";
+  supply.live = false;
+  supply.gps_lat = truck.detail.lat ?? supply.gps_lat;
+  supply.gps_lon = truck.detail.lon ?? supply.gps_lon;
+  supply.gps_at = now;
+}
+
+function beginSupply(state: SimState, truck: SimTruck, station: StationDetail, shipped: number, now: string) {
+  for (const prev of state.supplies) {
+    if (prev.live && prev.truck_id === truck.detail.id) prev.live = false;
+  }
+  const seq = state.supplies.reduce((max, s) => {
+    const n = Number(s.supply_id.split("-").pop());
+    return Number.isFinite(n) ? Math.max(max, n) : max;
+  }, 40);
+  const tank = station.tanks[0];
+  const supply: LpgSupply = {
+    supply_id: `SUP-2026-${String(seq + 1).padStart(4, "0")}`,
+    live: true,
+    status: "loading",
+    factory_id: state.factories[0]?.id ?? "",
+    factory_name: truck.detail.origin_name ?? state.factories[0]?.name ?? "Завод",
+    truck_id: truck.detail.id,
+    plate: truck.detail.plate_number,
+    station_id: station.id,
+    station_name: station.name,
+    tank_id: tank?.id ?? "",
+    tank_code: tank?.code ?? "R-1",
+    shipped_at: now,
+    waybill: state.batch.trail_code,
+    shipped_liters: Math.round(shipped),
+    shipped_temp_c: 13.1,
+    route_name: `${truck.detail.origin_name ?? "Завод"} → ${truck.detail.destination_name ?? station.name}`,
+    departed_at: null,
+    arrived_at: null,
+    delivered_liters: Math.round(truck.cargo),
+    truck_temp_c: 14.4,
+    gps_lat: truck.detail.lat ?? null,
+    gps_lon: truck.detail.lon ?? null,
+    gps_at: now,
+    gps_status: "ok",
+    quantity_sensor: "ok",
+    temp_sensor: "ok",
+    accepted_liters: null,
+    accepted_at: null,
+    dispensed_liters: 0,
+    fiscal_liters: 0,
+    fiscal_receipts: 0,
+    fiscal_amount_kzt: 0,
+    fiscal_period: "",
+    fiscal_updated_at: null,
+    operations: [],
+  };
+  state.supplies = [supply, ...state.supplies].slice(0, 8);
+}
+
+function syncLiveSupplies(state: SimState) {
+  const now = new Date(state.simTimeMs).toISOString();
+  for (const supply of state.supplies) {
+    if (!supply.live || supply.accepted_liters != null) continue;
+    const truck = state.trucks.find((t) => t.detail.id === supply.truck_id);
+    if (!truck) continue;
+    const moving =
+      truck.phase === "loading" ||
+      truck.phase === "routing" ||
+      truck.phase === "in_transit" ||
+      truck.phase === "arrived";
+    if (moving) supply.delivered_liters = Math.round(truck.cargo);
+    supply.departed_at = truck.detail.departed_at ?? null;
+    if (truck.detail.arrived_at) supply.arrived_at = truck.detail.arrived_at;
+    supply.gps_lat = truck.detail.lat ?? null;
+    supply.gps_lon = truck.detail.lon ?? null;
+    supply.gps_at = truck.detail.recorded_at ?? now;
+    supply.gps_status = truck.detail.lat != null ? "ok" : "offline";
+    supply.status =
+      truck.phase === "unloading"
+        ? "unloading"
+        : truck.phase === "loading" || truck.phase === "routing"
+          ? "loading"
+          : "in_transit";
+  }
 }
 
 function recordSaleDrip(
@@ -248,7 +343,12 @@ function recordSaleDrip(
     }
     station.detail.sales_day_count += 1;
     station.detail.recent_fills = [
-      { liters: fillSize, occurred_at: now },
+      {
+        liters: fillSize,
+        occurred_at: now,
+        pump_code: columnLabel(pump?.code ?? "1"),
+        price_kzt_per_liter: d.price_kzt_per_liter,
+      },
       ...station.detail.recent_fills,
     ].slice(0, 10);
     const fills = station.detail.recent_fills;
@@ -483,6 +583,7 @@ function updateTruckA(state: SimState, truck: SimTruck, simDtMs: number) {
       ],
     };
     setPhase(truck, "loading");
+    beginSupply(state, truck, north.detail, truck.cargo + 80, now);
     snapToRoute(truck, now);
   }
 }
@@ -547,6 +648,7 @@ function updateTruckB(state: SimState, truck: SimTruck, simDtMs: number) {
     truck.routeProgress = 0;
     truck.detail.cargo_volume_liters = 12000;
     setPhase(truck, "loading");
+    beginSupply(state, truck, south.detail, truck.cargo + 80, now);
     snapToRoute(truck, now);
   }
 }
@@ -562,6 +664,7 @@ export function tick(state: SimState, wallDtMs: number, speed: number): SimState
     else updateTruckB(next, truck, simDt);
   }
 
+  syncLiveSupplies(next);
   syncStationDerived(next);
   return next;
 }

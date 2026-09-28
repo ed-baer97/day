@@ -3,13 +3,14 @@ import Dashboard from "./components/Dashboard";
 import Logo from "./components/Logo";
 import MapPopup from "./components/MapPopup";
 import MapView from "./components/MapView";
+import SupplyPage from "./components/SupplyPage";
 import { useToast } from "./components/Toast";
 import { IDS } from "./sim/seed";
 import { useSim } from "./sim/SimContext";
 import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
 
-type Page = "map" | "dashboard";
+type Page = "map" | "dashboard" | "supply";
 
 type Selection =
   | { kind: "truck"; id: string }
@@ -24,11 +25,17 @@ export default function App() {
   const [page, setPage] = useState<Page>("map");
   const [selection, setSelection] = useState<Selection>(null);
   const [dashStationId, setDashStationId] = useState<string | null>(null);
+  const [supplyId, setSupplyId] = useState<string | null>(IDS.supplyDemo);
   const dashRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     dashRef.current?.scrollTo(0, 0);
-  }, [dashStationId, page]);
+  }, [dashStationId, page, supplyId]);
+
+  function openSupply(id: string) {
+    setSupplyId(id);
+    setPage("supply");
+  }
 
   function openStationPage(id: string) {
     setDashStationId(id);
@@ -98,6 +105,13 @@ export default function App() {
           >
             Дашборд
           </button>
+          <button
+            type="button"
+            className={`nav-page${page === "supply" ? " active" : ""}`}
+            onClick={() => setPage("supply")}
+          >
+            Поставка
+          </button>
         </nav>
 
         <div className="topbar-actions">
@@ -142,9 +156,14 @@ export default function App() {
                 factoryName={factoryName}
                 onClose={() => setSelection(null)}
                 onOpenStation={openStationPage}
+                onOpenSupply={openSupply}
               />
             </div>
           )}
+        </main>
+      ) : page === "supply" ? (
+        <main className="page dash-page" ref={dashRef}>
+          <SupplyPage supplyId={supplyId} onSelect={setSupplyId} />
         </main>
       ) : (
         <main className="page dash-page" ref={dashRef}>
