@@ -61,12 +61,56 @@ export default function SupplyPage({
       </div>
 
       <VolumeStrip supply={supply} />
+      <SupplyChain supply={supply} />
       <FactoryStage supply={supply} />
       <TruckStage supply={supply} />
       <TankStage supply={supply} />
       <ColumnStage supply={supply} />
       <FiscalStage supply={supply} />
     </div>
+  );
+}
+
+function SupplyChain({ supply }: { supply: LpgSupply }) {
+  const steps = [
+    { label: "Завод", done: true, value: liters(supply.shipped_liters) },
+    {
+      label: "Газовоз",
+      done: supply.delivered_liters != null,
+      value: supply.delivered_liters == null ? "в пути" : liters(supply.delivered_liters),
+    },
+    {
+      label: "Резервуар",
+      done: supply.accepted_liters != null,
+      value: supply.accepted_liters == null ? "ожидание" : liters(supply.accepted_liters),
+    },
+    {
+      label: "Колонки",
+      done: supply.dispensed_liters > 0 || supply.accepted_liters != null,
+      value:
+        supply.dispensed_liters > 0 || supply.accepted_liters != null
+          ? liters(supply.dispensed_liters)
+          : "—",
+    },
+    {
+      label: "Фискал",
+      done: Boolean(supply.fiscal_updated_at),
+      value: supply.fiscal_updated_at ? liters(supply.fiscal_liters) : "—",
+    },
+  ];
+
+  return (
+    <ol className="supply-chain" aria-label="Цепочка поставки">
+      {steps.map((step, i) => (
+        <li key={step.label} className={`supply-chain-step${step.done ? " done" : ""}`}>
+          <span className="supply-chain-n">{i + 1}</span>
+          <div>
+            <strong>{step.label}</strong>
+            <em>{step.value}</em>
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 

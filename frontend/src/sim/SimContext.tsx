@@ -73,25 +73,6 @@ export function SimProvider({ children }: { children: ReactNode }) {
   const overview = useMemo(() => toMapOverview(state), [state]);
   const routes = useMemo(() => mapRoutes(state), [state]);
 
-  useEffect(() => {
-    (window as unknown as { __lpgDebug?: unknown }).__lpgDebug = {
-      phases: state.trucks.map((t) => ({
-        plate: t.detail.plate_number,
-        phase: t.phase,
-        progress: t.routeProgress,
-        routePts: t.route.length,
-        lat: t.detail.lat,
-        lon: t.detail.lon,
-      })),
-      routeLayers: routes.map((r) => ({
-        id: r.id,
-        planned: r.planned.length,
-        traveled: r.traveled.length,
-        plannedSample: r.planned.filter((_, i) => i % 40 === 0).slice(0, 8),
-      })),
-    };
-  }, [state, routes]);
-
   const value = useMemo(
     () => ({
       state,

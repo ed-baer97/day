@@ -1,28 +1,6 @@
-import type { StationBalance, StationDetail } from "../types";
+import type { StationDetail } from "../types";
 import { stationBalance } from "../sim/engine";
-
-function liters(v: number) {
-  return `${Math.round(v).toLocaleString("ru-RU")} л`;
-}
-
-function deltaLabel(d: number) {
-  if (Math.abs(d) < 0.5) return "0 л";
-  const sign = d > 0 ? "+" : "";
-  return `${sign}${Math.round(d).toLocaleString("ru-RU")} л`;
-}
-
-function statusBadge(status: StationBalance["status"]) {
-  if (status === "ok") return "ok";
-  if (status === "warn") return "warn";
-  return "danger";
-}
-
-function statusText(status: StationBalance["status"]) {
-  if (status === "ok") return "сходится";
-  if (status === "warn") return "погрешность";
-  if (status === "shortage") return "недостача";
-  return "излишек";
-}
+import { balBadge, balText, liters, signedLiters } from "../format";
 
 /** Три потока: доставлено · хранилище · колонки */
 export default function StationBalanceCard({
@@ -64,8 +42,8 @@ export default function StationBalanceCard({
           <strong>{liters(bal.book_remainder)}</strong>
           <em> книга</em>
         </span>
-        <span className={`badge ${statusBadge(bal.status)}`}>
-          Δ {deltaLabel(bal.delta)} · {statusText(bal.status)}
+        <span className={`badge ${balBadge(bal.status)}`}>
+          Δ {Math.abs(bal.delta) < 0.5 ? "0 л" : signedLiters(bal.delta)} · {balText(bal.status)}
         </span>
       </div>
     </div>

@@ -58,7 +58,26 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
       <header className="dash-hero">
         <p className="kicker">Сводка за сутки</p>
         <h2>Доставки и сверка АГЗС</h2>
+        <p className="dash-lede">
+          Один взгляд: сколько пришло, сколько ушло через колонки, где книга и КГД расходятся.
+        </p>
       </header>
+
+      {(mismatch > 0 || stats.gap_liters > 0) && (
+        <div className="dash-alert" role="status">
+          <strong>
+            {mismatch > 0
+              ? `${mismatch} АГЗС с расхождением в хранилище`
+              : "Хранилища сходятся"}
+          </strong>
+          <span>
+            КГД не видит {liters(stats.gap_liters)} · {tenge(stats.gap_kzt)}
+            {stats.unreceipted_liters
+              ? ` · без чека ${liters(stats.unreceipted_liters)}`
+              : ""}
+          </span>
+        </div>
+      )}
 
       <div className="dash-kpis">
         <div className="dash-kpi">
@@ -72,21 +91,21 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
           <em>{stats.fills_day} заправок</em>
         </div>
         <div className="dash-kpi">
-          <span>В работе</span>
+          <span>Газовозы в пути</span>
           <strong>{stats.trucks_in_transit}</strong>
-          <em>из {state.trucks.length} газовозов</em>
+          <em>из {state.trucks.length}</em>
         </div>
         <div className="dash-kpi">
-          <span>Расхождения в хранилище</span>
-          <strong className={mismatch ? "text-danger" : ""}>{mismatch}</strong>
-          <em>из {stats.stations_active} АГЗС</em>
-        </div>
-        <div className="dash-kpi">
-          <span>КГД не видит</span>
-          <strong className={stats.gap_liters ? "text-danger" : ""}>{liters(stats.gap_liters)}</strong>
+          <span>Фокус внимания</span>
+          <strong className={mismatch || stats.gap_liters ? "text-danger" : ""}>
+            {mismatch || (stats.gap_liters ? "КГД" : "0")}
+          </strong>
           <em>
-            {tenge(stats.gap_kzt)} · без чека {liters(stats.unreceipted_liters)} · ККМ офлайн{" "}
-            {stats.kkm_offline}
+            {mismatch
+              ? `расхождений · ${stats.stations_active} АГЗС`
+              : stats.gap_liters
+                ? liters(stats.gap_liters)
+                : "всё сходится"}
           </em>
         </div>
       </div>
