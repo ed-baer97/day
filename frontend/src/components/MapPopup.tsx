@@ -2,21 +2,9 @@ import type { StationDetail, TruckDetail } from "../types";
 import { fiscalCheck } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import { supplyForFactory, supplyForStation, supplyForTruck } from "../sim/supply";
-import { celsius, dateTime, fiscalBadge, fiscalText, liters, vsBase } from "../format";
+import { celsius, dateTime, fiscalBadge, fiscalText, liters, phaseLabel, vsBase } from "../format";
 import { SRC } from "../sources";
 import StationBalanceCard from "./StationBalanceCard";
-
-function phaseLabel(status?: string | null) {
-  const map: Record<string, string> = {
-    loading: "погрузка",
-    routing: "маршрут",
-    in_transit: "в пути",
-    arrived: "прибыл",
-    unloading: "слив",
-    idle: "ожидание",
-  };
-  return status ? map[status] ?? status : "—";
-}
 
 export default function MapPopup({
   truck,

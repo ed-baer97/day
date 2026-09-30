@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Dashboard from "./components/Dashboard";
-import Logo from "./components/Logo";
+import MapChrome from "./components/MapChrome";
 import MapPopup from "./components/MapPopup";
 import MapView from "./components/MapView";
+import SimDock from "./components/SimDock";
 import SupplyPage from "./components/SupplyPage";
+import TopBar, { type AppPage } from "./components/layout/TopBar";
 import { useToast } from "./components/Toast";
 import { IDS } from "./sim/seed";
 import { useSim } from "./sim/SimContext";
-import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
-
-type Page = "map" | "dashboard" | "supply";
 
 type Selection =
   | { kind: "truck"; id: string }
@@ -19,29 +18,18 @@ type Selection =
   | null;
 
 export default function App() {
-  const { theme, toggle } = useTheme();
   const toast = useToast();
   const { overview, routes, state } = useSim();
-  const [page, setPage] = useState<Page>("map");
+  const [page, setPage] = useState<AppPage>("map");
   const [selection, setSelection] = useState<Selection>(null);
   const [dashStationId, setDashStationId] = useState<string | null>(null);
   const [supplyId, setSupplyId] = useState<string | null>(IDS.supplyDemo);
   const dashRef = useRef<HTMLElement>(null);
+  const seenEvents = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     dashRef.current?.scrollTo(0, 0);
   }, [dashStationId, page, supplyId]);
-
-  function openSupply(id: string) {
-    setSupplyId(id);
-    setPage("supply");
-  }
-
-  function openStationPage(id: string) {
-    setDashStationId(id);
-    setPage("dashboard");
-  }
-  const seenEvents = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     for (const ev of state.events) {
@@ -78,68 +66,29 @@ export default function App() {
     }
   }
 
+  function navigate(next: AppPage) {
+    if (next === "dashboard") setDashStationId(null);
+    setPage(next);
+  }
+
+  function openSupply(id: string) {
+    setSupplyId(id);
+    setPage("supply");
+  }
+
+  function openStationPage(id: string) {
+    setDashStationId(id);
+    setPage("dashboard");
+  }
+
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <Logo size={32} className="mark" alt="Цифровой след LPG" />
-          <h1>Цифровой след LPG</h1>
-          <span>мок · Мангыстау</span>
-        </div>
-
-        <nav className="nav-pages" aria-label="Разделы">
-          <button
-            type="button"
-            className={`nav-page${page === "map" ? " active" : ""}`}
-            onClick={() => setPage("map")}
-          >
-            Карта
-          </button>
-          <button
-            type="button"
-            className={`nav-page${page === "dashboard" ? " active" : ""}`}
-            onClick={() => {
-              setDashStationId(null);
-              setPage("dashboard");
-            }}
-          >
-            Дашборд
-          </button>
-          <button
-            type="button"
-            className={`nav-page${page === "supply" ? " active" : ""}`}
-            onClick={() => setPage("supply")}
-          >
-            Поставка
-          </button>
-        </nav>
-
-        <div className="topbar-actions">
-          <div className="stats-chip">
-            <span>
-              рейсы <strong>{overview.active_trips}</strong>
-            </span>
-            <span>
-              события{" "}
-              <strong className={overview.open_events ? "text-danger" : ""}>
-                {overview.open_events}
-              </strong>
-            </span>
-          </div>
-          <button
-            className="btn secondary small"
-            type="button"
-            onClick={toggle}
-            aria-label={theme === "dark" ? "Светлая тема" : "Тёмная тема"}
-          >
-            {theme === "dark" ? "Светлая" : "Тёмная"}
-          </button>
-        </div>
-      </header>
+      <TopBar page={page} onNavigate={navigate} />
 
       {page === "map" ? (
         <main className="page land">
           <div className="map-stage">
+            <div className="map-vignette" aria-hidden />
             <MapView
               points={overview.points}
               routes={routes}
@@ -147,6 +96,8 @@ export default function App() {
               onSelect={onSelect}
             />
           </div>
+
+          <MapChrome selectedId={selection?.id} onSelect={onSelect} />
 
           {selection && (
             <div className="map-hud">
@@ -160,6 +111,8 @@ export default function App() {
               />
             </div>
           )}
+
+          <SimDock />
         </main>
       ) : page === "supply" ? (
         <main className="page dash-page" ref={dashRef}>
