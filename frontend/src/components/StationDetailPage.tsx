@@ -1,12 +1,11 @@
-import { useMemo } from "react";
-import { stationBalance, stationHourly } from "../sim/engine";
+import { stationBalance } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import { balBadge, balText, celsius, columnLabel, dateTime, linkText, liters, signedLiters, timeHM } from "../format";
 import { SRC } from "../sources";
-import { BarChart, LineChart } from "./Charts";
 import ColumnCard, { type ColumnOperation } from "./ColumnCard";
 import FiscalCheckTable from "./FiscalCheckTable";
 import StationBalanceCard from "./StationBalanceCard";
+import TankDeviceRows from "./TankDeviceRows";
 
 export default function StationDetailPage({
   stationId,
@@ -17,11 +16,6 @@ export default function StationDetailPage({
 }) {
   const { state } = useSim();
   const station = state.stations.find((s) => s.detail.id === stationId)?.detail;
-
-  const hourly = useMemo(
-    () => (station ? stationHourly(station, state.simTimeMs) : []),
-    [station, state.simTimeMs]
-  );
 
   if (!station) {
     return (
@@ -39,7 +33,6 @@ export default function StationDetailPage({
   const cap = tank?.capacity_liters ?? station.capacity_liters ?? 0;
   const stored = tank?.actual_remainder_liters ?? bal.storage_actual;
   const fillPct = cap ? Math.min(100, Math.round((stored / cap) * 100)) : 0;
-  const labels = hourly.map((h) => `${String(h.hour).padStart(2, "0")}:00`);
 
   return (
     <div className="dash">
@@ -57,6 +50,11 @@ export default function StationDetailPage({
           Δ {signedLiters(bal.delta)} · {balText(bal.status)}
         </span>
       </header>
+
+      <section className="dash-section">
+        <h3>Резервуары</h3>
+        <TankDeviceRows stationId={station.id} />
+      </section>
 
       <section className="dash-section">
         <StationBalanceCard station={station} />
@@ -120,22 +118,6 @@ export default function StationDetailPage({
       </section>
 
       <div className="st-grid">
-        <section className="dash-card st-wide">
-          <h3>Остаток в хранилище за сутки</h3>
-          <LineChart
-            labels={labels}
-            series={[
-              { name: "Факт (датчик)", color: "var(--sea)", values: hourly.map((h) => h.actual) },
-              {
-                name: "Книга (доставки − колонки)",
-                color: "var(--dust)",
-                values: hourly.map((h) => h.book),
-                dashed: true,
-              },
-            ]}
-          />
-        </section>
-
         <section className="dash-card">
           <h3>Цифровой уровень резервуара</h3>
           <div className="gauge">
@@ -160,60 +142,6 @@ export default function StationDetailPage({
               </span>
             </div>
           </div>
-        </section>
-
-        <section className="dash-card st-wide">
-          <h3>Через колонки по часам</h3>
-          <BarChart
-            labels={labels}
-            series={[{ name: "Колонки", color: "var(--sea)", values: hourly.map((h) => h.pumps) }]}
-          />
-        </section>
-
-        <section className="dash-card">
-          <h3>Расход</h3>
-          <dl className="kv">
-            <dt>Сегодня</dt>
-            <dd>{liters(station.consumption_day_liters)}</dd>
-            <dt>Неделя</dt>
-            <dd>{liters(station.consumption_week_liters)}</dd>
-            <dt>Месяц</dt>
-            <dd>{liters(station.consumption_month_liters)}</dd>
-            <dt>Заправок сегодня</dt>
-            <dd>{station.sales_day_count}</dd>
-            <dt>Средняя заправка</dt>
-            <dd>{station.avg_fill_liters} л</dd>
-          </dl>
-        </section>
-
-        <section className="dash-card">
-          <h3>Доставки газовозами</h3>
-          {station.recent_deliveries.length === 0 ? (
-            <p className="dash-muted">Сегодня доставок не было</p>
-          ) : (
-            <ul className="st-events">
-              {station.recent_deliveries.map((d, i) => (
-                <li key={`${d.occurred_at}-${i}`}>
-                  <strong>{liters(d.liters)}</strong>
-                  <span>{d.plate}</span>
-                  <em>{timeHM(d.occurred_at)}</em>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className="dash-card">
-          <h3>Последние заправки</h3>
-          <ul className="st-events">
-            {station.recent_fills.map((f, i) => (
-              <li key={`${f.occurred_at}-${i}`}>
-                <strong>{f.liters} л</strong>
-                <span>{f.pump_code}</span>
-                <em>{timeHM(f.occurred_at)}</em>
-              </li>
-            ))}
-          </ul>
         </section>
       </div>
     </div>

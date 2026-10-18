@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "./auth";
+import { useCatalog } from "./catalog";
+import AdminPage from "./components/AdminPage";
 import Dashboard from "./components/Dashboard";
+import Landing from "./components/Landing";
 import Logo from "./components/Logo";
 import MapPopup from "./components/MapPopup";
 import MapView from "./components/MapView";
@@ -10,7 +14,7 @@ import { useSim } from "./sim/SimContext";
 import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
 
-type Page = "map" | "dashboard" | "supply";
+type Page = "landing" | "map" | "dashboard" | "supply" | "admin";
 
 type Selection =
   | { kind: "truck"; id: string }
@@ -21,8 +25,10 @@ type Selection =
 export default function App() {
   const { theme, toggle } = useTheme();
   const toast = useToast();
-  const { overview, routes, state } = useSim();
-  const [page, setPage] = useState<Page>("map");
+  const { session, logout } = useAuth();
+  const { overview, state, applyFleetCards } = useSim();
+  const catalog = useCatalog();
+  const [page, setPage] = useState<Page>("landing");
   const [selection, setSelection] = useState<Selection>(null);
   const [dashStationId, setDashStationId] = useState<string | null>(null);
   const [supplyId, setSupplyId] = useState<string | null>(IDS.supplyDemo);
@@ -31,6 +37,10 @@ export default function App() {
   useEffect(() => {
     dashRef.current?.scrollTo(0, 0);
   }, [dashStationId, page, supplyId]);
+
+  useEffect(() => {
+    if (catalog.ready) applyFleetCards(catalog.stations, catalog.trucks);
+  }, [catalog.ready, catalog.stations, catalog.trucks, applyFleetCards]);
 
   function openSupply(id: string) {
     setSupplyId(id);
@@ -44,18 +54,42 @@ export default function App() {
   const seenEvents = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    const inside = page !== "landing" && session;
     for (const ev of state.events) {
-      if (!seenEvents.current.has(ev.id)) {
-        seenEvents.current.add(ev.id);
-        toast.err(`${ev.title}: ${ev.delta_liters ?? ""} л`);
-      }
+      if (seenEvents.current.has(ev.id)) continue;
+      seenEvents.current.add(ev.id);
+      if (inside) toast.err(`${ev.title}: ${ev.delta_liters ?? ""} л`);
     }
-  }, [state.events, toast]);
+  }, [state.events, toast, page, session]);
+
+  const mapPoints = useMemo(() => {
+    const hidden = new Set(catalog.stations.filter((row) => !row.is_active).map((row) => row.id));
+    const listed = new Set(catalog.stations.map((row) => row.id));
+    const points = overview.points.filter(
+      (point) =>
+        point.kind !== "truck" &&
+        !point.id.startsWith("alert-") &&
+        (point.kind !== "station" || !catalog.ready || listed.has(point.id))
+    );
+    return points.filter((point) => !hidden.has(point.id));
+  }, [overview.points, catalog.stations, catalog.ready]);
 
   const truck = useMemo(() => {
     if (selection?.kind !== "truck") return null;
-    return state.trucks.find((t) => t.detail.id === selection.id)?.detail ?? null;
-  }, [selection, state.trucks]);
+    const live = state.trucks.find((t) => t.detail.id === selection.id)?.detail;
+    if (live) return live;
+    const row = catalog.trucks.find((item) => item.id === selection.id);
+    if (!row) return null;
+    return {
+      id: row.id,
+      plate_number: row.plate_number,
+      capacity_liters: row.capacity_liters,
+      carrier_name: row.carrier_name,
+      status: row.status,
+      lat: row.lat,
+      lon: row.lon,
+    };
+  }, [selection, state.trucks, catalog.trucks]);
 
   const station = useMemo(() => {
     if (selection?.kind !== "station") return null;
@@ -76,6 +110,10 @@ export default function App() {
     if (point.kind === "truck" || point.kind === "station" || point.kind === "factory") {
       setSelection({ kind: point.kind, id: point.id });
     }
+  }
+
+  if (page === "landing" || !session) {
+    return <Landing onEnter={() => setPage("map")} />;
   }
 
   return (
@@ -112,13 +150,17 @@ export default function App() {
           >
             Поставка
           </button>
+          <button
+            type="button"
+            className={`nav-page${page === "admin" ? " active" : ""}`}
+            onClick={() => setPage("admin")}
+          >
+            Админка
+          </button>
         </nav>
 
         <div className="topbar-actions">
           <div className="stats-chip">
-            <span>
-              рейсы <strong>{overview.active_trips}</strong>
-            </span>
             <span>
               события{" "}
               <strong className={overview.open_events ? "text-danger" : ""}>
@@ -126,6 +168,20 @@ export default function App() {
               </strong>
             </span>
           </div>
+          <span className="who">{session.username}</span>
+          <button type="button" className="btn secondary small" onClick={() => setPage("landing")}>
+            На сайт
+          </button>
+          <button
+            type="button"
+            className="btn secondary small"
+            onClick={() => {
+              logout();
+              setPage("landing");
+            }}
+          >
+            Выйти
+          </button>
           <button
             className="btn secondary small"
             type="button"
@@ -141,8 +197,8 @@ export default function App() {
         <main className="page land">
           <div className="map-stage">
             <MapView
-              points={overview.points}
-              routes={routes}
+              points={mapPoints}
+              routes={[]}
               selectedId={selection?.id}
               onSelect={onSelect}
             />
@@ -160,6 +216,10 @@ export default function App() {
               />
             </div>
           )}
+        </main>
+      ) : page === "admin" ? (
+        <main className="page dash-page" ref={dashRef}>
+          <AdminPage />
         </main>
       ) : page === "supply" ? (
         <main className="page dash-page" ref={dashRef}>

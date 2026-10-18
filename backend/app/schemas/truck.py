@@ -14,6 +14,26 @@ class TruckOut(BaseModel):
     capacity_liters: float
     carrier_name: str | None
     status: str
+    lat: float | None = None
+    lon: float | None = None
+
+
+class TruckCreate(BaseModel):
+    plate_number: str = Field(min_length=1, max_length=32)
+    capacity_liters: float = Field(gt=0)
+    carrier_name: str | None = None
+    status: str = "idle"
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+
+
+class TruckUpdate(BaseModel):
+    plate_number: str | None = Field(default=None, min_length=1, max_length=32)
+    capacity_liters: float | None = Field(default=None, gt=0)
+    carrier_name: str | None = None
+    status: str | None = None
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
 
 
 class TruckTripOut(BaseModel):

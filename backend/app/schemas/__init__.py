@@ -5,10 +5,13 @@ from app.schemas.batch import BatchCreate, BatchOut, BatchTrailEventOut, BatchTr
 from app.schemas.common import HealthOut, MapOverviewOut, MapPoint
 from app.schemas.event import DiscrepancyEventOut, DiscrepancyResolveRequest
 from app.schemas.ingest import (
+    CalibrationIn,
     DispenseIngest,
     GpsIngest,
-    LevelIngest,
     IngestAck,
+    LevelIngest,
+    ReceiptIngest,
+    TankIngestState,
 )
 from app.schemas.station import StationDetailOut, StationOut, TankOut
 from app.schemas.truck import TruckDetailOut, TruckOut, TruckTripOut
@@ -35,5 +38,8 @@ __all__ = [
     "GpsIngest",
     "LevelIngest",
     "DispenseIngest",
+    "ReceiptIngest",
+    "CalibrationIn",
     "IngestAck",
+    "TankIngestState",
 ]

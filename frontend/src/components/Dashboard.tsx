@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useCatalog } from "../catalog";
 import { fiscalCheck, fleetStats, stationBalance, stationHourly } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import {
@@ -30,26 +31,32 @@ export default function Dashboard({
 
 function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
   const { state } = useSim();
-  const stats = useMemo(() => fleetStats(state), [state]);
+  const catalog = useCatalog();
+  const liveStations = useMemo(() => {
+    if (!catalog.ready) return state.stations;
+    const ids = new Set(catalog.stations.map((row) => row.id));
+    return state.stations.filter((station) => ids.has(station.detail.id));
+  }, [catalog.ready, catalog.stations, state.stations]);
+  const stats = useMemo(() => fleetStats({ ...state, stations: liveStations }), [state, liveStations]);
 
   const stations = useMemo(
     () =>
-      state.stations
+      liveStations
         .map((s) => ({ d: s.detail, bal: stationBalance(s.detail), fc: fiscalCheck(s.detail) }))
         .sort(
           (a, b) =>
             Math.abs(b.bal.delta) + b.fc.gap_liters - (Math.abs(a.bal.delta) + a.fc.gap_liters)
         ),
-    [state.stations]
+    [liveStations]
   );
 
   const hourlyTotal = useMemo(() => {
-    const perStation = state.stations.map((s) => stationHourly(s.detail, state.simTimeMs));
+    const perStation = liveStations.map((s) => stationHourly(s.detail, state.simTimeMs));
     const hours = perStation[0]?.length ?? 0;
     return Array.from({ length: hours }, (_, h) =>
       perStation.reduce((sum, rows) => sum + (rows[h]?.pumps ?? 0), 0)
     );
-  }, [state.stations, state.simTimeMs]);
+  }, [liveStations, state.simTimeMs]);
 
   const mismatch = stations.filter((s) => s.bal.status !== "ok").length;
 

@@ -20,6 +20,18 @@ class Settings(BaseSettings):
     balance_tolerance_liters: float = 50.0
     measurement_error_band_liters: float = 150.0
 
+    # Пусто — приём открыт (стенд). На площадке задайте INGEST_TOKEN.
+    ingest_token: str = ""
+
+    # Как часто сервер спрашивает привязанные Shelly по локальной сети.
+    shelly_poll_seconds: float = 15
+
+    # Вход в учёт. На площадке задайте свои ADMIN_USERNAME, ADMIN_PASSWORD и AUTH_SECRET.
+    admin_username: str = "admin"
+    admin_password: str = "lpg-admin"
+    auth_secret: str = "lpg-dev-secret-change-me"
+    auth_disabled: bool = False
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

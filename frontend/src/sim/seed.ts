@@ -268,6 +268,50 @@ function pos(route: Coord[], t: number) {
   return { lon, lat };
 }
 
+function atBaseline(station: SimStation, fillPercent: number | null): SimStation {
+  const detail = station.detail;
+  detail.receipts_day_liters = 0;
+  detail.consumption_day_liters = 0;
+  detail.consumption_week_liters = 0;
+  detail.consumption_month_liters = 0;
+  detail.sales_day_count = 0;
+  detail.delivery_count_day = 0;
+  detail.avg_fill_liters = 0;
+  detail.recent_fills = [];
+  detail.recent_deliveries = [];
+  detail.active_trucks = [];
+  for (const pump of detail.pumps) {
+    pump.counter_liters = 0;
+    pump.pouring_liters = 0;
+    pump.fills = 0;
+    pump.kkm_liters = 0;
+    pump.kkm_receipts = 0;
+    pump.kkm_amount_kzt = 0;
+    pump.ofd_liters = 0;
+    pump.ofd_receipts = 0;
+    pump.kkm_online = true;
+    pump.link_status = "ok";
+  }
+  if (fillPercent != null) {
+    detail.capacity_liters = 10000;
+    for (const tank of detail.tanks) tank.capacity_liters = 10000;
+  }
+  const capacity = detail.capacity_liters || detail.tanks[0]?.capacity_liters || 0;
+  const actual =
+    fillPercent != null
+      ? Math.round(capacity * fillPercent)
+      : (detail.tanks[0]?.actual_remainder_liters ?? detail.remainder_liters ?? 0);
+  detail.opening_remainder_liters = actual;
+  detail.remainder_liters = actual;
+  detail.balance_status = "ok";
+  detail.calculated_vs_actual_delta = 0;
+  for (const tank of detail.tanks) {
+    tank.actual_remainder_liters = actual;
+    tank.calculated_remainder_liters = actual;
+  }
+  return { ...station, detail, saleAcc: 0, unfiscal: undefined };
+}
+
 export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
   const factory: SimFactory = {
     id: IDS.factory,
@@ -684,14 +728,14 @@ export function createSeed(baseMs = Date.UTC(2026, 8, 26, 8, 0, 0)): SimState {
     simTimeMs: baseMs,
     factories: [factory],
     trucks: [truckA, truckB],
-    stations,
+    stations: stations.map((station) => atBaseline(station, station.detail.id === IDS.stationN ? 0.15 : null)),
     supplies: [settled, liveA, liveB],
     batch,
     events: [],
     clockLabel: iso(baseMs),
     stats: {
-      delivered_liters_day: 10000,
-      delivery_trips_day: 2,
+      delivered_liters_day: 0,
+      delivery_trips_day: 0,
     },
   };
 }

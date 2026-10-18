@@ -3,9 +3,10 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-from app.schemas.truck import TruckDetailOut, TruckOut, TruckTripOut
+from app.schemas.truck import TruckCreate, TruckDetailOut, TruckOut, TruckTripOut, TruckUpdate
+from app.services.catalog import TruckCard, create_truck, get_truck, list_trucks, update_truck
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
 
@@ -69,43 +70,89 @@ _DEMO_TRUCKS: list[dict] = [
 ]
 
 
+def _truck_out(truck: TruckCard) -> TruckOut:
+    return TruckOut(
+        id=truck.id,
+        plate_number=truck.plate_number,
+        capacity_liters=truck.capacity_liters,
+        carrier_name=truck.carrier_name,
+        status=truck.status,
+        lat=truck.lat,
+        lon=truck.lon,
+    )
+
+
 @router.get("", response_model=list[TruckOut])
-def list_trucks() -> list[TruckOut]:
-    return [
-        TruckOut(
-            id=t["id"],
-            plate_number=t["plate_number"],
-            capacity_liters=t["capacity_liters"],
-            carrier_name=t["carrier_name"],
-            status=t["status"],
+def list_truck_cards() -> list[TruckOut]:
+    return [_truck_out(truck) for truck in list_trucks()]
+
+
+@router.post("", response_model=TruckOut, status_code=201)
+def create_truck_card(body: TruckCreate) -> TruckOut:
+    return _truck_out(
+        create_truck(
+            plate_number=body.plate_number,
+            capacity_liters=body.capacity_liters,
+            carrier_name=body.carrier_name,
+            status=body.status,
+            lat=body.lat,
+            lon=body.lon,
         )
-        for t in _DEMO_TRUCKS
-    ]
+    )
+
+
+@router.patch("/{truck_id}", response_model=TruckOut)
+def patch_truck_card(truck_id: UUID, body: TruckUpdate) -> TruckOut:
+    fields = body.model_fields_set
+    return _truck_out(
+        update_truck(
+            truck_id,
+            plate_number=body.plate_number if "plate_number" in fields else None,
+            capacity_liters=body.capacity_liters if "capacity_liters" in fields else None,
+            carrier_name=body.carrier_name,
+            status=body.status if "status" in fields else None,
+            lat=body.lat,
+            lon=body.lon,
+            carrier_set="carrier_name" in fields,
+            lat_set="lat" in fields,
+            lon_set="lon" in fields,
+        )
+    )
 
 
 @router.get("/{truck_id}", response_model=TruckDetailOut)
-def get_truck(truck_id: UUID) -> TruckDetailOut:
-    for t in _DEMO_TRUCKS:
-        if t["id"] == truck_id:
-            trip = TruckTripOut(**t["active_trip"]) if t.get("active_trip") else None
+def get_truck_card(truck_id: UUID) -> TruckDetailOut:
+    truck = get_truck(truck_id)
+    for demo in _DEMO_TRUCKS:
+        if demo["id"] == truck_id:
+            trip = TruckTripOut(**demo["active_trip"]) if demo.get("active_trip") else None
             return TruckDetailOut(
-                id=t["id"],
-                plate_number=t["plate_number"],
-                capacity_liters=t["capacity_liters"],
-                carrier_name=t["carrier_name"],
-                status=t["status"],
-                lat=t["lat"],
-                lon=t["lon"],
-                recorded_at=t["recorded_at"],
-                supplier_name=t["supplier_name"],
-                origin_name=t["origin_name"],
-                destination_name=t["destination_name"],
-                cargo_volume_liters=t["cargo_volume_liters"],
-                departed_at=t["departed_at"],
-                arrived_at=t["arrived_at"],
-                trip_status=t["trip_status"],
-                route_geojson=t["route_geojson"],
+                id=truck.id,
+                plate_number=truck.plate_number,
+                capacity_liters=truck.capacity_liters,
+                carrier_name=truck.carrier_name,
+                status=truck.status,
+                lat=truck.lat if truck.lat is not None else demo["lat"],
+                lon=truck.lon if truck.lon is not None else demo["lon"],
+                recorded_at=demo["recorded_at"],
+                supplier_name=demo["supplier_name"],
+                origin_name=demo["origin_name"],
+                destination_name=demo["destination_name"],
+                cargo_volume_liters=demo["cargo_volume_liters"],
+                departed_at=demo["departed_at"],
+                arrived_at=demo["arrived_at"],
+                trip_status=demo["trip_status"],
+                route_geojson=demo["route_geojson"],
                 active_trip=trip,
-                recent_positions=t["recent_positions"],
+                recent_positions=demo["recent_positions"],
             )
-    raise HTTPException(status_code=404, detail="Truck not found")
+    return TruckDetailOut(
+        id=truck.id,
+        plate_number=truck.plate_number,
+        capacity_liters=truck.capacity_liters,
+        carrier_name=truck.carrier_name,
+        status=truck.status,
+        lat=truck.lat,
+        lon=truck.lon,
+        recent_positions=[],
+    )

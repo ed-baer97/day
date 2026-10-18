@@ -119,11 +119,17 @@ export default function MapView({
   routes = [],
   selectedId,
   onSelect,
+  boundsPadding = 60,
+  interactive = true,
+  markerStyle = "fleet",
 }: {
   points: MapPoint[];
   routes?: MapRouteLayer[];
   selectedId?: string | null;
   onSelect?: (point: MapPoint) => void;
+  boundsPadding?: number | { top: number; bottom: number; left: number; right: number };
+  interactive?: boolean;
+  markerStyle?: "fleet" | "dot";
 }) {
   const { theme } = useTheme();
   const ref = useRef<HTMLDivElement>(null);
@@ -137,6 +143,7 @@ export default function MapView({
   themeRef.current = theme;
   const pointsRef = useRef(points);
   pointsRef.current = points;
+  const interactiveRef = useRef(interactive);
   const lastCenteredId = useRef<string | null | undefined>(undefined);
 
   function centerOn(lon: number, lat: number, id: string) {
@@ -160,9 +167,12 @@ export default function MapView({
       zoom: 9,
       minZoom: 5,
       maxZoom: 17,
+      interactive: interactiveRef.current,
       attributionControl: { compact: true },
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    if (interactiveRef.current) {
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    }
     map.on("load", () => {
       ensureRouteLayers(map);
       setReady(true);
@@ -197,18 +207,19 @@ export default function MapView({
     const src = map.getSource("sim-routes") as GeoJSONSource | undefined;
     if (src) src.setData(routesToGeoJSON(routes));
 
-    const key = routes.map((r) => `${r.id}:${r.planned.length}`).join("|");
+    const padKey = typeof boundsPadding === "number" ? String(boundsPadding) : JSON.stringify(boundsPadding);
+    const key = `${routes.map((r) => `${r.id}:${r.planned.length}`).join("|")}@${padKey}`;
     if (key && key !== fittedRouteKey.current) {
       const bounds = new maplibregl.LngLatBounds();
       for (const r of routes) {
         for (const p of r.planned) bounds.extend(p as [number, number]);
       }
       if (!bounds.isEmpty()) {
-        map.fitBounds(bounds, { padding: 60, maxZoom: 11, duration: 700 });
+        map.fitBounds(bounds, { padding: boundsPadding, maxZoom: 11, duration: 700 });
         fittedRouteKey.current = key;
       }
     }
-  }, [routes, ready]);
+  }, [routes, ready, boundsPadding]);
 
   // Список / смена карточки — центр по selectedId (без слежения за движением)
   useEffect(() => {
@@ -240,7 +251,14 @@ export default function MapView({
       const isAlert = p.status === "alert" || p.name.startsWith("⚠");
       const selected = selectedId === p.id;
       let marker = markers.current.get(p.id);
-      const wantTruckWrap = p.kind === "truck" && !isAlert;
+      const asDot = markerStyle === "dot" && p.kind === "truck" && !isAlert;
+      const wantTruckWrap = p.kind === "truck" && !isAlert && !asDot;
+
+      if (marker && asDot && !marker.getElement().classList.contains("landing-dot")) {
+        marker.remove();
+        markers.current.delete(p.id);
+        marker = undefined;
+      }
 
       // После HMR старый button.map-marker без детей ломает якорь — пересоздаём
       if (marker && wantTruckWrap) {
@@ -257,7 +275,14 @@ export default function MapView({
       }
 
       if (!marker) {
-        if (wantTruckWrap) {
+        if (asDot) {
+          const el = document.createElement("span");
+          el.className = "landing-dot";
+          el.setAttribute("aria-hidden", "true");
+          marker = new maplibregl.Marker({ element: el, anchor: "center" })
+            .setLngLat([p.lon, p.lat])
+            .addTo(map);
+        } else if (wantTruckWrap) {
           const el = makeTruckEl(p.name, selected);
           el.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -286,7 +311,9 @@ export default function MapView({
       } else {
         marker.setLngLat([p.lon, p.lat]);
         const el = marker.getElement();
-        if (wantTruckWrap) {
+        if (asDot) {
+          el.className = "maplibregl-marker landing-dot";
+        } else if (wantTruckWrap) {
           el.className = `maplibregl-marker truck-wrap${selected ? " selected" : ""}`;
           const mark = el.querySelector(".map-marker");
           if (mark) mark.className = `map-marker truck${selected ? " selected" : ""}`;
@@ -298,7 +325,7 @@ export default function MapView({
         }
       }
     }
-  }, [points, selectedId, ready]);
+  }, [points, selectedId, ready, markerStyle]);
 
   return <div className="map-wrap" ref={ref} />;
 }
