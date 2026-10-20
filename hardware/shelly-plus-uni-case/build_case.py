@@ -11,6 +11,10 @@
 LM2596 — 57 x 20 x 13 мм, у задней стенки. С Shelly приходит 12 В,
 модуль отдаёт 5 В на клеммы датчика. Садится сверху, язычки держат
 длинные края платы. Левый торец — выход, правый — вход.
+
+Дно толще стенки. На горизонтальную DIN-рейку щитка корпус сажается
+отдельной пластиной: четыре винта М3 снизу, длинная сторона вертикально,
+паз 5 В сверху, датчик снизу. На пластине жёсткий крючок сверху и язычок снизу.
 """
 
 import math
@@ -30,7 +34,9 @@ def out_dir():
 
 # --- размеры, мм ---
 WALL = 2.8
-FLOOR = 2.6
+FLOOR = 4.5
+# Корень защёлок датчика и LM2596 утоплен в пол, снизу остаётся стенка.
+SEAT_ROOT = 1.5
 INNER = (124.0, 86.0, 30.0)  # x, y, z полости
 ROUND = 3.5
 
@@ -40,11 +46,11 @@ SEAT = 9.0          # ложемент над полом: язычок длин�
 PLATE = 1.4
 GAP = 0.35          # щель между краем платы и язычком
 BITE = 0.70         # носик заходит на текстолит
-LATCH_T = 1.2
-LATCH_W = 5.0
+LATCH_T = 2.2
+LATCH_W = 7.0
 LATCH_INSET = 8.0   # от короткого торца до язычка, там паяные провода
 HOOK_CLEAR = 0.15   # зазор между верхом платы и полкой защёлки
-HOOK_H = 0.80
+HOOK_H = 1.10
 RAMP_H = 1.05
 STOP_T = 1.5
 STOP_W = 4.2
@@ -64,18 +70,18 @@ BUCK_SEAT = 8.5
 BUCK_PLATE = 1.4
 BUCK_GAP = 0.30
 BUCK_BITE = 0.65
-BUCK_LATCH_T = 1.10
-BUCK_LATCH_W = 6.2
+BUCK_LATCH_T = 2.00
+BUCK_LATCH_W = 8.0
 BUCK_INSET = 11.0
 BUCK_TAB_FRONT = 1.35
-BUCK_TAB_BACK = 0.85
+BUCK_TAB_BACK = 0.35
 BUCK_HOOK_CLEAR = 0.15
-BUCK_HOOK_H = 0.75
+BUCK_HOOK_H = 1.00
 BUCK_RAMP_H = 1.00
 BUCK_END_GAP = 0.50
 BUCK_STOP_T = 1.45
 BUCK_STOP_W = 3.8
-BUCK_WALL_GAP = 0.55
+BUCK_WALL_GAP = 0.25
 # Зазор между верхом клемм и передним язычком каретки.
 BUCK_TERM_CLEAR = 4.6
 
@@ -88,6 +94,30 @@ BOSS_D = 8.0
 BOSS_HOLE = 2.7
 LID_HOLE = 3.4
 MOUNT_HOLE = 4.5
+
+# Отдельная пластина на горизонтальную DIN-рейку щитка (TH35×7.5).
+# Рейка вдоль Y. В щите X — вертикаль: больший X сверху.
+# Пластина прижимается к дну снаружи, рейка ложится на её внешнюю грань.
+BRACKET_T = 3.2
+SCREW_D = 2.7         # глухое отверстие в дне под саморез М3
+SCREW_CLEAR = 3.4     # сквозное отверстие в пластине
+SCREW_DEPTH = 3.2     # не прорезает пол: остаётся 1.3 мм
+DIN_W = 35.0
+DIN_LIP = 1.0
+DIN_EDGE = 0.55       # спинка паза снаружи от кромки, с запасом на допуск рейки
+DIN_TOOTH = 1.85      # носик заходит под кромку
+DIN_SEAT = 1.70       # полка под кромкой: кромка 1 мм, запас 0.7 мм
+MOUTH = 2.90         # скос ниже полки, по нему кромка заходит в паз
+MOUTH_OPEN = 1.20     # низ скоса шире рейки, снаружи от кромки
+CLIP_LEN = 18.0
+CLIP_Z0 = -16.8       # низ защёлки от лица рейки: язычок длинный и мягкий
+CLIP_IN = 0.55        # заход в толщу пластины, чтобы булево слило тела
+HOOK_BACK = 3.2
+TOWER_W = 2.5
+SPRING_T = 1.15
+SPRING_W = 8.0
+BACKSTOP_GAP = 2.60   # ход язычка больше захода носика
+BACKSTOP_T = 1.8
 
 
 def scene_mm():
@@ -207,6 +237,28 @@ def profile_solid(name, x0, x1, yz):
     return obj
 
 
+def profile_solid_y(name, y0, y1, xz):
+    """Тело выдавливанием профиля (x, z) вдоль Y. Нормали наружу."""
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    bm = bmesh.new()
+    v0 = [bm.verts.new((x, y0, z)) for x, z in xz]
+    v1 = [bm.verts.new((x, y1, z)) for x, z in xz]
+    bm.verts.ensure_lookup_table()
+    n = len(xz)
+    bm.faces.new(v0)
+    bm.faces.new(list(reversed(v1)))
+    for i in range(n):
+        j = (i + 1) % n
+        bm.faces.new((v0[i], v0[j], v1[j], v1[i]))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    return obj
+
+
 def shelly_seat():
     """Левый нижний угол платы. Провода смотрят влево, на клеммы."""
     px = WALL + INNER[0] - 16.0 - PCB[0]
@@ -224,26 +276,39 @@ def _latch_ys(edge_y, side):
     return y_in, y_out, y_nose, y_tip
 
 
-def build_latch(name, x0, edge_y, side):
-    """Язычок: полка ловит край платы, сверху скос, снаружи упор для ногтя."""
-    y_in, y_out, y_nose, y_tip = _latch_ys(edge_y, side)
-    z0 = FLOOR - 0.45
-    z_hook0 = FLOOR + SEAT + PCB[2] + HOOK_CLEAR
-    z_hook1 = z_hook0 + HOOK_H
-    z_top = z_hook1 + RAMP_H
-    z_tab = z_top - 2.0
-    yz = [
-        (y_in, z0),
+def _rooted_latch(y_in, y_out, y_nose, y_tip, side, tab, z_hook0, z_hook1, z_top, z_tab):
+    """Язычок с широкой пяткой внутри пола. Выше пола толщина прежняя, он гнётся."""
+    z_neck = FLOOR + 0.4
+    y_in_foot = y_in - side * 1.1
+    y_out_foot = y_out + side * 0.25
+    return [
+        (y_in_foot, SEAT_ROOT),
+        (y_in, z_neck),
         (y_in, z_hook0),
         (y_nose, z_hook0),
         (y_nose, z_hook1),
         (y_tip, z_top),
-        (y_out + side * 2.0, z_top),
-        (y_out + side * 0.45, z_tab),
+        (y_out + side * tab, z_top),
+        (y_out + side * min(0.45, tab * 0.55), z_tab),
         (y_out, z_tab),
-        (y_out, z0),
+        (y_out, z_neck),
+        (y_out_foot, SEAT_ROOT),
     ]
-    return profile_solid(name, x0, x0 + LATCH_W, yz)
+
+
+def build_latch(name, x0, edge_y, side):
+    """Язычок: полка ловит край платы, сверху скос, снаружи упор для ногтя."""
+    y_in, y_out, y_nose, y_tip = _latch_ys(edge_y, side)
+    z_hook0 = FLOOR + SEAT + PCB[2] + HOOK_CLEAR
+    z_hook1 = z_hook0 + HOOK_H
+    z_top = z_hook1 + RAMP_H
+    z_tab = z_top - 2.0
+    return profile_solid(
+        name,
+        x0,
+        x0 + LATCH_W,
+        _rooted_latch(y_in, y_out, y_nose, y_tip, side, 2.0, z_hook0, z_hook1, z_top, z_tab),
+    )
 
 
 def add_shelly_carriage(body):
@@ -259,7 +324,7 @@ def add_shelly_carriage(body):
         x1 + END_GAP + STOP_T,
         py - GAP - LATCH_T - 2.3,
         y1 + GAP + LATCH_T + 2.3,
-        FLOOR - 0.45,
+        SEAT_ROOT,
         z_plate,
     )
     parts = [plate]
@@ -289,7 +354,7 @@ def add_shelly_carriage(body):
             spans = nxt
         for s0, s1 in spans:
             if s1 - s0 > 0.4:
-                parts.append(box("skirt", s0, s1, y_a, y_b, z_plate - 0.25, FLOOR + SEAT))
+                parts.append(box("skirt", s0, s1, y_a, y_b, SEAT_ROOT, FLOOR + SEAT))
 
     y_in_s, y_out_s, _, _ = _latch_ys(py, -1)
     y_in_n, y_out_n, _, _ = _latch_ys(y1, +1)
@@ -305,7 +370,7 @@ def add_shelly_carriage(body):
         _, y_out, _, _ = _latch_ys(y_edge, side)
         y_far = y_edge - side * STOP_W
         parts.append(
-            box("end_stop", x0, x0 + STOP_T, y_out, y_far, z_plate - 0.25, z_pcb_top + 0.45)
+            box("end_stop", x0, x0 + STOP_T, y_out, y_far, SEAT_ROOT, z_pcb_top + 0.45)
         )
 
     for part in parts[1:]:
@@ -392,25 +457,18 @@ def _buck_ys(edge_y, side):
 
 
 def build_buck_latch(name, x0, edge_y, side, tab):
-    """Язычок по длинному краю LM2596. Носик на текстолит, сверху скос."""
+    """Язычок по длинному краю LM2596. Носик на текстолит, пятка внутри пола."""
     y_in, y_out, y_nose, y_tip = _buck_ys(edge_y, side)
-    z0 = FLOOR - 0.40
     z_hook0 = FLOOR + BUCK_SEAT + BUCK[2] + BUCK_HOOK_CLEAR
     z_hook1 = z_hook0 + BUCK_HOOK_H
     z_top = z_hook1 + BUCK_RAMP_H
     z_tab = z_top - 1.55
-    yz = [
-        (y_in, z0),
-        (y_in, z_hook0),
-        (y_nose, z_hook0),
-        (y_nose, z_hook1),
-        (y_tip, z_top),
-        (y_out + side * tab, z_top),
-        (y_out + side * 0.32, z_tab),
-        (y_out, z_tab),
-        (y_out, z0),
-    ]
-    return profile_solid(name, x0, x0 + BUCK_LATCH_W, yz)
+    return profile_solid(
+        name,
+        x0,
+        x0 + BUCK_LATCH_W,
+        _rooted_latch(y_in, y_out, y_nose, y_tip, side, tab, z_hook0, z_hook1, z_top, z_tab),
+    )
 
 
 def add_buck_cradle(body):
@@ -432,7 +490,7 @@ def add_buck_cradle(body):
         x1 + BUCK_END_GAP + BUCK_STOP_T + 0.45,
         front - 0.40,
         back,
-        FLOOR - 0.40,
+        SEAT_ROOT,
         z_plate,
     )
     parts = [plate]
@@ -464,7 +522,7 @@ def add_buck_cradle(body):
             spans = nxt
         for s0, s1 in spans:
             if s1 - s0 > 0.4:
-                parts.append(box("buck_skirt", s0, s1, y_a, y_b, z_plate - 0.2, z_pcb))
+                parts.append(box("buck_skirt", s0, s1, y_a, y_b, SEAT_ROOT, z_pcb))
 
     y_in_f, y_out_f, _, _ = _buck_ys(y0, -1)
     y_in_b, y_out_b, _, _ = _buck_ys(y1, +1)
@@ -486,7 +544,7 @@ def add_buck_cradle(body):
                 sx + BUCK_STOP_T,
                 y_out,
                 y_far,
-                z_plate - 0.2,
+                SEAT_ROOT,
                 z_pcb_top + 0.40,
             )
         )
@@ -507,6 +565,209 @@ def to_reference(obj):
         owner.objects.unlink(obj)
     col.objects.link(obj)
     return obj
+
+
+def din_rail_xs():
+    """Кромки горизонтальной планки. Меньший X — низ корпуса в щите."""
+    ox, _oy, _oz = outer_size()
+    center = ox / 2
+    return center - DIN_W / 2, center + DIN_W / 2
+
+
+def din_clip_ys(length):
+    """Две защёлки вдоль горизонтальной планки."""
+    gap = (length - 2 * CLIP_LEN) / 3
+    return (gap, 2 * gap + CLIP_LEN)
+
+
+def bracket_screw_xy():
+    """Четыре винта по углам пластины, мимо крючков и рейки."""
+    ox, oy, _oz = outer_size()
+    return (
+        (36.0, 12.0),
+        (36.0, oy - 12.0),
+        (ox - 36.0, 12.0),
+        (ox - 36.0, oy - 12.0),
+    )
+
+
+def _on_bracket(z):
+    """Z от лица рейки переводит на внешнюю грань пластины."""
+    return z - BRACKET_T
+
+
+def _seat_z():
+    """Полка, которая держит кромку. Кромка занимает z от 0 до -DIN_LIP."""
+    return -DIN_SEAT
+
+
+def _mouth_z():
+    return _seat_z() - MOUTH
+
+
+def _fixed_profile(rail_top):
+    """Жёсткий крючок: паз над полкой и скос, по которому кромка в него входит."""
+    x_wall = rail_top + DIN_EDGE
+    x_outer = x_wall + HOOK_BACK
+    x_tip = rail_top - DIN_TOOTH
+    x_open = rail_top + MOUTH_OPEN
+    z_seat = _on_bracket(_seat_z())
+    z_mouth = _on_bracket(_mouth_z())
+    return [
+        (x_outer, _on_bracket(CLIP_IN)),
+        (x_wall, _on_bracket(CLIP_IN)),
+        (x_wall, z_seat),
+        (x_tip, z_seat),
+        (x_open, z_mouth),
+        (x_wall, z_mouth),
+        (x_wall, _on_bracket(CLIP_Z0)),
+        (x_outer, _on_bracket(CLIP_Z0)),
+    ]
+
+
+def _spring_profile(rail_bottom):
+    """Язычок. Верх — только носик, в дно он не врастает и может отойти наружу."""
+    x_wall = rail_bottom - DIN_EDGE
+    x_outer = x_wall - SPRING_T
+    x_tip = rail_bottom + DIN_TOOTH
+    x_open = rail_bottom - MOUTH_OPEN
+    z_seat = _on_bracket(_seat_z())
+    z_mouth = _on_bracket(_mouth_z())
+    z_root = _on_bracket(CLIP_Z0 + 1.25)
+    return [
+        (x_outer, z_seat),
+        (x_wall, z_seat),
+        (x_tip, z_seat),
+        (x_open, z_mouth),
+        (x_wall, z_mouth),
+        (x_wall, z_root),
+        (x_outer, z_root),
+    ]
+
+
+def _din_fixed_hook(y0, rail_top):
+    """Жёсткий крючок сверху: им корпус цепляют за верхнюю кромку планки."""
+    return profile_solid_y(
+        "din_fixed",
+        y0,
+        y0 + CLIP_LEN,
+        _fixed_profile(rail_top),
+    )
+
+
+def _din_spring(y0, rail_bottom):
+    """Язычок снизу. Носик не приварен к дну, гнётся от нижней перемычки."""
+    x_wall = rail_bottom - DIN_EDGE
+    x_outer = x_wall - SPRING_T
+    finger = profile_solid_y(
+        "din_finger",
+        y0 + (CLIP_LEN - SPRING_W) / 2,
+        y0 + (CLIP_LEN + SPRING_W) / 2,
+        _spring_profile(rail_bottom),
+    )
+    bar = box(
+        "din_bar",
+        x_outer - 1.35,
+        x_wall + 0.15,
+        y0,
+        y0 + CLIP_LEN,
+        _on_bracket(CLIP_Z0),
+        _on_bracket(CLIP_Z0 + 2.55),
+    )
+    boolean(bar, finger, "UNION")
+    # Башни не выходят на торец и подошву планки, иначе шов остаётся открытым.
+    inset = 0.45
+    for side in (inset, CLIP_LEN - TOWER_W - inset):
+        tower = box(
+            "din_tower",
+            x_outer,
+            x_wall,
+            y0 + side,
+            y0 + side + TOWER_W,
+            _on_bracket(CLIP_Z0 + 0.5),
+            _on_bracket(CLIP_IN),
+        )
+        boolean(bar, tower, "UNION")
+    return bar
+
+
+def _din_backstop(y0, rail_bottom):
+    x1 = rail_bottom - DIN_EDGE - SPRING_T - BACKSTOP_GAP
+    return box(
+        "din_stop",
+        x1 - BACKSTOP_T,
+        x1,
+        y0,
+        y0 + CLIP_LEN,
+        _on_bracket(CLIP_Z0),
+        _on_bracket(CLIP_IN),
+    )
+
+
+def bracket_plate_bounds():
+    """Пластина накрывает крючки и четыре винта, не выходя за дно."""
+    ox, oy, _oz = outer_size()
+    xs = [p[0] for p in bracket_screw_xy()]
+    ys = [p[1] for p in bracket_screw_xy()]
+    rail_bottom, rail_top = din_rail_xs()
+    spring_out = rail_bottom - DIN_EDGE - SPRING_T - BACKSTOP_GAP - BACKSTOP_T
+    fixed_out = rail_top + DIN_EDGE + HOOK_BACK
+    clip_ys = din_clip_ys(oy)
+    x0 = min(min(xs) - 7.0, spring_out - 1.6)
+    x1 = max(max(xs) + 7.0, fixed_out + 1.6)
+    y0 = min(min(ys) - 6.0, min(clip_ys) - 2.0)
+    y1 = max(max(ys) + 6.0, max(clip_ys) + CLIP_LEN + 2.0)
+    if x0 < 1 or y0 < 1 or x1 > ox - 1 or y1 > oy - 1:
+        raise RuntimeError("пластина DIN не помещается на дно")
+    return x0, x1, y0, y1
+
+
+def build_bracket():
+    """Отдельная деталь: пластина с защёлками. Прижимается к дну снаружи."""
+    x0, x1, y0, y1 = bracket_plate_bounds()
+    plate = box("bracket_plate", x0, x1, y0, y1, -BRACKET_T, 0.0)
+    _ox, oy, _oz = outer_size()
+    rail_bottom, rail_top = din_rail_xs()
+    for cy in din_clip_ys(oy):
+        boolean(plate, _din_fixed_hook(cy, rail_top), "UNION")
+        boolean(plate, _din_spring(cy, rail_bottom), "UNION")
+        boolean(plate, _din_backstop(cy, rail_bottom), "UNION")
+    for x, y in bracket_screw_xy():
+        hole = cyl("bracket_hole", (x, y), -BRACKET_T - 0.4, SCREW_CLEAR, BRACKET_T + 0.8)
+        boolean(plate, hole, "DIFFERENCE")
+    plate.name = "DIN_Bracket"
+    return plate
+
+
+def add_bracket_seats(body):
+    """Глухие отверстия под саморезы пластины. В полость не выходят."""
+    for x, y in bracket_screw_xy():
+        hole = cyl("bracket_screw", (x, y), -0.3, SCREW_D, SCREW_DEPTH + 0.3)
+        boolean(body, hole, "DIFFERENCE")
+    return body
+
+
+def build_din_marker():
+    """Макет горизонтальной планки. В STL не входит."""
+    _ox, oy, _oz = outer_size()
+    rail_bottom, rail_top = din_rail_xs()
+    lip = DIN_LIP
+    flange = 4.6
+    face = -BRACKET_T
+    z_in = face - (7.5 - lip)
+    xz = [
+        (rail_bottom, face - 0.04),
+        (rail_top, face - 0.04),
+        (rail_top, face - lip),
+        (rail_top - flange, face - lip),
+        (rail_top - flange, z_in),
+        (rail_bottom + flange, z_in),
+        (rail_bottom + flange, face - lip),
+        (rail_bottom, face - lip),
+    ]
+    rail = profile_solid_y("DIN_rail", -18.0, oy + 18.0, xz)
+    rail.name = "DIN_TH35"
+    return to_reference(rail)
 
 
 def build_base():
@@ -571,6 +832,8 @@ def build_base():
         (WALL + 2, USB_SLOT[0], USB_SLOT[1] + 2),
     )
     boolean(body, usb, "DIFFERENCE")
+
+    add_bracket_seats(body)
 
     body.name = "Case_Base"
     return body
@@ -674,12 +937,41 @@ def check_layout():
         raise RuntimeError("LM2596 не помещается по Y")
     if bz + BUCK_H > cavity_z1 - 6:
         raise RuntimeError("LM2596 упирается в крышку")
-    if front < shelly_top + 2.0:
+    if front < shelly_top + 1.0:
         raise RuntimeError("каретка LM2596 пересекает каретку Shelly")
     if ty < WALL + 4 or ty + span > front - (BUCK_TERM_CLEAR - 0.05):
         raise RuntimeError("клеммы пересекают стенку или LM2596")
     if not (bx < tx + TERM[0] and bx + BUCK[0] > sx):
         raise RuntimeError("торцы LM2596 не смотрят на клеммы и Shelly")
+    ox, oy, _oz = outer_size()
+    rail_bottom, rail_top = din_rail_xs()
+    spring_out = rail_bottom - DIN_EDGE - SPRING_T - BACKSTOP_GAP - BACKSTOP_T
+    fixed_out = rail_top + DIN_EDGE + HOOK_BACK
+    if spring_out < 1 or fixed_out > ox - 1:
+        raise RuntimeError("защёлка DIN вылезает за габарит дна")
+    for y0 in din_clip_ys(oy):
+        if y0 < 4 or y0 + CLIP_LEN > oy - 4:
+            raise RuntimeError("защёлка DIN вылезает за торец дна")
+    if SCREW_DEPTH > FLOOR - 1.0:
+        raise RuntimeError("винт пластины прорезает дно")
+    px0, px1, py0, py1 = bracket_plate_bounds()
+    for x, y in bracket_screw_xy():
+        if not (px0 + 3 < x < px1 - 3 and py0 + 3 < y < py1 - 3):
+            raise RuntimeError("винт пластины вышел за её край")
+        if spring_out - 1 < x < fixed_out + 1 and min(din_clip_ys(oy)) - 1 < y < max(din_clip_ys(oy)) + CLIP_LEN + 1:
+            raise RuntimeError("винт попадает в защёлку")
+    # Кромка 1 мм должна входить в паз и оставаться за носиком.
+    if not (DIN_LIP + 0.35 < DIN_SEAT < DIN_LIP + 1.1):
+        raise RuntimeError("паз DIN не держит кромку")
+    if DIN_TOOTH < 1.5:
+        raise RuntimeError("носик DIN слишком короткий")
+    if MOUTH < DIN_EDGE + DIN_TOOTH:
+        raise RuntimeError("скос DIN круче 45° и не напечатается")
+    if BACKSTOP_GAP < DIN_TOOTH + 0.4:
+        raise RuntimeError("язычку DIN некуда отогнуться")
+    free = _seat_z() - (CLIP_Z0 + 2.55)
+    if free < 11:
+        raise RuntimeError("язычок DIN слишком короткий и жёсткий")
 
 
 def main():
@@ -692,14 +984,18 @@ def main():
 
     base = build_base()
     lid = build_lid(0)
+    bracket = build_bracket()
     marker = build_shelly_marker()
     buck = build_buck_marker()
+    rail = build_din_marker()
     base.data.materials.append(plastic("PETG_base", (0.75, 0.78, 0.80, 1)))
     lid.data.materials.append(plastic("PETG_lid", (0.82, 0.84, 0.86, 1)))
+    bracket.data.materials.append(plastic("PETG_bracket", (0.55, 0.62, 0.58, 1)))
     marker.data.materials.append(plastic("FR4", (0.07, 0.22, 0.12, 1)))
     buck.data.materials.append(plastic("LM2596_blue", (0.08, 0.25, 0.62, 1)))
+    rail.data.materials.append(plastic("DIN_zinc", (0.62, 0.64, 0.66, 1)))
 
-    for obj in (base, lid, marker, buck):
+    for obj in (base, lid, bracket, marker, buck, rail):
         for poly in obj.data.polygons:
             poly.use_smooth = False
 
@@ -724,14 +1020,22 @@ def main():
         f"x {tx:.2f}..{tx + TERM[0]:.2f}",
         f"y {ty:.2f}..{ty + span:.2f}",
     )
-    print("BOUNDARY", boundary_edges(base), boundary_edges(lid))
+    print(
+        "DIN",
+        f"x {din_rail_xs()[0]:.2f}..{din_rail_xs()[1]:.2f}",
+        f"floor {FLOOR:.1f}",
+        "clips",
+        " ".join(f"{y:.1f}" for y in din_clip_ys(outer_size()[1])),
+    )
+    print("BOUNDARY", boundary_edges(base), boundary_edges(lid), boundary_edges(bracket))
 
-    frame_camera((base, lid, marker, buck))
+    frame_camera((base, lid, bracket, marker, buck, rail))
 
     blend_path = os.path.join(folder, "shelly_plus_uni_case.blend")
     bpy.ops.wm.save_as_mainfile(filepath=blend_path)
     export_stl(os.path.join(folder, "case_base.stl"), base)
     export_stl(os.path.join(folder, "case_lid.stl"), lid)
+    export_stl(os.path.join(folder, "din_bracket.stl"), bracket)
     print("SAVED", blend_path)
 
 
