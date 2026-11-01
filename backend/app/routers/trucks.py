@@ -3,10 +3,17 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
 from app.schemas.truck import TruckCreate, TruckDetailOut, TruckOut, TruckTripOut, TruckUpdate
-from app.services.catalog import TruckCard, create_truck, get_truck, list_trucks, update_truck
+from app.services.catalog import (
+    TruckCard,
+    create_truck,
+    delete_truck,
+    get_truck,
+    list_trucks,
+    update_truck,
+)
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
 
@@ -118,6 +125,12 @@ def patch_truck_card(truck_id: UUID, body: TruckUpdate) -> TruckOut:
             lon_set="lon" in fields,
         )
     )
+
+
+@router.delete("/{truck_id}", status_code=204)
+def remove_truck_card(truck_id: UUID) -> Response:
+    delete_truck(truck_id)
+    return Response(status_code=204)
 
 
 @router.get("/{truck_id}", response_model=TruckDetailOut)

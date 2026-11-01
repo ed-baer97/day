@@ -46,9 +46,51 @@ class Tank(Base):
     actual_remainder_liters: Mapped[float | None] = mapped_column(Float)
     calculated_remainder_liters: Mapped[float | None] = mapped_column(Float)
     level_source: Mapped[LevelSource] = mapped_column(
-        Enum(LevelSource, name="level_source"), default=LevelSource.manual
+        Enum(LevelSource, name="level_source", native_enum=False), default=LevelSource.manual
     )
     last_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ingest_token: Mapped[str | None] = mapped_column(String(128), unique=True)
+    cal_low_volts: Mapped[float | None] = mapped_column(Float)
+    cal_low_percent: Mapped[float | None] = mapped_column(Float)
+    cal_high_volts: Mapped[float | None] = mapped_column(Float)
+    cal_high_percent: Mapped[float | None] = mapped_column(Float)
+    opening_liters: Mapped[float | None] = mapped_column(Float)
+    receipts_liters: Mapped[float] = mapped_column(Float, default=0.0)
+    dispense_liters: Mapped[float] = mapped_column(Float, default=0.0)
+    pending_dispense_liters: Mapped[float] = mapped_column(Float, default=0.0)
+    pending_receipt_liters: Mapped[float] = mapped_column(Float, default=0.0)
+    last_volts: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     station = relationship("Station", back_populates="tanks")
+    readings = relationship("LevelReading", back_populates="tank", cascade="all, delete-orphan")
+
+
+class LevelReading(Base):
+    __tablename__ = "level_readings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tank_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tanks.id", ondelete="CASCADE"), nullable=False)
+    station_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stations.id", ondelete="CASCADE"), nullable=False
+    )
+    volts: Mapped[float | None] = mapped_column(Float)
+    remainder_liters: Mapped[float] = mapped_column(Float, nullable=False)
+    fill_percent: Mapped[float | None] = mapped_column(Float)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    tank = relationship("Tank", back_populates="readings")
+
+
+class StationUser(Base):
+    __tablename__ = "station_users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    station_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stations.id", ondelete="CASCADE"), nullable=False
+    )
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,7 +1,6 @@
 """Справочник заправок и газовозов.
 
-Пока остальной API на демо-данных, карточки тоже живут в памяти процесса.
-Список при старте совпадает с точками на карте, чтобы их можно было править.
+Карточки живут в памяти процесса. На старте — только живая АГЗС с датчиком.
 """
 
 from __future__ import annotations
@@ -13,6 +12,12 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 
 _lock = threading.Lock()
+
+
+def _commit() -> None:
+    from app.services.memory_state import persist
+
+    persist()
 
 TRUCK_STATUSES = ("idle", "loading", "in_transit", "arrived", "unloading")
 
@@ -50,26 +55,7 @@ def _stations() -> list[StationCard]:
 
 
 def _trucks() -> list[TruckCard]:
-    return [
-        TruckCard(
-            UUID("c1111111-1111-1111-1111-111111111101"),
-            "705 ABA 12",
-            18000,
-            "ГазТранс Мангыстау",
-            "in_transit",
-            43.55,
-            52.05,
-        ),
-        TruckCard(
-            UUID("c1111111-1111-1111-1111-111111111102"),
-            "701 ABA 12",
-            20000,
-            "ЛПГ Мангыстау",
-            "in_transit",
-            43.45,
-            52.35,
-        ),
-    ]
+    return []
 
 
 _station_cards: list[StationCard] = _stations()
@@ -104,11 +90,23 @@ def _require_status(value: str) -> str:
 
 
 def list_stations() -> list[StationCard]:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.list_stations()
     with _lock:
         return list(_station_cards)
 
 
 def get_station(station_id: UUID) -> StationCard:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.get_station(station_id)
     with _lock:
         for station in _station_cards:
             if station.id == station_id:
@@ -125,6 +123,19 @@ def create_station(
     lon: float,
     is_active: bool,
 ) -> StationCard:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.create_station(
+            code=code,
+            name=name,
+            address=address,
+            lat=lat,
+            lon=lon,
+            is_active=is_active,
+        )
     cleaned_code = _require_code(code, "код заправки")
     cleaned_name = _require_code(name, "название заправки")
     with _lock:
@@ -140,7 +151,8 @@ def create_station(
             is_active=is_active,
         )
         _station_cards.append(station)
-        return station
+    _commit()
+    return station
 
 
 def update_station(
@@ -154,6 +166,21 @@ def update_station(
     is_active: bool | None = None,
     address_set: bool = False,
 ) -> StationCard:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.update_station(
+            station_id,
+            code=code,
+            name=name,
+            address=address,
+            lat=lat,
+            lon=lon,
+            is_active=is_active,
+            address_set=address_set,
+        )
     with _lock:
         station = next((item for item in _station_cards if item.id == station_id), None)
         if station is None:
@@ -173,7 +200,26 @@ def update_station(
             station.lon = lon
         if is_active is not None:
             station.is_active = is_active
-        return station
+    _commit()
+    return station
+
+
+def delete_station(station_id: UUID) -> None:
+    from app.services.account_mode import use_postgres
+    from app.services.device_ingest import delete_station_devices
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        postgres_account.delete_station(station_id)
+        return
+    with _lock:
+        index = next((i for i, item in enumerate(_station_cards) if item.id == station_id), None)
+        if index is None:
+            raise HTTPException(status_code=404, detail="Station not found")
+        _station_cards.pop(index)
+    delete_station_devices(station_id)
+    _commit()
 
 
 def list_trucks() -> list[TruckCard]:
@@ -213,7 +259,8 @@ def create_truck(
             lon=lon,
         )
         _truck_cards.append(truck)
-        return truck
+    _commit()
+    return truck
 
 
 def update_truck(
@@ -248,4 +295,81 @@ def update_truck(
             truck.lat = lat
         if lon_set:
             truck.lon = lon
-        return truck
+    _commit()
+    return truck
+
+
+def delete_truck(truck_id: UUID) -> None:
+    with _lock:
+        index = next((i for i, item in enumerate(_truck_cards) if item.id == truck_id), None)
+        if index is None:
+            raise HTTPException(status_code=404, detail="Truck not found")
+        _truck_cards.pop(index)
+    _commit()
+
+
+def snapshot() -> dict:
+    with _lock:
+        return {
+            "stations": [
+                {
+                    "id": str(station.id),
+                    "code": station.code,
+                    "name": station.name,
+                    "address": station.address,
+                    "lat": station.lat,
+                    "lon": station.lon,
+                    "is_active": station.is_active,
+                }
+                for station in _station_cards
+            ],
+            "trucks": [
+                {
+                    "id": str(truck.id),
+                    "plate_number": truck.plate_number,
+                    "capacity_liters": truck.capacity_liters,
+                    "carrier_name": truck.carrier_name,
+                    "status": truck.status,
+                    "lat": truck.lat,
+                    "lon": truck.lon,
+                }
+                for truck in _truck_cards
+            ],
+        }
+
+
+def restore_snapshot(data: dict) -> None:
+    """Подменяет справочник содержимым файла. Без ключей список не трогает."""
+
+    global _station_cards, _truck_cards
+    if "stations" not in data and "trucks" not in data:
+        return
+    stations = [
+        StationCard(
+            id=UUID(row["id"]),
+            code=row["code"],
+            name=row["name"],
+            address=row.get("address"),
+            lat=float(row["lat"]),
+            lon=float(row["lon"]),
+            is_active=bool(row["is_active"]),
+        )
+        for row in data.get("stations") or []
+    ]
+    trucks = [
+        TruckCard(
+            id=UUID(row["id"]),
+            plate_number=row["plate_number"],
+            capacity_liters=float(row["capacity_liters"]),
+            carrier_name=row.get("carrier_name"),
+            status=row["status"],
+            lat=None if row.get("lat") is None else float(row["lat"]),
+            lon=None if row.get("lon") is None else float(row["lon"]),
+        )
+        for row in data.get("trucks") or []
+    ]
+    with _lock:
+        if "stations" in data:
+            _station_cards = stations
+        if "trucks" in data:
+            _truck_cards = trucks

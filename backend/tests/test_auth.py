@@ -1,10 +1,27 @@
 """Вход администратора закрывает учёт и оставляет открытыми публичные уровни."""
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.auth import issue_token, read_token
+from app.auth import (
+    check_login_rate_limit,
+    issue_token,
+    read_token,
+    record_login_failure,
+    reset_auth_state,
+    revoke_token,
+)
 from app.config import get_settings
 from app.main import create_app
+from app.services.shelly_link import normalize_host
+
+
+@pytest.fixture(autouse=True)
+def _clean_auth():
+    reset_auth_state()
+    yield
+    reset_auth_state()
 
 
 def test_login_opens_internal_routes(monkeypatch):
@@ -37,3 +54,27 @@ def test_login_opens_internal_routes(monkeypatch):
 def test_expired_token_is_rejected():
     assert read_token(issue_token("admin", "test-secret", ttl_seconds=-5), "test-secret") is None
     assert read_token(issue_token("admin", "test-secret", ttl_seconds=60), "other-secret") is None
+
+
+def test_revoked_token_is_rejected():
+    token = issue_token("admin", "test-secret", ttl_seconds=60)
+    assert read_token(token, "test-secret") == "admin"
+    revoke_token(token)
+    assert read_token(token, "test-secret") is None
+
+
+def test_rate_limit_blocks_brute_force():
+    for _ in range(5):
+        check_login_rate_limit("127.0.0.1:admin")
+        record_login_failure("127.0.0.1:admin")
+    with pytest.raises(HTTPException) as exc:
+        check_login_rate_limit("127.0.0.1:admin")
+    assert exc.value.status_code == 429
+
+
+def test_ssrf_hosts_rejected():
+    for forbidden in ("localhost", "127.0.0.1", "169.254.169.254", "0.0.0.0", "db:5432"):
+        with pytest.raises(HTTPException) as exc:
+            normalize_host(forbidden)
+        assert exc.value.status_code == 422
+    assert normalize_host("192.168.0.104") == "192.168.0.104"

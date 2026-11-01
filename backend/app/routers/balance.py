@@ -6,11 +6,11 @@ from uuid import uuid4
 from fastapi import APIRouter
 
 from app.schemas.balance import BalanceReconcileRequest, BalanceSnapshotOut, ConsumptionSummary
-from app.schemas.event import DiscrepancyEventOut
 from app.services.balance import calculate_remainder, classify_discrepancy
 
 router = APIRouter(prefix="/balance", tags=["balance"])
 
+_MAX_RECORDS = 5000
 _SNAPSHOTS: list[dict] = []
 _EVENTS: list[dict] = []
 
@@ -37,9 +37,13 @@ def reconcile(body: BalanceReconcileRequest) -> BalanceSnapshotOut:
         "status": result.status,
         "created_at": now,
     }
+    if len(_SNAPSHOTS) >= _MAX_RECORDS:
+        _SNAPSHOTS.pop(0)
     _SNAPSHOTS.append(snapshot)
 
     if result.discrepancy_type is not None:
+        if len(_EVENTS) >= _MAX_RECORDS:
+            _EVENTS.pop(0)
         _EVENTS.append(
             {
                 "id": uuid4(),

@@ -4,13 +4,13 @@
   blender --background --python build_case.py -- "папка_вывода"
 
 Размеры в миллиметрах. 1 единица сцены = 1 мм.
-Плата Plus Uni — 40 x 21 x 7 мм (сайт Shelly, PCB). Каретка справа:
-плата вдавливается сверху, четыре язычка щёлкают за длинные края.
-Короткие торцы открыты — оттуда выходят провода к клеммам.
-
-LM2596 — 57 x 20 x 13 мм, у задней стенки. С Shelly приходит 12 В,
-модуль отдаёт 5 В на клеммы датчика. Садится сверху, язычки держат
-длинные края платы. Левый торец — выход, правый — вход.
+Плата Plus Uni — 40 x 21 x 7 мм. LM2596 — 57 x 20 x 13 мм.
+Обе каретки стоят в центре полости, длинной стороной вдоль X,
+между ними канал под провода. Плата Shelly плотно вставляется
+между стойками, без язычков. На левой и правой стенках жабры: вход снизу,
+в полость щель уходит вверх под козырёк, сверху пыль не сыпется.
+У входа и выхода кабеля змейка: провод закладывается зигзагом,
+рывок держит корпус, а не разъёмы.
 
 Дно толще стенки. На горизонтальную DIN-рейку щитка корпус сажается
 отдельной пластиной: четыре винта М3 снизу, длинная сторона вертикально,
@@ -45,23 +45,29 @@ PCB = (40.0, 21.0, 1.6)
 SEAT = 9.0          # ложемент над полом: язычок длиннее и мягче гнётся
 PLATE = 1.4
 GAP = 0.35          # щель между краем платы и язычком
-BITE = 0.70         # носик заходит на текстолит
-LATCH_T = 2.2
-LATCH_W = 7.0
-LATCH_INSET = 8.0   # от короткого торца до язычка, там паяные провода
+BITE = 0.35         # только кромка текстолита, мимо деталей
+SHELLY_GAP = 0.90   # запас вокруг платы для старых язычков LM2596-хелперов
+SHELLY_FIT = -0.28  # натяг на сторону, ещё плотнее
+PINCH = 0.20        # поясок ещё внутрь по толщине текстолита
+POST_T = 3.4        # стойка снаружи кромки
+POST_ABOVE = 1.1    # чуть выше текстолита, без высокой стенки
+LEAD = 0.90         # скос на короткой стенке
+PAD_IN = 3.2        # полка под краем платы
+LATCH_T = 3.4
+LATCH_W = 7.2
+COUPON_T = 2.0      # тонкая подложка отдельной посадки
+SEAT_PLATE = 2.0    # толщина площадки под стойками, не весь пол корпуса
+LATCH_INSET = 1.2   # защёлка в углу, не над компонентами
+SHELLY_PAD = 3.0    # полка только под углом платы
 HOOK_CLEAR = 0.15   # зазор между верхом платы и полкой защёлки
-HOOK_H = 1.10
-RAMP_H = 1.05
+HOOK_H = 1.55
+RAMP_H = 1.20
 STOP_T = 1.5
 STOP_W = 4.2
 END_GAP = 0.40
 
-RAIL_T = 1.6
-
-# Три клеммы: сигнал, 5 В, земля. Смещены к передней стенке,
-# чтобы сзади встала каретка LM2596.
-TERM = (20.0, 14.0)
-FENCE_H = 4.0
+# Зазор между каретками Shelly и LM2596 — туда уходят провода.
+PAIR_GAP = 6.0
 
 # LM2596: длина вдоль X, ширина вдоль Y, высота с обвязкой.
 BUCK = (57.0, 20.0, 1.6)
@@ -81,15 +87,41 @@ BUCK_RAMP_H = 1.00
 BUCK_END_GAP = 0.50
 BUCK_STOP_T = 1.45
 BUCK_STOP_W = 3.8
-BUCK_WALL_GAP = 0.25
-# Зазор между верхом клемм и передним язычком каретки.
-BUCK_TERM_CLEAR = 4.6
 
 # Пазы сверху стенок, крышка их закрывает.
 HALL_SLOT = (8.5, 8.0)  # ширина, глубина от верхнего края
 USB_SLOT = (6.5, 6.5)
 
+# Жабры на торцевых стенках. Карман открыт вниз, щель в полость — под крышей.
+GILL_COUNT = 4
+GILL_INNER_W = 12.0
+GILL_WALL = 1.2
+GILL_GAP = 2.2
+GILL_DEPTH = 4.6
+GILL_H = 7.2
+GILL_ROOF = 1.2
+GILL_SLOT_H = 2.0
+GILL_ROWS = (8.2, 16.9)
+
+# Змейка у пазов кабеля. Три ребра, щели по очереди слева и справа.
+SNAKE_T = 3.2
+SNAKE_PITCH = 8.2
+SNAKE_COUNT = 3
+SNAKE_GAP = 5.5
+SNAKE_SPAN = 16.0
+SNAKE_INSET = 4.2
+SNAKE_LIP = 1.1
+
 LID_T = 2.8
+# Паз шире бортика: 0.4 мм на сторону, чтобы крышка входила после печати.
+RIM_DROP = 1.05
+LIP_FENCE = 2.2       # от наружной грани до паза
+GROOVE_W = 2.6
+GROOVE_D = 2.8
+LIP_BANK = 1.5        # внутренняя стенка паза
+LID_SKIRT = 1.6
+LID_PLAY = 0.50
+LID_SKIRT_H = 2.1
 BOSS_D = 8.0
 BOSS_HOLE = 2.7
 LID_HOLE = 3.4
@@ -98,7 +130,7 @@ MOUNT_HOLE = 4.5
 # Отдельная пластина на горизонтальную DIN-рейку щитка (TH35×7.5).
 # Рейка вдоль Y. В щите X — вертикаль: больший X сверху.
 # Пластина прижимается к дну снаружи, рейка ложится на её внешнюю грань.
-BRACKET_T = 3.2
+BRACKET_T = 5.5
 SCREW_D = 2.7         # глухое отверстие в дне под саморез М3
 SCREW_CLEAR = 3.4     # сквозное отверстие в пластине
 SCREW_DEPTH = 3.2     # не прорезает пол: остаётся 1.3 мм
@@ -109,15 +141,19 @@ DIN_TOOTH = 1.85      # носик заходит под кромку
 DIN_SEAT = 1.70       # полка под кромкой: кромка 1 мм, запас 0.7 мм
 MOUTH = 2.90         # скос ниже полки, по нему кромка заходит в паз
 MOUTH_OPEN = 1.20     # низ скоса шире рейки, снаружи от кромки
-CLIP_LEN = 18.0
-CLIP_Z0 = -16.8       # низ защёлки от лица рейки: язычок длинный и мягкий
-CLIP_IN = 0.55        # заход в толщу пластины, чтобы булево слило тела
-HOOK_BACK = 3.2
-TOWER_W = 2.5
-SPRING_T = 1.15
-SPRING_W = 8.0
-BACKSTOP_GAP = 2.60   # ход язычка больше захода носика
-BACKSTOP_T = 1.8
+CLIP_LEN = 29.0
+CLIP_Z0 = -14.0       # короткое плечо: не торчит далеко от пластины
+HOOK_Z0 = -8.5        # жёсткий крючок короче язычка
+CLIP_IN = 0.7         # заход в толщу пластины, чтобы булево слило тела
+HOOK_BACK = 6.2
+TOWER_W = 5.0
+TOWER_INSET = 0.50    # башни не на торце и не в теле язычка
+SPRING_T = 2.6
+SPRING_W = 16.0
+BAR_H = 4.0           # перемычка у корня язычка
+BAR_EXTRA = 2.2       # утолщение перемычки снаружи
+BACKSTOP_GAP = 2.8    # ход язычка больше захода носика
+BACKSTOP_T = 3.4
 
 
 def scene_mm():
@@ -259,17 +295,42 @@ def profile_solid_y(name, y0, y1, xz):
     return obj
 
 
+def _cavity_center():
+    return WALL + INNER[0] / 2, WALL + INNER[1] / 2
+
+
+def _shelly_over():
+    """Выступ каретки Shelly за край платы по Y."""
+    return SHELLY_FIT + POST_T + 1.6
+
+
+def _shelly_end_over():
+    """Выступ каретки за короткий край напротив шлейфа."""
+    return SHELLY_FIT + POST_T + 1.2
+
+
+def _buck_front_over():
+    return BUCK_GAP + BUCK_LATCH_T + BUCK_TAB_FRONT + 0.40
+
+
+def _buck_back_over():
+    return BUCK_GAP + BUCK_LATCH_T + BUCK_TAB_BACK
+
+
 def shelly_seat():
-    """Левый нижний угол платы. Провода смотрят влево, на клеммы."""
-    px = WALL + INNER[0] - 16.0 - PCB[0]
-    py = WALL + (INNER[1] - PCB[1]) / 2
-    pz = FLOOR + SEAT
-    return px, py, pz
+    """Левый нижний угол платы. Каретка — передняя половина пары в центре."""
+    cx, cy = _cavity_center()
+    shelly_span = PCB[1] + 2 * _shelly_over()
+    buck_span = BUCK[1] + _buck_front_over() + _buck_back_over()
+    y_south = cy - (shelly_span + PAIR_GAP + buck_span) / 2
+    py = y_south + _shelly_over()
+    px = cx - PCB[0] / 2
+    return px, py, FLOOR + SEAT
 
 
 def _latch_ys(edge_y, side):
     """side = -1: защёлка с меньшего Y. Носик смотрит на плату."""
-    y_in = edge_y + side * GAP
+    y_in = edge_y + side * SHELLY_GAP
     y_out = y_in + side * LATCH_T
     y_nose = edge_y - side * BITE
     y_tip = edge_y + side * 0.20
@@ -279,8 +340,8 @@ def _latch_ys(edge_y, side):
 def _rooted_latch(y_in, y_out, y_nose, y_tip, side, tab, z_hook0, z_hook1, z_top, z_tab):
     """Язычок с широкой пяткой внутри пола. Выше пола толщина прежняя, он гнётся."""
     z_neck = FLOOR + 0.4
-    y_in_foot = y_in - side * 1.1
-    y_out_foot = y_out + side * 0.25
+    y_in_foot = y_in - side * 1.6
+    y_out_foot = y_out + side * 1.1
     return [
         (y_in_foot, SEAT_ROOT),
         (y_in, z_neck),
@@ -296,8 +357,10 @@ def _rooted_latch(y_in, y_out, y_nose, y_tip, side, tab, z_hook0, z_hook1, z_top
     ]
 
 
-def build_latch(name, x0, edge_y, side):
+def build_latch(name, x0, edge_y, side, width=None):
     """Язычок: полка ловит край платы, сверху скос, снаружи упор для ногтя."""
+    if width is None:
+        width = LATCH_W
     y_in, y_out, y_nose, y_tip = _latch_ys(edge_y, side)
     z_hook0 = FLOOR + SEAT + PCB[2] + HOOK_CLEAR
     z_hook1 = z_hook0 + HOOK_H
@@ -306,95 +369,150 @@ def build_latch(name, x0, edge_y, side):
     return profile_solid(
         name,
         x0,
-        x0 + LATCH_W,
-        _rooted_latch(y_in, y_out, y_nose, y_tip, side, 2.0, z_hook0, z_hook1, z_top, z_tab),
+        x0 + width,
+        _rooted_latch(y_in, y_out, y_nose, y_tip, side, 2.6, z_hook0, z_hook1, z_top, z_tab),
     )
 
 
-def add_shelly_carriage(body):
-    px, py, _pz = shelly_seat()
+def _shelly_legs(px, py):
+    """Две пары стоек симметрично на длинных краях, плюс упор напротив шлейфа."""
+    y1 = py + PCB[1]
+    width = LATCH_W
+    wire = px + 16.0 - width
+    header = px + PCB[0] - 7.0 - width
+    return (
+        {"axis": "y", "x": wire, "w": width, "edge": py, "side": -1},
+        {"axis": "y", "x": header, "w": width, "edge": py, "side": -1},
+        {"axis": "y", "x": wire, "w": width, "edge": y1, "side": 1},
+        {"axis": "y", "x": header, "w": width, "edge": y1, "side": 1},
+        {"axis": "x", "y": py + 1.5, "w": 10.0, "edge": px + PCB[0], "side": 1},
+    )
+
+
+def _post_profile(inner, pinch, outer, pad, lead, z_pcb, z_fr4, z_top):
+    """Полка, натяг по кромке, поясок на толщине FR4, короткий скос сверху."""
+    return [
+        (pad, SEAT_ROOT),
+        (pad, z_pcb),
+        (inner, z_pcb),
+        (pinch, z_pcb + 0.25),
+        (pinch, z_fr4),
+        (lead, z_top),
+        (outer, z_top),
+        (outer, SEAT_ROOT),
+    ]
+
+
+def _post_faces(edge, side, pad_in):
+    inner = edge + side * SHELLY_FIT
+    pinch = inner - side * PINCH
+    outer = inner + side * POST_T
+    pad = edge - side * pad_in
+    lead = inner + side * LEAD
+    z_pcb = FLOOR + SEAT
+    z_fr4 = z_pcb + PCB[2]
+    z_top = z_fr4 + POST_ABOVE
+    return inner, pinch, outer, pad, lead, z_pcb, z_fr4, z_top
+
+
+def _shelly_edge_post(name, x0, width, edge_y, side):
+    """Стойка на длинном крае: натяг по кромке, без язычка сверху."""
+    return profile_solid(
+        name,
+        x0,
+        x0 + width,
+        _post_profile(*_post_faces(edge_y, side, PAD_IN)),
+    )
+
+
+def _shelly_end_post(name, y0, width, edge_x, side):
+    """Стойка на коротком крае напротив шлейфа."""
+    return profile_solid_y(
+        name,
+        y0,
+        y0 + width,
+        _post_profile(*_post_faces(edge_x, side, 1.2)),
+    )
+
+
+def make_shelly_carriage(px, py):
+    """Каретка: пять стоек, плата вставляется плотно сверху."""
     x1 = px + PCB[0]
     y1 = py + PCB[1]
-    z_plate = FLOOR + PLATE
-    z_pcb_top = FLOOR + SEAT + PCB[2]
+    z_plate = SEAT_ROOT + SEAT_PLATE
+    over = _shelly_over()
+    end = _shelly_end_over()
 
     plate = box(
         "carriage_plate",
-        px - END_GAP - STOP_T,
-        x1 + END_GAP + STOP_T,
-        py - GAP - LATCH_T - 2.3,
-        y1 + GAP + LATCH_T + 2.3,
+        px - 1.2,
+        x1 + end,
+        py - over,
+        y1 + over,
         SEAT_ROOT,
         z_plate,
     )
     parts = [plate]
 
-    for y0 in (py + 0.9, y1 - 0.9 - 2.6):
-        parts.append(box("seat_rib", px + 1.0, x1 - 1.0, y0, y0 + 2.6, z_plate - 0.25, FLOOR + SEAT))
-
-    latch_x = (px + LATCH_INSET, x1 - LATCH_INSET - LATCH_W)
-    windows = []
-    for index, x0 in enumerate(latch_x):
-        windows.append((x0 - 0.85, x0 + LATCH_W + 0.85))
-        parts.append(build_latch(f"latch_s{index}", x0, py, -1))
-        parts.append(build_latch(f"latch_n{index}", x0, y1, +1))
-
-    def skirts(y_a, y_b):
-        spans = [(px - END_GAP - STOP_T, x1 + END_GAP + STOP_T)]
-        for a, b in windows:
-            nxt = []
-            for s0, s1 in spans:
-                if b <= s0 or a >= s1:
-                    nxt.append((s0, s1))
-                    continue
-                if s0 < a:
-                    nxt.append((s0, a))
-                if b < s1:
-                    nxt.append((b, s1))
-            spans = nxt
-        for s0, s1 in spans:
-            if s1 - s0 > 0.4:
-                parts.append(box("skirt", s0, s1, y_a, y_b, SEAT_ROOT, FLOOR + SEAT))
-
-    y_in_s, y_out_s, _, _ = _latch_ys(py, -1)
-    y_in_n, y_out_n, _, _ = _latch_ys(y1, +1)
-    skirts(y_out_s, y_in_s)
-    skirts(y_in_n, y_out_n)
-
-    for x0, y_edge, side in (
-        (px - END_GAP - STOP_T, py, -1),
-        (px - END_GAP - STOP_T, y1, +1),
-        (x1 + END_GAP, py, -1),
-        (x1 + END_GAP, y1, +1),
-    ):
-        _, y_out, _, _ = _latch_ys(y_edge, side)
-        y_far = y_edge - side * STOP_W
-        parts.append(
-            box("end_stop", x0, x0 + STOP_T, y_out, y_far, SEAT_ROOT, z_pcb_top + 0.45)
-        )
+    for index, leg in enumerate(_shelly_legs(px, py)):
+        if leg["axis"] == "y":
+            parts.append(
+                _shelly_edge_post(f"post_{index}", leg["x"], leg["w"], leg["edge"], leg["side"])
+            )
+        else:
+            parts.append(
+                _shelly_end_post(f"post_{index}", leg["y"], leg["w"], leg["edge"], leg["side"])
+            )
 
     for part in parts[1:]:
         boolean(plate, part, "UNION")
     plate.name = "Shelly_Carriage"
-    boolean(body, plate, "UNION")
+    return plate
+
+
+def add_shelly_carriage(body):
+    px, py, _pz = shelly_seat()
+    boolean(body, make_shelly_carriage(px, py), "UNION")
     return body
 
 
+def build_shelly_coupon():
+    """Только маленькая посадка Shelly. Большую плиту под всё дно не делаем."""
+    ox, _oy, _oz = outer_size()
+    over = _shelly_over()
+    pad_x = 1.2
+    pad_x_end = _shelly_end_over()
+    px = pad_x
+    py = over
+    x0 = 0.0
+    x1 = pad_x + PCB[0] + pad_x_end
+    y0 = 0.0
+    y1 = over + PCB[1] + over
+    slab = box("Shelly_Seat_Test", x0, x1, y0, y1, 0.0, COUPON_T)
+    boolean(slab, make_shelly_carriage(px, py), "UNION")
+    slab.location.x = ox + 20
+    activate(slab)
+    with bpy.context.temp_override(active_object=slab, object=slab, selected_objects=[slab]):
+        bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
+    slab.name = "Shelly_Seat_Test"
+    return slab
+
+
 def build_shelly_marker():
-    """Макет платы в коллекции Reference. В STL корпуса не входит."""
+    """Макет платы по фото: провода с минус X, гребёнка с плюс X, конденсатор на плюс Y."""
     px, py, pz = shelly_seat()
+    x1 = px + PCB[0]
+    y1 = py + PCB[1]
     lift = 0.04
-    board = box("Shelly_PCB", px, px + PCB[0], py, py + PCB[1], pz + lift, pz + PCB[2] + lift)
-    parts = box(
-        "Shelly_parts",
-        px + 1.4,
-        px + PCB[0] - 1.4,
-        py + 1.6,
-        py + PCB[1] - 1.6,
-        pz + PCB[2] + lift,
-        pz + 7.0 + lift,
-    )
-    boolean(board, parts, "UNION")
+    board = box("Shelly_PCB", px, x1, py, y1, pz + lift, pz + PCB[2] + lift)
+    pieces = [
+        box("shelly_header", x1 - 7.0, x1 - 1.2, py + 1.2, y1 - 1.2, pz + PCB[2] + lift, pz + 7.2),
+        box("shelly_cap", px + 16.0, px + 22.0, y1 - 6.5, y1 - 0.6, pz + PCB[2] + lift, pz + 7.0),
+        box("shelly_conn", px + 22.4, px + 29.0, y1 - 5.5, y1 - 0.8, pz + PCB[2] + lift, pz + 6.2),
+        box("shelly_chip", px + 14.0, px + 24.0, py + 6.0, py + 14.0, pz + PCB[2] + lift, pz + 3.2),
+    ]
+    for piece in pieces:
+        boolean(board, piece, "UNION")
     board.name = "Shelly_Plus_Uni"
     return to_reference(board)
 
@@ -427,25 +545,18 @@ def build_buck_marker():
 
 
 def buck_seat():
-    """Левый нижний угол платы LM2596. Выход смотрит влево, на клеммы."""
-    rear = BUCK_GAP + BUCK_LATCH_T + BUCK_TAB_BACK
-    y1 = WALL + INNER[1] - BUCK_WALL_GAP - rear
-    y0 = y1 - BUCK[1]
-    x0 = WALL + 25.0
+    """Левый нижний угол платы LM2596. Стоит позади Shelly, оба по центру."""
+    cx, _cy = _cavity_center()
+    _px, py, _pz = shelly_seat()
+    shelly_north = py + PCB[1] + _shelly_over()
+    y0 = shelly_north + PAIR_GAP + _buck_front_over()
+    x0 = cx - BUCK[0] / 2
     return x0, y0, FLOOR + BUCK_SEAT
 
 
 def buck_front_plastic():
     _x, y0, _z = buck_seat()
     return y0 - (BUCK_GAP + BUCK_LATCH_T + BUCK_TAB_FRONT)
-
-
-def terminal_origin():
-    """Левый нижний угол блока клемм. Сзади остаётся каретка преобразователя."""
-    span = 3 * TERM[1] + 2 * 3.0
-    tx = WALL + 18.0
-    ty = buck_front_plastic() - BUCK_TERM_CLEAR - span
-    return tx, ty, span
 
 
 def _buck_ys(edge_y, side):
@@ -472,7 +583,7 @@ def build_buck_latch(name, x0, edge_y, side, tab):
 
 
 def add_buck_cradle(body):
-    """Каретка у задней стенки. Плата вдавливается сверху, торцы открыты под провода."""
+    """Каретка позади Shelly. Плата вдавливается сверху, торцы открыты под провода."""
     x0, y0, _pz = buck_seat()
     x1 = x0 + BUCK[0]
     y1 = y0 + BUCK[1]
@@ -620,8 +731,8 @@ def _fixed_profile(rail_top):
         (x_tip, z_seat),
         (x_open, z_mouth),
         (x_wall, z_mouth),
-        (x_wall, _on_bracket(CLIP_Z0)),
-        (x_outer, _on_bracket(CLIP_Z0)),
+        (x_wall, _on_bracket(HOOK_Z0)),
+        (x_outer, _on_bracket(HOOK_Z0)),
     ]
 
 
@@ -667,16 +778,16 @@ def _din_spring(y0, rail_bottom):
     )
     bar = box(
         "din_bar",
-        x_outer - 1.35,
+        x_outer - BAR_EXTRA,
         x_wall + 0.15,
         y0,
         y0 + CLIP_LEN,
         _on_bracket(CLIP_Z0),
-        _on_bracket(CLIP_Z0 + 2.55),
+        _on_bracket(CLIP_Z0 + BAR_H),
     )
     boolean(bar, finger, "UNION")
-    # Башни не выходят на торец и подошву планки, иначе шов остаётся открытым.
-    inset = 0.45
+    # Башни в зазоре между торцом планки и язычком, иначе булево оставляет шов.
+    inset = TOWER_INSET
     for side in (inset, CLIP_LEN - TOWER_W - inset):
         tower = box(
             "din_tower",
@@ -770,6 +881,123 @@ def build_din_marker():
     return to_reference(rail)
 
 
+def gill_origins(length):
+    pocket = GILL_INNER_W + 2 * GILL_WALL
+    span = GILL_COUNT * pocket + (GILL_COUNT - 1) * GILL_GAP
+    y0 = (length - span) / 2
+    pitch = pocket + GILL_GAP
+    return tuple(y0 + i * pitch for i in range(GILL_COUNT))
+
+
+def _add_gill(body, outer_x, inward, y0, z0):
+    """Карман снаружи стенки. inward = +1, если полость в сторону +X.
+
+    Козырёк и губа — один профиль. Щёки чуть выступают, чтобы не совпасть
+    с его торцом: иначе boolean оставляет дыру.
+    """
+    z1 = z0 + GILL_H
+    x_cheek = outer_x - inward * GILL_DEPTH
+    x_lip = outer_x - inward * (GILL_DEPTH - 0.35)
+    x_lip_in = x_lip + inward * GILL_WALL
+    x_near = outer_x + inward * 0.6
+    z_lip = z0 + 0.25
+    z_roof = z1 - GILL_ROOF
+    y_a = y0 + GILL_WALL
+    y_b = y_a + GILL_INNER_W
+    hood = profile_solid_y(
+        "gill_hood",
+        y_a - 0.45,
+        y_b + 0.45,
+        [
+            (x_near, z1 - 0.2),
+            (x_lip, z1 - 0.2),
+            (x_lip, z_lip),
+            (x_lip_in, z_lip),
+            (x_lip_in, z_roof),
+            (x_near, z_roof),
+        ],
+    )
+    for y_side in (y0, y_b):
+        boolean(
+            hood,
+            box("gill_cheek", x_cheek, x_near, y_side, y_side + GILL_WALL, z0, z1),
+            "UNION",
+        )
+    boolean(body, hood, "UNION")
+    boolean(
+        body,
+        box(
+            "gill_slot",
+            outer_x - inward * 1.2,
+            outer_x + inward * (WALL + 0.7),
+            y_a,
+            y_b,
+            z_roof - 0.25 - GILL_SLOT_H,
+            z_roof - 0.25,
+        ),
+        "DIFFERENCE",
+    )
+    return body
+
+
+def snake_top():
+    """Верх рёбер в плоскости закрытой крышки: провод через них не перекинуть."""
+    _ox, _oy, oz = outer_size()
+    return oz - RIM_DROP
+
+
+def snake_fingers():
+    """Рёбра змейки: (x0, y0, длина по Y) у левого и правого ввода."""
+    ox, oy, _oz = outer_size()
+    cy = oy / 2
+    length = SNAKE_SPAN - SNAKE_GAP
+    fingers = []
+    for side in (-1, 1):
+        wall = WALL if side < 0 else ox - WALL
+        for index in range(SNAKE_COUNT):
+            along = SNAKE_INSET + index * SNAKE_PITCH
+            x0 = wall + along if side < 0 else wall - along - SNAKE_T
+            if index % 2 == 0:
+                y0 = cy - SNAKE_SPAN / 2
+            else:
+                y0 = cy + SNAKE_SPAN / 2 - length
+            fingers.append((x0, y0, length))
+    return tuple(fingers)
+
+
+def add_strain_relief(body):
+    """Змейка у пазов. Провод закладывается сверху, щели чередуются."""
+    for x0, y0, finger_len in snake_fingers():
+        fin = box("snake_fin", x0, x0 + SNAKE_T, y0, y0 + finger_len, SEAT_ROOT, snake_top())
+        boolean(body, fin, "UNION")
+        gap_on_plus = y0 + finger_len / 2 < outer_size()[1] / 2
+        if gap_on_plus:
+            lip_y0, lip_y1 = y0 + finger_len - 0.3, y0 + finger_len + SNAKE_LIP
+        else:
+            lip_y0, lip_y1 = y0 - SNAKE_LIP, y0 + 0.3
+        lip = box(
+            "snake_lip",
+            x0 - 0.2,
+            x0 + SNAKE_T + 0.2,
+            lip_y0,
+            lip_y1,
+            snake_top() - 1.6,
+            snake_top(),
+        )
+        boolean(body, lip, "UNION")
+    return body
+
+
+def add_gills(body):
+    """Жабры слева и справа. Воздух заходит снизу и поднимается в щель."""
+    ox, oy, _oz = outer_size()
+    for y0 in gill_origins(oy):
+        for z0 in GILL_ROWS:
+            _add_gill(body, 0.0, +1, y0, z0)
+            _add_gill(body, ox, -1, y0, z0)
+    return body
+
+
 def build_base():
     ox, oy, oz = outer_size()
     body = cube("Case_Base", (0, 0, 0), (ox, oy, oz))
@@ -795,27 +1023,13 @@ def build_base():
     margin = 9
     for x in (WALL + margin, ox - WALL - margin):
         for y in (WALL + margin, oy - WALL - margin):
-            boss = cyl("boss", (x, y), FLOOR, BOSS_D, INNER[2])
+            boss = cyl("boss", (x, y), FLOOR, BOSS_D, INNER[2] - RIM_DROP - 0.2)
             boolean(body, boss, "UNION")
             hole = cyl("boss_hole", (x, y), oz - 10, BOSS_HOLE, 12)
             boolean(body, hole, "DIFFERENCE")
 
     add_shelly_carriage(body)
     add_buck_cradle(body)
-
-    # Три гнезда клемм слева, открыты вправо — к Shelly.
-    # Блок прижат к передней стенке: над ним выход 5 В с LM2596.
-    tx, ty, _span = terminal_origin()
-    for i in range(3):
-        y0 = ty + i * (TERM[1] + 3)
-        fences = [
-            (tx, y0, FLOOR - 0.35, TERM[0], RAIL_T, FENCE_H + 0.35),
-            (tx, y0 + TERM[1] - RAIL_T, FLOOR - 0.35, TERM[0], RAIL_T, FENCE_H + 0.35),
-            (tx, y0, FLOOR - 0.35, RAIL_T, TERM[1], FENCE_H + 0.35),
-        ]
-        for j, spec in enumerate(fences):
-            fence = cube(f"term_{i}_{j}", spec[:3], spec[3:])
-            boolean(body, fence, "UNION")
 
     # Паз кабеля датчика — левая стенка.
     hall = cube(
@@ -833,9 +1047,66 @@ def build_base():
     )
     boolean(body, usb, "DIFFERENCE")
 
+    add_strain_relief(body)
     add_bracket_seats(body)
+    add_gills(body)
+    add_lid_groove(body)
 
     body.name = "Case_Base"
+    return body
+
+
+def add_lid_groove(body):
+    """Внутренний борт с пазом. Скругление стенки его не съедает."""
+    ox, oy, oz = outer_size()
+    z_rim = oz - RIM_DROP
+    shave = cube(
+        "rim_shave",
+        (-0.4, -0.4, z_rim),
+        (ox + 0.8, oy + 0.8, RIM_DROP + 2),
+    )
+    boolean(body, shave, "DIFFERENCE")
+
+    reach = LIP_FENCE + GROOVE_W + LIP_BANK
+    z0 = z_rim - GROOVE_D - 0.8
+    # Борт выше обода, потом срез. Иначе верх совпадает с уже готовой гранью и рвётся.
+    bands = (
+        (WALL - 0.7, reach, WALL - 0.7, oy - WALL + 0.7),
+        (ox - reach, ox - WALL + 0.7, WALL - 0.7, oy - WALL + 0.7),
+        (WALL - 0.7, ox - WALL + 0.7, WALL - 0.7, reach),
+        (WALL - 0.7, ox - WALL + 0.7, oy - reach, oy - WALL + 0.7),
+    )
+    for xa, xb, ya, yb in bands:
+        boolean(body, box("lid_bank", xa, xb, ya, yb, z0, z_rim + 0.5), "UNION")
+    boolean(
+        body,
+        cube("rim_shave2", (-0.4, -0.4, z_rim), (ox + 0.8, oy + 0.8, 2)),
+        "DIFFERENCE",
+    )
+
+    z_cut = z_rim - GROOVE_D
+    slots = (
+        (LIP_FENCE, LIP_FENCE + GROOVE_W, LIP_FENCE, oy - LIP_FENCE),
+        (ox - LIP_FENCE - GROOVE_W, ox - LIP_FENCE, LIP_FENCE, oy - LIP_FENCE),
+        (LIP_FENCE, ox - LIP_FENCE, LIP_FENCE, LIP_FENCE + GROOVE_W),
+        (LIP_FENCE, ox - LIP_FENCE, oy - LIP_FENCE - GROOVE_W, oy - LIP_FENCE),
+    )
+    for xa, xb, ya, yb in slots:
+        boolean(body, box("lid_slot", xa, xb, ya, yb, z_cut, z_rim + 2), "DIFFERENCE")
+
+    # Паз не должен закрыть выходы кабеля.
+    hall_y = oy / 2 - HALL_SLOT[0] / 2
+    boolean(
+        body,
+        box("hall_reopen", -1, reach + 1.5, hall_y, hall_y + HALL_SLOT[0], oz - HALL_SLOT[1], oz + 2),
+        "DIFFERENCE",
+    )
+    usb_y = oy / 2 - USB_SLOT[0] / 2
+    boolean(
+        body,
+        box("usb_reopen", ox - reach - 1.5, ox + 1, usb_y, usb_y + USB_SLOT[0], oz - USB_SLOT[1], oz + 2),
+        "DIFFERENCE",
+    )
     return body
 
 
@@ -857,12 +1128,44 @@ def add_text(name, words, size, location):
     return obj
 
 
+def add_lid_skirt(lid, y_shift):
+    """Бортик снизу крышки входит в паз. Над выходами кабеля бортик вырезан."""
+    ox, oy, _oz = outer_size()
+    x0 = LIP_FENCE + LID_PLAY
+    x1 = ox - LIP_FENCE - LID_PLAY
+    y0 = y_shift + LIP_FENCE + LID_PLAY
+    y1 = y_shift + oy - LIP_FENCE - LID_PLAY
+    z0 = -LID_SKIRT_H
+    z1 = 0.7
+    bars = (
+        (x0, x0 + LID_SKIRT, y0, y1),
+        (x1 - LID_SKIRT, x1, y0, y1),
+        (x0, x1, y0, y0 + LID_SKIRT),
+        (x0, x1, y1 - LID_SKIRT, y1),
+    )
+    for xa, xb, ya, yb in bars:
+        boolean(lid, box("lid_skirt", xa, xb, ya, yb, z0, z1), "UNION")
+    notches = (
+        (x0 - 0.4, x0 + LID_SKIRT + 0.4, HALL_SLOT[0] + 3.5),
+        (x1 - LID_SKIRT - 0.4, x1 + 0.4, USB_SLOT[0] + 3.5),
+    )
+    for xa, xb, width in notches:
+        yc = y_shift + oy / 2
+        boolean(
+            lid,
+            box("lid_notch", xa, xb, yc - width / 2, yc + width / 2, z0 - 0.3, z1),
+            "DIFFERENCE",
+        )
+    return lid
+
+
 def build_lid(base_height_offset):
     ox, oy, _oz = outer_size()
     # Крышка лежит рядом с основанием, чтобы оба объекта были видны.
     y_shift = oy + 16
     lid = cube("Case_Lid", (0, y_shift, 0), (ox, oy, LID_T))
-    bevel(lid, ROUND)
+    bevel(lid, 1.1)
+    add_lid_skirt(lid, y_shift)
 
     margin = 9
     for x in (WALL + margin, ox - WALL - margin):
@@ -920,29 +1223,28 @@ def boundary_edges(obj):
 
 
 def check_layout():
-    """Каретка, клеммы и Shelly не наезжают друг на друга и остаются в полости."""
+    """Каретки в центре полости и не задевают друг друга."""
     bx, by, bz = buck_seat()
     sx, sy, _sz = shelly_seat()
-    tx, ty, span = terminal_origin()
-    front = buck_front_plastic()
-    back = by + BUCK[1] + BUCK_GAP + BUCK_LATCH_T + BUCK_TAB_BACK
-    shelly_top = sy + PCB[1] + GAP + LATCH_T + 2.3
+    front = buck_front_plastic() - 0.40
+    back = by + BUCK[1] + _buck_back_over()
+    shelly_north = sy + PCB[1] + _shelly_over()
+    shelly_south = sy - _shelly_over()
+    cavity_x0 = WALL
     cavity_x1 = WALL + INNER[0]
     cavity_y1 = WALL + INNER[1]
     cavity_z1 = FLOOR + INNER[2]
 
-    if not (WALL + 4 < bx and bx + BUCK[0] < cavity_x1 - 4):
+    if not (cavity_x0 + 4 < bx and bx + BUCK[0] < cavity_x1 - 4):
         raise RuntimeError("LM2596 не помещается по X")
-    if not (WALL + 4 < by and back < cavity_y1 - 0.2):
-        raise RuntimeError("LM2596 не помещается по Y")
+    if not (cavity_x0 + 4 < sx and sx + PCB[0] < cavity_x1 - 4):
+        raise RuntimeError("Shelly не помещается по X")
+    if not (WALL + 4 < shelly_south and back < cavity_y1 - 2):
+        raise RuntimeError("каретки не помещаются по Y")
     if bz + BUCK_H > cavity_z1 - 6:
         raise RuntimeError("LM2596 упирается в крышку")
-    if front < shelly_top + 1.0:
+    if front < shelly_north + 4:
         raise RuntimeError("каретка LM2596 пересекает каретку Shelly")
-    if ty < WALL + 4 or ty + span > front - (BUCK_TERM_CLEAR - 0.05):
-        raise RuntimeError("клеммы пересекают стенку или LM2596")
-    if not (bx < tx + TERM[0] and bx + BUCK[0] > sx):
-        raise RuntimeError("торцы LM2596 не смотрят на клеммы и Shelly")
     ox, oy, _oz = outer_size()
     rail_bottom, rail_top = din_rail_xs()
     spring_out = rail_bottom - DIN_EDGE - SPRING_T - BACKSTOP_GAP - BACKSTOP_T
@@ -954,6 +1256,32 @@ def check_layout():
             raise RuntimeError("защёлка DIN вылезает за торец дна")
     if SCREW_DEPTH > FLOOR - 1.0:
         raise RuntimeError("винт пластины прорезает дно")
+    if GROOVE_W + 0.05 < LID_SKIRT + 2 * LID_PLAY:
+        raise RuntimeError("бортик крышки не входит в паз")
+    if GROOVE_D - LID_SKIRT_H < 0.4:
+        raise RuntimeError("бортик крышки упирается в дно паза")
+    if LIP_FENCE + GROOVE_W + LIP_BANK > WALL + 9 - BOSS_D / 2 - 1.2:
+        raise RuntimeError("паз крышки задевает босс")
+    _ox, oy, oz = outer_size()
+    gill_top = max(GILL_ROWS) + GILL_H
+    if gill_top > oz - RIM_DROP - GROOVE_D - 1.0:
+        raise RuntimeError("жабры врезаются в паз крышки")
+    if min(GILL_ROWS) < FLOOR + 2:
+        raise RuntimeError("жабры врезаются в дно")
+    if abs(snake_top() - (oz - RIM_DROP)) > 0.05:
+        raise RuntimeError("змейка не доходит до крышки")
+    if snake_top() > oz - RIM_DROP + 0.05:
+        raise RuntimeError("змейка не даёт крышке сесть")
+    buck_x0 = bx - BUCK_END_GAP - BUCK_STOP_T - 0.5
+    buck_x1 = bx + BUCK[0] + BUCK_END_GAP + BUCK_STOP_T + 0.5
+    for x0, _y0, _length in snake_fingers():
+        x1 = x0 + SNAKE_T
+        if x1 > buck_x0 and x0 < buck_x1:
+            raise RuntimeError("змейка пересекает каретку")
+        if x0 < 4.5 or x1 > ox - 4.5:
+            raise RuntimeError("змейка пересекает щель жабры")
+    if max(gill_origins(oy)) + 2 * GILL_WALL + GILL_INNER_W > oy - 4:
+        raise RuntimeError("жабры вылезают за стенку")
     px0, px1, py0, py1 = bracket_plate_bounds()
     for x, y in bracket_screw_xy():
         if not (px0 + 3 < x < px1 - 3 and py0 + 3 < y < py1 - 3):
@@ -969,9 +1297,14 @@ def check_layout():
         raise RuntimeError("скос DIN круче 45° и не напечатается")
     if BACKSTOP_GAP < DIN_TOOTH + 0.4:
         raise RuntimeError("язычку DIN некуда отогнуться")
-    free = _seat_z() - (CLIP_Z0 + 2.55)
-    if free < 11:
+    free = _seat_z() - (CLIP_Z0 + BAR_H)
+    if free < 7.5:
         raise RuntimeError("язычок DIN слишком короткий и жёсткий")
+    if HOOK_Z0 > _mouth_z() - 2.5:
+        raise RuntimeError("крючок DIN короче паза")
+    margin = (CLIP_LEN - SPRING_W) / 2
+    if TOWER_W + 2 * TOWER_INSET > margin - 0.3:
+        raise RuntimeError("башни DIN пересекают язычок")
 
 
 def main():
@@ -985,23 +1318,24 @@ def main():
     base = build_base()
     lid = build_lid(0)
     bracket = build_bracket()
+    coupon = build_shelly_coupon()
     marker = build_shelly_marker()
     buck = build_buck_marker()
     rail = build_din_marker()
     base.data.materials.append(plastic("PETG_base", (0.75, 0.78, 0.80, 1)))
     lid.data.materials.append(plastic("PETG_lid", (0.82, 0.84, 0.86, 1)))
     bracket.data.materials.append(plastic("PETG_bracket", (0.55, 0.62, 0.58, 1)))
+    coupon.data.materials.append(plastic("PETG_coupon", (0.72, 0.74, 0.70, 1)))
     marker.data.materials.append(plastic("FR4", (0.07, 0.22, 0.12, 1)))
     buck.data.materials.append(plastic("LM2596_blue", (0.08, 0.25, 0.62, 1)))
     rail.data.materials.append(plastic("DIN_zinc", (0.62, 0.64, 0.66, 1)))
 
-    for obj in (base, lid, bracket, marker, buck, rail):
+    for obj in (base, lid, bracket, coupon, marker, buck, rail):
         for poly in obj.data.polygons:
             poly.use_smooth = False
 
     px, py, pz = shelly_seat()
     bx, by, bz = buck_seat()
-    tx, ty, span = terminal_origin()
     print(
         "SEAT",
         f"x {px:.2f}..{px + PCB[0]:.2f}",
@@ -1016,26 +1350,22 @@ def main():
         f"top_clear {FLOOR + INNER[2] - (bz + BUCK_H):.2f}",
     )
     print(
-        "TERMS",
-        f"x {tx:.2f}..{tx + TERM[0]:.2f}",
-        f"y {ty:.2f}..{ty + span:.2f}",
-    )
-    print(
         "DIN",
         f"x {din_rail_xs()[0]:.2f}..{din_rail_xs()[1]:.2f}",
         f"floor {FLOOR:.1f}",
         "clips",
         " ".join(f"{y:.1f}" for y in din_clip_ys(outer_size()[1])),
     )
-    print("BOUNDARY", boundary_edges(base), boundary_edges(lid), boundary_edges(bracket))
+    print("BOUNDARY", boundary_edges(base), boundary_edges(lid), boundary_edges(bracket), boundary_edges(coupon))
 
-    frame_camera((base, lid, bracket, marker, buck, rail))
+    frame_camera((base, lid, bracket, coupon, marker, buck, rail))
 
     blend_path = os.path.join(folder, "shelly_plus_uni_case.blend")
     bpy.ops.wm.save_as_mainfile(filepath=blend_path)
     export_stl(os.path.join(folder, "case_base.stl"), base)
     export_stl(os.path.join(folder, "case_lid.stl"), lid)
     export_stl(os.path.join(folder, "din_bracket.stl"), bracket)
+    export_stl(os.path.join(folder, "shelly_seat_test.stl"), coupon)
     print("SAVED", blend_path)
 
 

@@ -1,7 +1,10 @@
 """Открытый список заполненности. Для сайта, без учёта."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
 
+from app.config import get_settings
 from app.schemas.public import PublicStationOut, PublicTankOut
 from app.services.catalog import list_stations
 from app.services.device_ingest import list_tank_devices, tank_remainder
@@ -13,6 +16,14 @@ def _percent(remainder: float | None, capacity: float) -> float | None:
     if remainder is None or capacity <= 0:
         return None
     return round(remainder / capacity * 100, 1)
+
+
+def _online(measured_at: datetime | None) -> bool:
+    if measured_at is None:
+        return False
+    stamp = measured_at if measured_at.tzinfo is not None else measured_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+    return age <= get_settings().sensor_stale_seconds
 
 
 @router.get("/levels", response_model=list[PublicStationOut])
@@ -31,6 +42,7 @@ def public_levels() -> list[PublicStationOut]:
                     remainder_liters=remainder,
                     fill_percent=_percent(remainder, device.capacity_liters),
                     measured_at=measured_at,
+                    online=_online(measured_at),
                 )
             )
         rows.append(

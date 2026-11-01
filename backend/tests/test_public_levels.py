@@ -49,6 +49,7 @@ def test_public_level_is_fill_only():
     assert tank["remainder_liters"] == 1500
     assert tank["capacity_liters"] == 10000
     assert tank["measured_at"] is not None
+    assert tank["online"] is False
 
 
 def test_tank_without_reading_stays_empty():
@@ -61,3 +62,4 @@ def test_tank_without_reading_stays_empty():
     assert tank["fill_percent"] is None
     assert tank["remainder_liters"] is None
     assert tank["measured_at"] is None
+    assert tank["online"] is False

@@ -11,6 +11,7 @@ class PublicTankOut(BaseModel):
     remainder_liters: float | None
     fill_percent: float | None
     measured_at: datetime | None
+    online: bool = False
 
 
 class PublicStationOut(BaseModel):

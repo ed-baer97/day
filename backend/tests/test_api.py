@@ -17,9 +17,11 @@ def test_map_overview():
     r = client.get("/api/v1/map/overview")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["points"]) >= 3
-    kinds = {p["kind"] for p in body["points"]}
-    assert "station" in kinds and "truck" in kinds and "factory" in kinds
+    assert len(body["points"]) == 1
+    assert body["points"][0]["kind"] == "station"
+    assert body["points"][0]["meta"]["code"] == "AGZS-AKT-12"
+    assert body["active_trips"] == 0
+    assert body["open_events"] == 0
 
 
 def test_batch_trail():

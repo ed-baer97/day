@@ -4,7 +4,8 @@
 Старт — первое показание уровня. Отпуски и приёмки до старта
 сохраняются, но в книгу не входят: они уже сидят в физическом уровне.
 
-Пока остальной API на демо-данных, состояние приборов тоже в памяти процесса.
+Состояние приборов живёт в памяти процесса. Если задан STATE_PATH,
+после каждой записи оно сбрасывается в файл и поднимается при старте.
 Повтор с тем же ключом не двигает остаток.
 """
 
@@ -30,6 +31,7 @@ from app.services.balance import calculate_remainder, classify_discrepancy
 from app.services.calibration import LevelCalibration, volts_to_liters
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
+_MAX_SEEN = 10_000
 
 _lock = threading.Lock()
 _books: dict[tuple[UUID, UUID], "TankBook"] = {}
@@ -37,6 +39,12 @@ _seen: set[str] = set()
 _devices_by_token: dict[str, "TankDevice"] = {}
 _devices_by_tank: dict[UUID, "TankDevice"] = {}
 _devices_by_station: dict[UUID, list[UUID]] = {}
+
+
+def _commit() -> None:
+    from app.services.memory_state import persist
+
+    persist()
 
 
 @dataclass
@@ -78,7 +86,19 @@ def reset_device_ingest() -> None:
         _devices_by_station.clear()
 
 
+def _remember_seen(key: str) -> None:
+    if len(_seen) >= _MAX_SEEN:
+        _seen.clear()
+    _seen.add(key)
+
+
 def get_tank_device(station_id: UUID, tank_id: UUID) -> TankDevice:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.get_tank_device(station_id, tank_id)
     with _lock:
         device = _devices_by_tank.get(tank_id)
         if device is None or device.station_id != station_id:
@@ -87,12 +107,24 @@ def get_tank_device(station_id: UUID, tank_id: UUID) -> TankDevice:
 
 
 def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.has_calibration(station_id, tank_id)
     with _lock:
         book = _books.get((station_id, tank_id))
         return book is not None and book.calibration is not None
 
 
 def tank_by_token(token: str | None) -> TankDevice | None:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.tank_by_token(token)
     if not token:
         return None
     with _lock:
@@ -106,12 +138,24 @@ def _device_for_token(token: str | None) -> TankDevice | None:
 
 
 def list_tank_devices(station_id: UUID) -> list[TankDevice]:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.list_tank_devices(station_id)
     with _lock:
         ids = _devices_by_station.get(station_id, [])
         return [_devices_by_tank[tank_id] for tank_id in ids if tank_id in _devices_by_tank]
 
 
 def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDevice:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.register_tank(station_id, code, capacity_liters)
     cleaned = code.strip()
     if not cleaned:
         raise HTTPException(status_code=422, detail="укажите код резервуара")
@@ -129,7 +173,54 @@ def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDe
         _devices_by_token[device.token] = device
         _devices_by_tank[device.tank_id] = device
         _devices_by_station.setdefault(station_id, []).append(device.tank_id)
-        return device
+    _commit()
+    return device
+
+
+def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
+    from app.services.account_mode import use_postgres
+    from app.services.shelly_link import remove_shelly_for_tank
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        postgres_account.delete_tank_device(station_id, tank_id)
+        remove_shelly_for_tank(tank_id)
+        return
+    with _lock:
+        device = _devices_by_tank.get(tank_id)
+        if device is None or device.station_id != station_id:
+            raise HTTPException(status_code=404, detail="резервуар не найден")
+        _devices_by_token.pop(device.token, None)
+        _devices_by_tank.pop(tank_id, None)
+        if station_id in _devices_by_station:
+            _devices_by_station[station_id] = [
+                tid for tid in _devices_by_station[station_id] if tid != tank_id
+            ]
+        _books.pop((station_id, tank_id), None)
+    remove_shelly_for_tank(tank_id)
+    _commit()
+
+
+def delete_station_devices(station_id: UUID) -> None:
+    from app.services.account_mode import use_postgres
+    from app.services.shelly_link import remove_shelly_for_tank
+
+    if use_postgres():
+        # Каскад в Postgres при удалении станции. Локальные Shelly-привязки сбрасываем.
+        for device in list_tank_devices(station_id):
+            remove_shelly_for_tank(device.tank_id)
+        return
+    with _lock:
+        tank_ids = list(_devices_by_station.pop(station_id, []))
+        for tank_id in tank_ids:
+            device = _devices_by_tank.pop(tank_id, None)
+            if device is not None:
+                _devices_by_token.pop(device.token, None)
+            _books.pop((station_id, tank_id), None)
+    for tank_id in tank_ids:
+        remove_shelly_for_tank(tank_id)
+    _commit()
 
 
 def update_tank_device(
@@ -139,6 +230,17 @@ def update_tank_device(
     code: str | None = None,
     capacity_liters: float | None = None,
 ) -> TankDevice:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.update_tank_device(
+            station_id,
+            tank_id,
+            code=code,
+            capacity_liters=capacity_liters,
+        )
     with _lock:
         device = _devices_by_tank.get(tank_id)
         if device is None or device.station_id != station_id:
@@ -164,14 +266,18 @@ def update_tank_device(
                     high_volts=current.high_volts,
                     high_percent=current.high_percent,
                 )
-        return device
+    _commit()
+    return device
 
 
 def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
-    with _lock:
-        device = _device_for_token(token)
-        if device is not None:
-            return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
+    device = tank_by_token(token)
+    if device is not None:
+        if body.station_id is not None and body.station_id != device.station_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
+        if body.tank_id is not None and body.tank_id != device.tank_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(
             status_code=422,
@@ -181,16 +287,19 @@ def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
 
 
 def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
-    with _lock:
-        device = _device_for_token(token)
-        if device is not None:
-            return body.model_copy(
-                update={
-                    "station_id": device.station_id,
-                    "tank_id": device.tank_id,
-                    "capacity_liters": device.capacity_liters,
-                }
-            )
+    device = tank_by_token(token)
+    if device is not None:
+        if body.station_id is not None and body.station_id != device.station_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
+        if body.tank_id is not None and body.tank_id != device.tank_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        return body.model_copy(
+            update={
+                "station_id": device.station_id,
+                "tank_id": device.tank_id,
+                "capacity_liters": device.capacity_liters,
+            }
+        )
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(
             status_code=422,
@@ -198,6 +307,28 @@ def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
         )
     if body.capacity_liters is None:
         raise HTTPException(status_code=422, detail="укажите объём резервуара на карточке")
+    return body
+
+
+def bind_dispense(body: DispenseIngest, token: str | None) -> DispenseIngest:
+    device = tank_by_token(token)
+    if device is not None:
+        if body.station_id != device.station_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
+        if body.tank_id is not None and body.tank_id != device.tank_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
+    return body
+
+
+def bind_receipt(body: ReceiptIngest, token: str | None) -> ReceiptIngest:
+    device = tank_by_token(token)
+    if device is not None:
+        if body.station_id != device.station_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
+        if body.tank_id != device.tank_id:
+            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
     return body
 
 
@@ -257,6 +388,12 @@ def _state(book: TankBook) -> TankIngestState:
 
 
 def tank_state(tank_id: UUID) -> TankIngestState:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.tank_state(tank_id)
     with _lock:
         for book in _books.values():
             if book.tank_id == tank_id:
@@ -265,6 +402,12 @@ def tank_state(tank_id: UUID) -> TankIngestState:
 
 
 def tank_remainder(tank_id: UUID) -> tuple[float | None, datetime | None]:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.tank_remainder(tank_id)
     with _lock:
         for book in _books.values():
             if book.tank_id == tank_id:
@@ -282,6 +425,15 @@ def _poll_linked_shelly(tank_id: UUID) -> None:
 
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        state = postgres_account.set_calibration(body)
+        if body.tank_id is not None:
+            _poll_linked_shelly(body.tank_id)
+        return state
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(status_code=422, detail="укажите резервуар")
     if body.low_volts == body.high_volts:
@@ -299,6 +451,7 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
             high_volts=body.high_volts,
             high_percent=body.high_percent,
         )
+    _commit()
     _poll_linked_shelly(body.tank_id)
     return tank_state(body.tank_id)
 
@@ -319,6 +472,12 @@ def _liters_from_level(body: LevelIngest, book: TankBook) -> float:
 
 
 def accept_level(body: LevelIngest) -> IngestAck:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.accept_level(body)
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(
             status_code=422,
@@ -330,15 +489,21 @@ def accept_level(body: LevelIngest) -> IngestAck:
         if key in _seen:
             return _ack(book, message="duplicate", duplicate=True, entity_id=book.level_ids.get(key))
         liters = _liters_from_level(body, book)
-        if book.opening_liters is None:
+        if book.opening_liters is None or (
+            book.opening_liters < 0 and book.receipts_liters == 0 and book.dispense_liters == 0
+        ):
             book.opening_liters = liters
         book.actual_remainder_liters = liters
         book.last_measured_at = body.recorded_at
         _recompute(book)
         entity_id = uuid4()
-        _seen.add(key)
+        _remember_seen(key)
+        if len(book.level_ids) >= 2000:
+            book.level_ids.clear()
         book.level_ids[key] = entity_id
-        return _ack(book, message="level accepted", entity_id=entity_id)
+        ack = _ack(book, message="level accepted", entity_id=entity_id)
+    _commit()
+    return ack
 
 
 def accept_dispense(body: DispenseIngest) -> IngestAck:
@@ -348,16 +513,20 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
             if body.tank_id is None:
                 return IngestAck(accepted=True, message="duplicate", duplicate=True)
             return _ack(_book(body.station_id, body.tank_id), message="duplicate", duplicate=True)
-        _seen.add(key)
+        _remember_seen(key)
         if body.tank_id is None:
-            return IngestAck(accepted=True, message="dispense accepted", entity_id=uuid4())
-        book = _book(body.station_id, body.tank_id)
-        if book.opening_liters is None:
-            book.pending_dispense_liters += body.volume_liters
-            return _ack(book, message="dispense accepted", entity_id=uuid4())
-        book.dispense_liters += body.volume_liters
-        _recompute(book)
-        return _ack(book, message="dispense accepted", entity_id=uuid4())
+            ack = IngestAck(accepted=True, message="dispense accepted", entity_id=uuid4())
+        else:
+            book = _book(body.station_id, body.tank_id)
+            if book.opening_liters is None:
+                book.pending_dispense_liters += body.volume_liters
+                ack = _ack(book, message="dispense accepted", entity_id=uuid4())
+            else:
+                book.dispense_liters += body.volume_liters
+                _recompute(book)
+                ack = _ack(book, message="dispense accepted", entity_id=uuid4())
+    _commit()
+    return ack
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:
@@ -366,10 +535,118 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
         book = _book(body.station_id, body.tank_id)
         if key in _seen:
             return _ack(book, message="duplicate", duplicate=True)
-        _seen.add(key)
+        _remember_seen(key)
         if book.opening_liters is None:
             book.pending_receipt_liters += body.volume_liters
-            return _ack(book, message="receipt accepted", entity_id=uuid4())
-        book.receipts_liters += body.volume_liters
-        _recompute(book)
-        return _ack(book, message="receipt accepted", entity_id=uuid4())
+            ack = _ack(book, message="receipt accepted", entity_id=uuid4())
+        else:
+            book.receipts_liters += body.volume_liters
+            _recompute(book)
+            ack = _ack(book, message="receipt accepted", entity_id=uuid4())
+    _commit()
+    return ack
+
+
+def _calibration_row(calibration: LevelCalibration | None) -> dict | None:
+    if calibration is None:
+        return None
+    return {
+        "capacity_liters": calibration.capacity_liters,
+        "low_volts": calibration.low_volts,
+        "low_percent": calibration.low_percent,
+        "high_volts": calibration.high_volts,
+        "high_percent": calibration.high_percent,
+    }
+
+
+def snapshot() -> dict:
+    with _lock:
+        return {
+            "devices": [
+                {
+                    "station_id": str(device.station_id),
+                    "tank_id": str(device.tank_id),
+                    "code": device.code,
+                    "capacity_liters": device.capacity_liters,
+                    "token": device.token,
+                }
+                for device in _devices_by_tank.values()
+            ],
+            "books": [
+                {
+                    "station_id": str(book.station_id),
+                    "tank_id": str(book.tank_id),
+                    "opening_liters": book.opening_liters,
+                    "receipts_liters": book.receipts_liters,
+                    "dispense_liters": book.dispense_liters,
+                    "pending_dispense_liters": book.pending_dispense_liters,
+                    "pending_receipt_liters": book.pending_receipt_liters,
+                    "actual_remainder_liters": book.actual_remainder_liters,
+                    "calibration": _calibration_row(book.calibration),
+                    "last_volts": book.last_volts,
+                    "last_measured_at": None
+                    if book.last_measured_at is None
+                    else book.last_measured_at.isoformat(),
+                    "level_ids": {key: str(value) for key, value in book.level_ids.items()},
+                }
+                for book in _books.values()
+            ],
+            "seen": sorted(_seen),
+        }
+
+
+def restore_snapshot(data: dict) -> None:
+    if not any(key in data for key in ("devices", "books", "seen")):
+        return
+    with _lock:
+        if "devices" in data:
+            _devices_by_token.clear()
+            _devices_by_tank.clear()
+            _devices_by_station.clear()
+            for row in data["devices"]:
+                device = TankDevice(
+                    station_id=UUID(row["station_id"]),
+                    tank_id=UUID(row["tank_id"]),
+                    code=row["code"],
+                    capacity_liters=float(row["capacity_liters"]),
+                    token=row["token"],
+                )
+                _devices_by_token[device.token] = device
+                _devices_by_tank[device.tank_id] = device
+                _devices_by_station.setdefault(device.station_id, []).append(device.tank_id)
+        if "seen" in data:
+            _seen.clear()
+            _seen.update(str(item) for item in data["seen"])
+        if "books" not in data:
+            return
+        _books.clear()
+        for row in data["books"]:
+            station_id = UUID(row["station_id"])
+            tank_id = UUID(row["tank_id"])
+            book = TankBook(
+                station_id=station_id,
+                tank_id=tank_id,
+                opening_liters=row.get("opening_liters"),
+                receipts_liters=float(row.get("receipts_liters") or 0),
+                dispense_liters=float(row.get("dispense_liters") or 0),
+                pending_dispense_liters=float(row.get("pending_dispense_liters") or 0),
+                pending_receipt_liters=float(row.get("pending_receipt_liters") or 0),
+                actual_remainder_liters=row.get("actual_remainder_liters"),
+                last_volts=row.get("last_volts"),
+            )
+            raw_cal = row.get("calibration")
+            if isinstance(raw_cal, dict):
+                book.calibration = LevelCalibration(
+                    capacity_liters=float(raw_cal["capacity_liters"]),
+                    low_volts=float(raw_cal["low_volts"]),
+                    low_percent=float(raw_cal["low_percent"]),
+                    high_volts=float(raw_cal["high_volts"]),
+                    high_percent=float(raw_cal["high_percent"]),
+                )
+            measured = row.get("last_measured_at")
+            if measured:
+                book.last_measured_at = datetime.fromisoformat(str(measured).replace("Z", "+00:00"))
+            for key, value in (row.get("level_ids") or {}).items():
+                book.level_ids[str(key)] = UUID(str(value))
+            _recompute(book)
+            _books[(station_id, tank_id)] = book

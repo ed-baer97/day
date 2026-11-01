@@ -6,13 +6,13 @@
 ## Структура
 
 ```
-backend/          FastAPI, модели домена, REST + ingest
-frontend/         React + MapLibre (визуальный язык LogHub)
-docker-compose.yml  PostgreSQL (+ API)
-docs (Agent Store)  план архитектуры / MVP
+backend/            FastAPI, учёт, ingest, миграции Alembic
+frontend/           React + MapLibre (визуальный язык LogHub)
+docker-compose.yml  локальные PostgreSQL и API
+deploy/             площадка: web (nginx), api, Postgres
 ```
 
-## Быстрый старт
+## Быстрый старт (локально)
 
 ### База
 
@@ -24,17 +24,17 @@ docker compose up -d db
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
+По умолчанию `ACCOUNT_STORE=memory`: заправки, резервуары, токены и шкала живут в памяти процесса.  
+Тесты тоже идут в memory.
+
 Health: `GET http://localhost:8000/health`  
-OpenAPI: `http://localhost:8000/docs`
-
-API prefix: `/api/v1` — stations, trucks, batches (+ trail), balance, events, ingest, map.
-
-На MVP-0 роутеры отдают демо-данные в памяти; SQLAlchemy-модели и sketch миграции Alembic готовы к подключению Postgres в MVP-1.
+OpenAPI: `http://localhost:8000/docs`  
+API prefix: `/api/v1`.
 
 ### Frontend
 
@@ -44,21 +44,96 @@ npm install
 npm run dev
 ```
 
-UI: `http://localhost:5173` — **интерактивный мок с симуляцией процесса** (play/pause/скорость/сброс).  
-География: **Мангистауская обл.** — завод **КазГаз** (Жанаозен), газовозы по дорогам к АГЗС (Актау, Жетыбай, Курык, Форт-Шевченко и др.).  
-Газовозы едут по маршруту, растёт цифровой след, обновляются остатки АГЗС и иногда появляются расхождения. Данные in-memory на фронте — Postgres/GPS/Topaz не требуются.  
-Тема и токены — по [LogHub](https://github.com/ed-baer97/LogHub) (Caspian/forest: `#0b100e`, teal `#2ec4b6`, Manrope + Fraunces).
+UI: `http://localhost:5173` (прокси `/api` → `:8000`).  
+Витрина раз в 15 секунд читает `GET /api/v1/public/levels`.  
+Тема — по [LogHub](https://github.com/ed-baer97/LogHub) (Caspian/forest).
 
-### Тесты баланса
+### Тесты
 
 ```bash
 cd backend && pip install pytest && PYTHONPATH=. pytest tests/ -q
 ```
 
-## Документация
+## Учёт и режимы хранения
 
-- План архитектуры и MVP: Agent Store `docs/lpg-digital-trail-plan.md`
-- Design reference LogHub: Agent Store `docs/loghub-design-reference.md`
+| Режим | Когда | Где данные |
+|---|---|---|
+| `ACCOUNT_STORE=memory` | локальный стенд, pytest | память; опционально снимок в `STATE_PATH` |
+| `ACCOUNT_STORE=postgres` | площадка | Postgres; ключ, шкала, книга, история замеров |
+
+На площадке при старте `api`:
+
+1. применяются миграции Alembic;
+2. если таблица станций пуста и есть `/data/state.json` — снимок один раз переносится в Postgres;
+3. если файла нет — создаётся стартовая АГЗС Актау · 12 мкр.
+
+Газовозы, партии и карта-симуляция на фронте пока не пишутся в Postgres.
+
+## Вход
+
+- `admin` из env (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) видит все АГЗС и создаёт логины станций.
+- Логин станции: `POST /api/v1/stations/{station_id}/users` (только admin). Пароль в ответе один раз, в базе — pbkdf2.
+- Пользователь станции видит только свою заправку и свой `X-Device-Token`.
+- `GET /api/v1/auth/me` отдаёт `role` (`admin` \| `station`) и `station_id`.
+
+## Публичная витрина
+
+`GET /api/v1/public/levels` — код, название, ёмкость, остаток, процент, время замера, `online`.
+
+`online=false`, если замера нет дольше `SENSOR_STALE_SECONDS` (по умолчанию 60). Последний процент на сайте остаётся, подпись — «нет связи».
+
+## Shelly Plus Uni
+
+Прибор в сети станции сам шлёт напряжение наружу. Сервер до локального IP не ходит.
+
+```
+Shelly  --POST /api/v1/ingest/level-->  API  -->  Postgres
+                              X-Device-Token
+```
+
+- URL берётся из `PUBLIC_BASE_URL` (в карточке резервуара поле `ingest_url`).
+- Ключ — `X-Device-Token` с карточки резервуара.
+- Если задан `INGEST_TOKEN`, запросы без валидного ключа резервуара или сессии отклоняются.
+- Вольты → литры по двум точкам шкалы. Циферблат 5–95 %: ниже/выше этих рисок сайт не уходит.
+- История: `GET /api/v1/stations/{id}/devices/{tank_id}/levels`.
+- Смена Wi‑Fi на Shelly не стирает скрипт; сброс к заводским — нужно залить снова.
+
+Установка скрипта с машины в одной сети с прибором:
+
+```bash
+python backend/scripts/install_shelly_level.py \
+  --shelly 192.168.0.104 \
+  --url http://93.171.232.47/api/v1/ingest/level \
+  --token КЛЮЧ_РЕЗЕРВУАРА
+```
+
+## Площадка
+
+Сайт: [http://93.171.232.47](http://93.171.232.47).  
+Имя `vds39595.vpsza500.kz` снаружи пока не резолвится — витрина и Shelly ходят на IP.
+
+Каталог: `/opt/lpg`. Секреты только в `/opt/lpg/deploy/.env` (не в git). Образец: [`deploy/.env.example`](deploy/.env.example).
+
+Снаружи порт 80. Nginx отдаёт фронт и проксирует `/api/` и `/health` в `api`. Postgres наружу не открыт.
+
+```bash
+cd /opt/lpg
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+```
+
+### Переменные площадки
+
+| Переменная | Назначение |
+|---|---|
+| `POSTGRES_PASSWORD` | пароль БД |
+| `ACCOUNT_STORE` | `postgres` на площадке |
+| `PUBLIC_BASE_URL` | публичный адрес сайта для Shelly |
+| `SENSOR_STALE_SECONDS` | порог «нет связи» (сек.) |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | вход администратора |
+| `AUTH_SECRET` | подпись сессий |
+| `INGEST_TOKEN` | общий запасной ключ ingest (опционально) |
+| `CORS_ORIGINS` | разрешённые origin для браузера |
+| `STATE_PATH` | путь к JSON для разового импорта (`/data/state.json`) |
 
 ## Цепочка учёта
 
@@ -66,6 +141,6 @@ cd backend && pip install pytest && PYTHONPATH=. pytest tests/ -q
 Поставщик → Завод → Партия → Газовоз → АГЗС → Резервуар → Колонка → Фискальная реализация
 ```
 
-Баланс АГЗС: `остаток = предыдущий + приёмки − отпуски`; сверка с фактом уровня → события недостача / излишек / ошибка измерения / незарегистрированное движение.
+Баланс АГЗС: `остаток = предыдущий + приёмки − отпуски`; сверка с фактом уровня → недостача / излишек / ошибка измерения / незарегистрированное движение.
 
 Одна поставка LPG связывает завод, газовоз, АГЗС и резервуар: отгруженный, доставленный, принятый, отпущенный и фискальный объём.

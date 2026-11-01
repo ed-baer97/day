@@ -1,11 +1,15 @@
 """Привязка Shelly к резервуару и опрос по IP.
 
-Сервер сам ходит на прибор. Датчик может быть ещё не подключён:
-напряжение показываем сразу, в книгу остатка пишем только после калибровки.
+Опрос возможен, только если сервер сам видит прибор.
+На площадке Shelly стоит в сети станции и сам шлёт напряжение наружу,
+поэтому привязка по локальному IP там не используется.
+Датчик может быть ещё не подключён: напряжение показываем сразу,
+в книгу остатка пишем только после калибровки.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import threading
@@ -24,10 +28,12 @@ from app.services.shelly import HttpShelly, ShellyError, ShellyRpc, ShellySnapsh
 logger = logging.getLogger(__name__)
 
 _HOST = re.compile(
-    r"^(?:(?:\d{1,3}\.){3}\d{1,3}|localhost|"
+    r"^(?:(?:\d{1,3}\.){3}\d{1,3}|"
     r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
     r"(?::\d{1,5})?$"
 )
+
+_FORBIDDEN_HOSTS = {"localhost", "local", "metadata", "metadata.google.internal", "db", "api", "postgres", "redis"}
 
 _lock = threading.Lock()
 _gate = threading.Lock()
@@ -68,7 +74,10 @@ def set_shelly_rpc(rpc: ShellyRpc) -> None:
 def normalize_host(raw: str) -> str:
     text = raw.strip()
     if "://" in text:
-        text = text.split("://", 1)[1]
+        scheme, rest = text.split("://", 1)
+        if scheme.lower() not in ("http", "https"):
+            raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
+        text = rest
     text = text.split("/")[0].strip()
     if not _HOST.fullmatch(text):
         raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
@@ -79,9 +88,17 @@ def normalize_host(raw: str) -> str:
         text_ip = ip
     else:
         text_ip = text
+
+    lowered = text_ip.lower()
+    if lowered in _FORBIDDEN_HOSTS or lowered.endswith(".internal") or lowered.endswith(".localhost"):
+        raise HTTPException(status_code=422, detail="недопустимый внутренний или служебный адрес Shelly")
+
     if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", text_ip):
         if any(int(part) > 255 for part in text_ip.split(".")):
             raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
+        addr = ipaddress.IPv4Address(text_ip)
+        if addr.is_loopback or addr.is_unspecified or addr.is_link_local or addr.is_multicast:
+            raise HTTPException(status_code=422, detail="недопустимый внутренний или служебный IP-адрес Shelly")
     return text
 
 
@@ -113,6 +130,9 @@ def connect_shelly(station_id: UUID, tank_id: UUID, host: str) -> None:
             current.volts = None
             current.applied = False
             current.last_error = None
+    from app.services.memory_state import persist
+
+    persist()
     poll_one(device.tank_id)
 
 
@@ -123,6 +143,14 @@ def disconnect_shelly(station_id: UUID, tank_id: UUID) -> None:
         if link is None or link.station_id != station_id:
             raise HTTPException(status_code=404, detail="Shelly не привязан")
         del _links[tank_id]
+    from app.services.memory_state import persist
+
+    persist()
+
+
+def remove_shelly_for_tank(tank_id: UUID) -> None:
+    with _lock:
+        _links.pop(tank_id, None)
 
 
 def poll_one(tank_id: UUID) -> None:
@@ -267,6 +295,32 @@ class ShellyPoller:
                 logger.exception("опрос Shelly")
             if self._stop.wait(_poll_seconds()):
                 return
+
+
+def snapshot_bindings() -> list[dict[str, str]]:
+    with _lock:
+        return [
+            {
+                "station_id": str(link.station_id),
+                "tank_id": str(link.tank_id),
+                "host": link.host,
+            }
+            for link in _links.values()
+        ]
+
+
+def restore_bindings(rows: list[dict]) -> None:
+    with _lock:
+        _links.clear()
+        for row in rows:
+            if not isinstance(row, dict) or "tank_id" not in row or "host" not in row:
+                continue
+            tank_id = UUID(row["tank_id"])
+            _links[tank_id] = ShellyLink(
+                station_id=UUID(row["station_id"]),
+                tank_id=tank_id,
+                host=str(row["host"]),
+            )
 
 
 def _poll_seconds() -> float:

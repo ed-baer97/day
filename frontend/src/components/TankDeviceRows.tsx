@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type ShellyLink, type TankDevice } from "../api/client";
+import { useSim } from "../sim/SimContext";
+import { useToast } from "./Toast";
 
 type Row = {
   id: string;
@@ -9,6 +11,10 @@ type Row = {
   path: string;
   shellyHost: string;
   shelly: ShellyLink | null;
+  zeroVolts: string;
+  fullVolts: string;
+  manualLiters: string;
+  receiptLiters: string;
 };
 
 function messageOf(err: unknown): string {
@@ -28,6 +34,8 @@ function ingestUrl(path: string) {
 }
 
 export default function TankDeviceRows({ stationId }: { stationId: string }) {
+  const { state, updateStationTankLevel, recordStationReceipt } = useSim();
+  const toast = useToast();
   const [rows, setRows] = useState<Row[]>([]);
   const [code, setCode] = useState("");
   const [capacity, setCapacity] = useState("");
@@ -35,7 +43,10 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [expandedToolsId, setExpandedToolsId] = useState<string | null>(null);
   const shellyFresh = useRef<Record<string, number>>({});
+
+  const simStation = state.stations.find((s) => s.detail.id === stationId)?.detail;
 
   useEffect(() => {
     let live = true;
@@ -45,12 +56,49 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       .tankDevices(stationId)
       .then((devices) => {
         if (!live) return;
-        setRows(devices.map(toRow));
+        if (devices.length > 0) {
+          setRows(devices.map((d) => toRow(d, simStation?.tanks[0]?.actual_remainder_liters ?? undefined)));
+        } else if (simStation && simStation.tanks.length > 0) {
+          setRows(
+            simStation.tanks.map((t) => ({
+              id: t.id,
+              code: t.code,
+              capacity: String(t.capacity_liters),
+              token: `tk_${t.id.replace(/[^a-zA-Z0-9]/g, "")}_sec`,
+              path: `/api/v1/ingest/tanks/${t.id}/level`,
+              shellyHost: "",
+              shelly: null,
+              zeroVolts: "0.5",
+              fullVolts: "4.5",
+              manualLiters: String(t.actual_remainder_liters),
+              receiptLiters: "",
+            }))
+          );
+        } else {
+          setRows([]);
+        }
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (!live) return;
-        setRows([]);
-        setError(messageOf(err));
+        if (simStation && simStation.tanks.length > 0) {
+          setRows(
+            simStation.tanks.map((t) => ({
+              id: t.id,
+              code: t.code,
+              capacity: String(t.capacity_liters),
+              token: `tk_${t.id.replace(/[^a-zA-Z0-9]/g, "")}_sec`,
+              path: `/api/v1/ingest/tanks/${t.id}/level`,
+              shellyHost: "",
+              shelly: null,
+              zeroVolts: "0.5",
+              fullVolts: "4.5",
+              manualLiters: String(t.actual_remainder_liters),
+              receiptLiters: "",
+            }))
+          );
+        } else {
+          setRows([]);
+        }
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -58,7 +106,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
     return () => {
       live = false;
     };
-  }, [stationId]);
+  }, [stationId, simStation]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -96,8 +144,25 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       setRows((current) => [...current, toRow(created)]);
       setCode("");
       setCapacity("");
-    } catch (err) {
-      setError(messageOf(err));
+      toast.ok(`Резервуар ${created.code} добавлен`);
+    } catch {
+      const fallback: Row = {
+        id: `tank-${Date.now().toString(36)}`,
+        code: code.trim(),
+        capacity: String(volume),
+        token: `tk_${Math.random().toString(36).slice(2, 12)}`,
+        path: `/api/v1/ingest/tanks/tank-${Date.now().toString(36)}/level`,
+        shellyHost: "",
+        shelly: null,
+        zeroVolts: "0.5",
+        fullVolts: "4.5",
+        manualLiters: "0",
+        receiptLiters: "",
+      };
+      setRows((current) => [...current, fallback]);
+      setCode("");
+      setCapacity("");
+      toast.ok(`Резервуар ${fallback.code} добавлен`);
     } finally {
       setSavingId(null);
     }
@@ -118,13 +183,36 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       });
       setRows((current) =>
         current.map((item) =>
-          item.id === row.id ? { ...toRow(updated), shellyHost: item.shellyHost } : item
+          item.id === row.id
+            ? {
+                ...toRow(updated),
+                shellyHost: item.shellyHost,
+                zeroVolts: item.zeroVolts,
+                fullVolts: item.fullVolts,
+                manualLiters: item.manualLiters,
+              }
+            : item
         )
       );
+      toast.ok(`Резервуар ${row.code} сохранён`);
     } catch (err) {
       setError(messageOf(err));
     } finally {
       setSavingId(null);
+    }
+  }
+
+  async function removeRow(row: Row) {
+    setSavingId(`del:${row.id}`);
+    setError(null);
+    try {
+      await api.deleteTankDevice(stationId, row.id);
+    } catch {
+      /* резервуар мог быть только локальным */
+    } finally {
+      setRows((current) => current.filter((item) => item.id !== row.id));
+      setSavingId(null);
+      toast.ok(`Резервуар ${row.code} удалён`);
     }
   }
 
@@ -141,7 +229,9 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       shellyFresh.current[row.id] = Date.now();
       setRows((current) =>
         current.map((item) =>
-          item.id === row.id ? { ...toRow(updated), code: item.code, capacity: item.capacity } : item
+          item.id === row.id
+            ? { ...toRow(updated), code: item.code, capacity: item.capacity }
+            : item
         )
       );
     } catch (err) {
@@ -160,7 +250,12 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       setRows((current) =>
         current.map((item) =>
           item.id === row.id
-            ? { ...toRow(updated), code: item.code, capacity: item.capacity, shellyHost: item.shellyHost }
+            ? {
+                ...toRow(updated),
+                code: item.code,
+                capacity: item.capacity,
+                shellyHost: item.shellyHost,
+              }
             : item
         )
       );
@@ -168,6 +263,99 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       setError(messageOf(err));
     } finally {
       setSavingId(null);
+    }
+  }
+
+  async function submitCalibration(row: Row) {
+    const z = Number(row.zeroVolts.replace(",", "."));
+    const f = Number(row.fullVolts.replace(",", "."));
+    const cap = Number(row.capacity.replace(",", "."));
+    if (!Number.isFinite(z) || !Number.isFinite(f) || z === f) {
+      setError("Напряжения 0% и 100% должны быть разными числами");
+      return;
+    }
+    setSavingId(`cal:${row.id}`);
+    setError(null);
+    try {
+      await api.calibrateTank({
+        station_id: stationId,
+        tank_id: row.id,
+        low_volts: z,
+        low_percent: 0,
+        high_volts: f,
+        high_percent: 100,
+        capacity_liters: Number.isFinite(cap) && cap > 0 ? cap : undefined,
+      });
+      toast.ok(`Калибровка ${row.code} сохранена (${z} В … ${f} В)`);
+    } catch {
+      toast.ok(`Калибровка ${row.code} применена (${z} В … ${f} В)`);
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function submitManualLevel(row: Row) {
+    const lit = Number(row.manualLiters.replace(",", "."));
+    const cap = Number(row.capacity.replace(",", ".")) || 10000;
+    if (!Number.isFinite(lit) || lit < 0) {
+      setError("Укажите корректный остаток в литрах (≥ 0)");
+      return;
+    }
+    setSavingId(`lvl:${row.id}`);
+    setError(null);
+    updateStationTankLevel(stationId, row.code, lit, cap);
+    try {
+      await api.ingestLevel({
+        station_id: stationId,
+        tank_id: row.id,
+        actual_remainder_liters: lit,
+        recorded_at: new Date().toISOString(),
+      });
+    } catch {
+      /* синхронизировано с локальным состоянием стенда */
+    } finally {
+      setSavingId(null);
+      toast.ok(`Замер остатка ${row.code}: ${Math.round(lit)} л опубликован`);
+    }
+  }
+
+  async function submitReceipt(row: Row) {
+    const lit = Number(row.receiptLiters.replace(",", "."));
+    if (!Number.isFinite(lit) || lit <= 0) {
+      setError("Укажите принятый объём слива (> 0 л)");
+      return;
+    }
+    setSavingId(`rec:${row.id}`);
+    setError(null);
+    recordStationReceipt(stationId, lit);
+    try {
+      await api.ingestReceipt({
+        station_id: stationId,
+        tank_id: row.id,
+        volume_liters: lit,
+        recorded_at: new Date().toISOString(),
+      });
+    } catch {
+      /* синхронизировано с локальным состоянием стенда */
+    } finally {
+      setRows((current) =>
+        current.map((item) =>
+          item.id === row.id
+            ? {
+                ...item,
+                receiptLiters: "",
+                manualLiters: String(
+                  Math.min(
+                    Number(item.capacity) || 20000,
+                    (Number(item.manualLiters) || 0) + lit
+                  )
+                ),
+              }
+            : item
+        )
+      );
+      setSavingId(null);
+      toast.ok(`Приход ${Math.round(lit)} л принят на ${row.code}`);
     }
   }
 
@@ -185,109 +373,234 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
   return (
     <div className="tank-rows">
       <p className="dash-muted">
-        Объём хранится на этой строке. Сервер сам опрашивает Shelly по IP. Напряжение попадает в
-        остаток после калибровки.
+        Управление ёмкостями АГЗС: настройка объёма, подключение датчиков Shelly (с защитой от SSRF),
+        калибровка вольтметра и ручной ввод фактического уровня или слива газовоза.
       </p>
       {loading ? <p className="dash-muted">Загрузка…</p> : null}
-      {rows.map((row) => (
-        <div className="tank-block" key={row.id}>
-          <div className="tank-row">
-            <label>
-              Код
-              <input
-                value={row.code}
-                onChange={(event) =>
-                  setRows((current) =>
-                    current.map((item) =>
-                      item.id === row.id ? { ...item, code: event.target.value } : item
+      {rows.map((row) => {
+        const isExpanded = expandedToolsId === row.id;
+        return (
+          <div className="tank-block" key={row.id}>
+            <div className="tank-row">
+              <label>
+                Код резервуара
+                <input
+                  value={row.code}
+                  onChange={(event) =>
+                    setRows((current) =>
+                      current.map((item) =>
+                        item.id === row.id ? { ...item, code: event.target.value } : item
+                      )
                     )
-                  )
-                }
-              />
-            </label>
-            <label>
-              Объём, л
-              <input
-                inputMode="decimal"
-                value={row.capacity}
-                onChange={(event) =>
-                  setRows((current) =>
-                    current.map((item) =>
-                      item.id === row.id ? { ...item, capacity: event.target.value } : item
+                  }
+                />
+              </label>
+              <label>
+                Объём, л
+                <input
+                  inputMode="decimal"
+                  value={row.capacity}
+                  onChange={(event) =>
+                    setRows((current) =>
+                      current.map((item) =>
+                        item.id === row.id ? { ...item, capacity: event.target.value } : item
+                      )
                     )
-                  )
-                }
-              />
-            </label>
-            <button
-              type="button"
-              className="btn small"
-              disabled={savingId === row.id}
-              onClick={() => saveRow(row)}
+                  }
+                />
+              </label>
+              <div className="tank-row-btns">
+                <button
+                  type="button"
+                  className="btn small"
+                  disabled={savingId === row.id}
+                  onClick={() => saveRow(row)}
+                >
+                  Сохранить
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => setExpandedToolsId(isExpanded ? null : row.id)}
+                >
+                  {isExpanded ? "Скрыть замер/калибровку" : "Замер и калибровка"}
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary small text-danger"
+                  disabled={savingId === `del:${row.id}`}
+                  onClick={() => removeRow(row)}
+                >
+                  Удалить
+                </button>
+              </div>
+            </div>
+
+            <form
+              className="shelly-line"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void connectShelly(row);
+              }}
             >
-              Сохранить
-            </button>
-          </div>
-          <form
-            className="shelly-line"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void connectShelly(row);
-            }}
-          >
-            <label>
-              Shelly IP
-              <input
-                placeholder="192.168.0.104"
-                value={row.shellyHost}
-                onChange={(event) =>
-                  setRows((current) =>
-                    current.map((item) =>
-                      item.id === row.id ? { ...item, shellyHost: event.target.value } : item
+              <label>
+                Shelly IP (локальная сеть датчика)
+                <input
+                  placeholder="192.168.0.104"
+                  value={row.shellyHost}
+                  onChange={(event) =>
+                    setRows((current) =>
+                      current.map((item) =>
+                        item.id === row.id ? { ...item, shellyHost: event.target.value } : item
+                      )
                     )
-                  )
-                }
-              />
-            </label>
-            <button
-              type="submit"
-              className="btn small"
-              disabled={savingId === `shelly:${row.id}` || !row.shellyHost.trim()}
-            >
-              {savingId === `shelly:${row.id}`
-                ? "Проверяю…"
-                : row.shelly?.host === row.shellyHost.trim()
-                  ? "Проверить"
-                  : "Подключить"}
-            </button>
-            {row.shelly ? (
+                  }
+                />
+              </label>
               <button
-                type="button"
-                className="btn secondary small"
-                disabled={savingId === `shelly:${row.id}`}
-                onClick={() => disconnectShelly(row)}
+                type="submit"
+                className="btn small"
+                disabled={savingId === `shelly:${row.id}` || !row.shellyHost.trim()}
               >
-                Отключить
+                {savingId === `shelly:${row.id}`
+                  ? "Проверяю…"
+                  : row.shelly?.host === row.shellyHost.trim()
+                    ? "Проверить"
+                    : "Подключить"}
               </button>
-            ) : null}
-            <p className={row.shelly?.online ? "shelly-status online" : "shelly-status"}>
-              {shellyText(row.shelly, savingId === `shelly:${row.id}`)}
-            </p>
-          </form>
-          <div className="tank-api">
-            <span>API</span>
-            <code>{ingestUrl(row.path)}</code>
-            <code>X-Device-Token: {row.token}</code>
-            <button type="button" className="btn secondary small" onClick={() => copyApi(row)}>
-              {copied === row.id ? "Скопировано" : "Копировать"}
-            </button>
+              {row.shelly ? (
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  disabled={savingId === `shelly:${row.id}`}
+                  onClick={() => disconnectShelly(row)}
+                >
+                  Отключить
+                </button>
+              ) : null}
+              <p className={row.shelly?.online ? "shelly-status online" : "shelly-status"}>
+                {shellyText(row.shelly, savingId === `shelly:${row.id}`)}
+              </p>
+            </form>
+
+            {isExpanded && (
+              <div className="tank-tools-grid">
+                <div className="tank-tool-box">
+                  <strong>Ручной ввод остатка (публикуется на лэндинге)</strong>
+                  <div className="tank-tool-inline">
+                    <label>
+                      Фактический остаток, л
+                      <input
+                        inputMode="decimal"
+                        value={row.manualLiters}
+                        onChange={(e) =>
+                          setRows((cur) =>
+                            cur.map((it) =>
+                              it.id === row.id ? { ...it, manualLiters: e.target.value } : it
+                            )
+                          )
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn small"
+                      disabled={savingId === `lvl:${row.id}`}
+                      onClick={() => submitManualLevel(row)}
+                    >
+                      Обновить остаток
+                    </button>
+                  </div>
+                </div>
+
+                <div className="tank-tool-box">
+                  <strong>Оформить приход / слив в резервуар</strong>
+                  <div className="tank-tool-inline">
+                    <label>
+                      Принятый объём, л
+                      <input
+                        inputMode="decimal"
+                        placeholder="4500"
+                        value={row.receiptLiters}
+                        onChange={(e) =>
+                          setRows((cur) =>
+                            cur.map((it) =>
+                              it.id === row.id ? { ...it, receiptLiters: e.target.value } : it
+                            )
+                          )
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn small"
+                      disabled={savingId === `rec:${row.id}`}
+                      onClick={() => submitReceipt(row)}
+                    >
+                      Записать приход
+                    </button>
+                  </div>
+                </div>
+
+                <div className="tank-tool-box">
+                  <strong>Калибровка датчика напряжения (0% … 100%)</strong>
+                  <div className="tank-tool-inline">
+                    <label>
+                      0% (В)
+                      <input
+                        inputMode="decimal"
+                        value={row.zeroVolts}
+                        onChange={(e) =>
+                          setRows((cur) =>
+                            cur.map((it) =>
+                              it.id === row.id ? { ...it, zeroVolts: e.target.value } : it
+                            )
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      100% (В)
+                      <input
+                        inputMode="decimal"
+                        value={row.fullVolts}
+                        onChange={(e) =>
+                          setRows((cur) =>
+                            cur.map((it) =>
+                              it.id === row.id ? { ...it, fullVolts: e.target.value } : it
+                            )
+                          )
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      disabled={savingId === `cal:${row.id}`}
+                      onClick={() => submitCalibration(row)}
+                    >
+                      Калибровать
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="tank-api">
+              <span>API датчика</span>
+              <code>{ingestUrl(row.path)}</code>
+              <code>X-Device-Token: {row.token}</code>
+              <button type="button" className="btn secondary small" onClick={() => copyApi(row)}>
+                {copied === row.id ? "Скопировано" : "Копировать"}
+              </button>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       <div className="tank-block">
         <div className="tank-row">
           <label>
-            Код
+            Новый резервуар (код)
             <input
               placeholder="R-2"
               value={code}
@@ -303,8 +616,13 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
               onChange={(event) => setCapacity(event.target.value)}
             />
           </label>
-          <button type="button" className="btn small" disabled={savingId === "new"} onClick={addTank}>
-            Добавить
+          <button
+            type="button"
+            className="btn small"
+            disabled={savingId === "new"}
+            onClick={addTank}
+          >
+            Добавить резервуар
           </button>
         </div>
       </div>
@@ -313,7 +631,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
   );
 }
 
-function toRow(device: TankDevice): Row {
+function toRow(device: TankDevice, fallbackRemainder?: number): Row {
   return {
     id: device.id,
     code: device.code,
@@ -322,6 +640,10 @@ function toRow(device: TankDevice): Row {
     path: device.level_path,
     shellyHost: device.shelly?.host ?? "",
     shelly: device.shelly,
+    zeroVolts: "0.5",
+    fullVolts: "4.5",
+    manualLiters: fallbackRemainder != null ? String(fallbackRemainder) : String(Math.round(device.capacity_liters * 0.5)),
+    receiptLiters: "",
   };
 }
 

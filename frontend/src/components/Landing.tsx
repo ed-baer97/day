@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, type PublicStation } from "../api/client";
 import { useAuth } from "../auth";
-import { dateTime, liters } from "../format";
+import { dateTime, liters, REGIONS, stationRegion } from "../format";
 import Logo from "./Logo";
 import MapView from "./MapView";
 import { useSim } from "../sim/SimContext";
 import { useTheme } from "../theme";
+import type { MapPoint } from "../types";
 
 function percentLabel(value: number) {
   const rounded = Math.round(value * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+  return Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
 }
 
 function jump(id: string) {
@@ -19,23 +22,23 @@ function jump(id: string) {
 export default function Landing({ onEnter }: { onEnter: () => void }) {
   const { theme, toggle } = useTheme();
   const { session, login, logout } = useAuth();
-  const { overview, routes, play, pause, setSpeed } = useSim();
-  const [levels, setLevels] = useState<PublicStation[]>([]);
-  const [levelsError, setLevelsError] = useState<string | null>(null);
+  const { state, pause } = useSim();
+  const [apiLevels, setApiLevels] = useState<PublicStation[]>([]);
   const [levelsLoading, setLevelsLoading] = useState(true);
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(new Date());
   const [authOpen, setAuthOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [stationQuery, setStationQuery] = useState("");
+  const [regionFilter, setRegionFilter] = useState<string>("all");
+  const [availFilter, setAvailFilter] = useState<"all" | "plenty" | "low">("all");
 
+  // На публичном лэндинге симуляция маршрутов остановлена — рейсы и телеметрия конфиденциальны
   useEffect(() => {
-    setSpeed(20);
-    play();
-    return () => pause();
-  }, [play, pause, setSpeed]);
+    pause();
+  }, [pause]);
 
   useEffect(() => {
     if (!authOpen) return;
@@ -52,12 +55,12 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
       try {
         const rows = await api.publicLevels();
         if (!live) return;
-        setLevels(rows);
+        setApiLevels(rows);
         setUpdatedAt(new Date());
-        setLevelsError(null);
       } catch {
+        // Если бэкенд недоступен — используем только публичные остатки из публичного среза АГЗС
         if (!live) return;
-        setLevelsError("Не удалось обновить уровни");
+        setUpdatedAt(new Date());
       } finally {
         if (live) setLevelsLoading(false);
       }
@@ -70,17 +73,57 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
     };
   }, []);
 
-  const points = useMemo(
-    () => overview.points.filter((point) => !point.id.startsWith("alert-")),
-    [overview.points]
+  // На фоновую карту лэндинга передаются ТОЛЬКО координаты работающих АГЗС (без заводов, газовозов, маршрутов и статусов сверки)
+  const publicMapPoints = useMemo<MapPoint[]>(
+    () =>
+      state.stations
+        .filter((s) => s.detail.is_active)
+        .map((s) => ({
+          id: s.detail.id,
+          kind: "station" as const,
+          name: s.detail.name,
+          lat: s.detail.lat,
+          lon: s.detail.lon,
+          status: "active",
+        })),
+    [state.stations]
   );
+
+  // Публичная витрина берёт остатки только с сервера. Симуляция литров сюда не подмешивается.
+  const levels = useMemo<PublicStation[]>(() => apiLevels, [apiLevels]);
+
   const visibleStations = useMemo(() => {
     const query = stationQuery.trim().toLowerCase();
-    if (!query) return levels;
-    return levels.filter((station) =>
-      [station.name, station.address, station.code].some((part) => part?.toLowerCase().includes(query))
-    );
-  }, [levels, stationQuery]);
+    return levels.filter((station) => {
+      if (query) {
+        const hit = [station.name, station.address, station.code].some((part) =>
+          part?.toLowerCase().includes(query)
+        );
+        if (!hit) return false;
+      }
+      if (regionFilter !== "all" && stationRegion(station) !== regionFilter) {
+        return false;
+      }
+      if (availFilter !== "all") {
+        const avgFill =
+          station.tanks.length > 0
+            ? station.tanks.reduce((acc, t) => acc + (t.fill_percent ?? 0), 0) / station.tanks.length
+            : 0;
+        if (availFilter === "plenty" && avgFill <= 30) return false;
+        if (availFilter === "low" && avgFill > 30) return false;
+      }
+      return true;
+    });
+  }, [levels, stationQuery, regionFilter, availFilter]);
+
+  const totalPublicLiters = useMemo(
+    () =>
+      levels.reduce(
+        (sum, st) => sum + st.tanks.reduce((s, t) => s + (t.remainder_liters ?? 0), 0),
+        0
+      ),
+    [levels]
+  );
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -100,8 +143,8 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
     <div className="landing">
       <div className="landing-map" aria-hidden="true">
         <MapView
-          points={points}
-          routes={routes}
+          points={publicMapPoints}
+          routes={[]}
           interactive={false}
           markerStyle="dot"
           boundsPadding={{ top: 120, right: 70, bottom: 180, left: 70 }}
@@ -119,11 +162,11 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             </div>
           </div>
           <nav className="landing-links" aria-label="Страница">
+            <button type="button" onClick={() => jump("levels")}>
+              Наличие газа на АГЗС ({levels.length})
+            </button>
             <button type="button" onClick={() => jump("project")}>
               О проекте
-            </button>
-            <button type="button" onClick={() => jump("levels")}>
-              Заполненность
             </button>
           </nav>
           <div className="landing-nav-actions">
@@ -133,7 +176,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             {session ? (
               <>
                 <button type="button" className="btn small" onClick={onEnter}>
-                  В систему
+                  В админку
                 </button>
                 <button type="button" className="btn secondary small" onClick={logout}>
                   Выйти
@@ -149,96 +192,161 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
 
         <section className="landing-hero">
           <div className="landing-copy">
-            <p className="kicker">Мангыстау</p>
-            <h1>Цифровой след сжиженного газа</h1>
+            <p className="kicker">Открытая витрина · Мангистауская область</p>
+            <h1>Наличие сжиженного газа на АГЗС</h1>
+            <p className="landing-prose">
+              Публичный мониторинг остатков газа на автогазозаправочных станциях региона в реальном
+              времени. Логистика, сверка баланса и диспетчерский контроль доступны только внутри
+              защищённой панели администратора.
+            </p>
             <div className="landing-hero-actions">
               <button type="button" className="btn" onClick={() => jump("levels")}>
-                Заполненность заправок
+                Смотреть остатки газа ({levels.length} АГЗС)
               </button>
               {session ? (
                 <button type="button" className="btn secondary" onClick={onEnter}>
-                  В систему
+                  Открыть панель управления
                 </button>
               ) : (
                 <button type="button" className="btn secondary" onClick={() => setAuthOpen(true)}>
-                  Вход для администратора
+                  Вход в админ-панель
                 </button>
               )}
             </div>
           </div>
         </section>
 
-        <section className="landing-section" id="project">
-          <p className="kicker">О проекте</p>
-          <h2>От отгрузки до продажи на колонке</h2>
-          <p className="landing-prose">
-            Цифровой след LPG собирает путь сжиженного газа в одну цепочку. Видно, какой завод отгрузил партию, какой
-            газовоз её вёз, какая заправка приняла газ и сколько сейчас в резервуаре. Расхождение между книгой и
-            замером не теряется между участками.
-          </p>
-        </section>
-
         <section className="landing-section" id="levels">
           <div className="level-head">
             <div>
-              <p className="kicker">Открытые данные</p>
-              <h2>Заполненность заправок</h2>
-              {updatedAt ? <p className="public-fresh">Обновлено {dateTime(updatedAt.toISOString())}</p> : null}
+              <p className="kicker">Публичные данные · {levels.length} АГЗС · всего {liters(totalPublicLiters)}</p>
+              <h2>Количество газа на АГЗС</h2>
+              {updatedAt ? (
+                <p className="public-fresh">Обновлено {dateTime(updatedAt.toISOString())}</p>
+              ) : null}
             </div>
-            {levels.length > 1 ? (
+            <div className="level-controls">
               <input
                 className="level-search"
                 type="search"
                 value={stationQuery}
-                placeholder="Найти заправку"
+                placeholder="Поиск по названию, коду или адресу…"
                 aria-label="Найти заправку"
                 onChange={(event) => setStationQuery(event.target.value)}
               />
-            ) : null}
+              <select
+                className="level-select"
+                value={availFilter}
+                aria-label="Фильтр наличия газа"
+                onChange={(e) => setAvailFilter(e.target.value as "all" | "plenty" | "low")}
+              >
+                <option value="all">Все станции ({levels.length})</option>
+                <option value="plenty">Достаточно газа (&gt; 30%)</option>
+                <option value="low">Мало газа (≤ 30%)</option>
+              </select>
+            </div>
           </div>
-          {levelsError ? <p className="tank-error">{levelsError}</p> : null}
+
+          <div className="region-pills" role="group" aria-label="Районы">
+            <button
+              type="button"
+              className={`filter-pill${regionFilter === "all" ? " active" : ""}`}
+              onClick={() => setRegionFilter("all")}
+            >
+              Все районы ({levels.length})
+            </button>
+            {REGIONS.map((reg) => {
+              const count = levels.filter((s) => stationRegion(s) === reg).length;
+              if (!count) return null;
+              return (
+                <button
+                  key={reg}
+                  type="button"
+                  className={`filter-pill${regionFilter === reg ? " active" : ""}`}
+                  onClick={() => setRegionFilter(reg)}
+                >
+                  {reg} ({count})
+                </button>
+              );
+            })}
+          </div>
 
           <div className="level-grid">
-            {visibleStations.map((station) => (
-              <article className="level-card" key={station.code}>
-                <header>
-                  <h3>{station.name}</h3>
-                  <p>{station.address || station.code}</p>
-                </header>
-                {station.tanks.length === 0 ? (
-                  <p className="dash-muted">Резервуаров пока нет</p>
-                ) : (
-                  station.tanks.map((tank) => {
-                    const width = tank.fill_percent == null ? 0 : Math.max(0, Math.min(100, tank.fill_percent));
-                    const measured = tank.measured_at ? `Замер ${dateTime(tank.measured_at)}` : "Замера ещё нет";
-                    return (
-                      <div className="level-tank" key={tank.code} title={measured}>
-                        <div className="level-tank-head">
-                          <span>{tank.code}</span>
-                          <strong>{tank.fill_percent == null ? "—" : `${percentLabel(tank.fill_percent)}%`}</strong>
+            {visibleStations.map((station) => {
+              const region = stationRegion(station);
+              return (
+                <article className="level-card" key={station.code}>
+                  <header>
+                    <div className="level-card-meta">
+                      <span className="badge">{region}</span>
+                      <span className="dash-muted">{station.code}</span>
+                    </div>
+                    <h3>{station.name}</h3>
+                    <p title={station.address ?? station.code}>{station.address || station.code}</p>
+                  </header>
+                  {station.tanks.length === 0 ? (
+                    <p className="dash-muted">Резервуаров пока нет</p>
+                  ) : (
+                    station.tanks.map((tank) => {
+                      const pct = tank.fill_percent ?? 0;
+                      const width = Math.max(0, Math.min(100, pct));
+                      const online = tank.online === true;
+                      const measured = tank.measured_at
+                        ? `Замер ${dateTime(tank.measured_at)}`
+                        : "Замера ещё нет";
+                      const lowGas = pct > 0 && pct <= 25;
+                      return (
+                        <div
+                          className={`level-tank${online ? "" : " level-tank-stale"}`}
+                          key={tank.code}
+                          title={measured}
+                        >
+                          <div className="level-tank-head">
+                            <span>Резервуар {tank.code}</span>
+                            <strong className={lowGas ? "text-danger" : ""}>
+                              {tank.fill_percent == null ? "—" : `${percentLabel(tank.fill_percent)}%`}
+                            </strong>
+                          </div>
+                          <div className="public-track" aria-hidden="true">
+                            <i
+                              style={{
+                                width: `${width}%`,
+                                background: lowGas
+                                  ? "var(--coral)"
+                                  : "linear-gradient(90deg, var(--sea-2), var(--sea))",
+                                opacity: online ? 1 : 0.45,
+                              }}
+                            />
+                          </div>
+                          <p>
+                            {tank.remainder_liters == null
+                              ? measured
+                              : `${liters(tank.remainder_liters)} из ${liters(tank.capacity_liters)}`}
+                            {tank.remainder_liters != null && !online ? " · нет связи" : ""}
+                          </p>
                         </div>
-                        <div className="public-track" aria-hidden="true">
-                          <i style={{ width: `${width}%` }} />
-                        </div>
-                        <p>
-                          {tank.remainder_liters == null
-                            ? measured
-                            : `${liters(tank.remainder_liters)} из ${liters(tank.capacity_liters)}`}
-                        </p>
-                      </div>
-                    );
-                  })
-                )}
-              </article>
-            ))}
+                      );
+                    })
+                  )}
+                </article>
+              );
+            })}
           </div>
           {levelsLoading && levels.length === 0 ? <p className="dash-muted">Загрузка…</p> : null}
-          {!levelsLoading && levels.length === 0 && !levelsError ? (
-            <p className="dash-muted">Заправки появятся здесь.</p>
-          ) : null}
           {!levelsLoading && levels.length > 0 && visibleStations.length === 0 ? (
-            <p className="dash-muted">Такой заправки нет.</p>
+            <p className="dash-muted">По выбранному фильтру заправок не найдено.</p>
           ) : null}
+        </section>
+
+        <section className="landing-section" id="project">
+          <p className="kicker">О системе</p>
+          <h2>Открытый остаток для жителей · закрытый контур учёта для операторов</h2>
+          <p className="landing-prose">
+            На публичной странице публикуется исключительно актуальное количество сжиженного газа в
+            резервуарах АГЗС Мангистауской области, чтобы водители видели наличие топлива. Все
+            данные о поставках, маршрутах газовозов, книжных остатках, расхождениях, колонках ККМ/КГД
+            и датчиках защищены и доступны только авторизованным администраторам.
+          </p>
         </section>
       </div>
 
@@ -250,7 +358,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             onSubmit={onSubmit}
           >
             <h2>Вход для администратора</h2>
-            <p>Карта, поставки и сверка остатков открываются после входа.</p>
+            <p>Внутренний учёт, маршруты газовозов, сверка КГД и управление АГЗС требуют авторизации.</p>
             <label>
               Логин
               <input

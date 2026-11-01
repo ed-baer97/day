@@ -1,5 +1,44 @@
 import type { FiscalStatus, LinkQuality, SensorStatus, StationBalance, SupplyStatus } from "./types";
 
+export const REGIONS = [
+  "г. Актау",
+  "г. Жанаозен",
+  "Мунайлинский р-н",
+  "Каракиянский р-н",
+  "Тупкараганский р-н",
+  "Мангистауский р-н",
+  "Бейнеуский р-н",
+] as const;
+
+export function stationRegion(station: { name?: string | null; address?: string | null; code?: string | null }): string {
+  const hay = `${station.name ?? ""} ${station.address ?? ""} ${station.code ?? ""}`.toLowerCase();
+  if (hay.includes("актау") || hay.includes("akt")) return "г. Актау";
+  if (hay.includes("жанаозен") || hay.includes("рахат") || hay.includes("тенге") || hay.includes("zho")) return "г. Жанаозен";
+  if (
+    hay.includes("мунайл") ||
+    hay.includes("баскудук") ||
+    hay.includes("кызылтобе") ||
+    hay.includes("мангистау,") ||
+    hay.includes("с. мангистау") ||
+    hay.includes("mun")
+  )
+    return "Мунайлинский р-н";
+  if (hay.includes("жетыбай") || hay.includes("курык") || hay.includes("караки") || hay.includes("zhb") || hay.includes("kur"))
+    return "Каракиянский р-н";
+  if (
+    hay.includes("форт-шевченко") ||
+    hay.includes("акшукур") ||
+    hay.includes("тупкараган") ||
+    hay.includes("fsh") ||
+    hay.includes("tup")
+  )
+    return "Тупкараганский р-н";
+  if (hay.includes("шетпе") || hay.includes("сай-утес") || hay.includes("мангистауский") || hay.includes("shp"))
+    return "Мангистауский р-н";
+  if (hay.includes("бейнеу") || hay.includes("боранкул") || hay.includes("bey")) return "Бейнеуский р-н";
+  return "Мангистауская обл.";
+}
+
 export function fiscalBadge(status: FiscalStatus) {
   if (status === "ok") return "ok";
   if (status === "not_sent") return "warn";

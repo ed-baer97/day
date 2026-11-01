@@ -76,7 +76,7 @@ def test_new_station_accepts_a_tank():
 def test_create_and_edit_truck():
     listed = client.get("/api/v1/trucks")
     assert listed.status_code == 200
-    assert any(row["plate_number"] == "705 ABA 12" for row in listed.json())
+    assert listed.json() == []
 
     created = client.post(
         "/api/v1/trucks",

@@ -7,14 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class BatchCreate(BaseModel):
-    trail_code: str
+    trail_code: str = Field(min_length=1, max_length=64)
     supplier_id: UUID | None = None
     factory_id: UUID | None = None
-    product_grade: str | None = None
-    density_kg_per_liter: float | None = None
-    volume_liters: float
-    mass_kg: float | None = None
-    notes: str | None = None
+    product_grade: str | None = Field(default=None, max_length=32)
+    density_kg_per_liter: float | None = Field(default=None, gt=0, le=2.0)
+    volume_liters: float = Field(gt=0, le=1_000_000)
+    mass_kg: float | None = Field(default=None, gt=0, le=1_000_000)
+    notes: str | None = Field(default=None, max_length=512)
 
 
 class BatchOut(BaseModel):

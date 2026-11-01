@@ -3,6 +3,8 @@ const KEY = "lpg.admin.session";
 export type AdminSession = {
   token: string;
   username: string;
+  role?: "admin" | "station";
+  station_id?: string | null;
 };
 
 export function readSession(): AdminSession | null {
@@ -11,7 +13,12 @@ export function readSession(): AdminSession | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AdminSession>;
     if (!parsed.token || !parsed.username) return null;
-    return { token: parsed.token, username: parsed.username };
+    return {
+      token: parsed.token,
+      username: parsed.username,
+      role: parsed.role === "station" ? "station" : "admin",
+      station_id: parsed.station_id ?? null,
+    };
   } catch {
     return null;
   }

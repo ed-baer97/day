@@ -2,11 +2,16 @@
 
 Та же формула потом копируется в скрипт Shelly.
 Две точки с циферблата задают прямую «вольты → проценты объёма».
+Сам циферблат размечен от 5 % до 95 %: ниже и выше этих рисок стрелки нет.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+
+DIAL_MIN_PERCENT = 5.0
+DIAL_MAX_PERCENT = 95.0
 
 
 @dataclass(frozen=True)
@@ -22,9 +27,14 @@ def volts_to_percent(volts: float, calibration: LevelCalibration) -> float:
     span = calibration.high_volts - calibration.low_volts
     if span == 0:
         raise ValueError("точки калибровки совпадают по напряжению")
-    return calibration.low_percent + (volts - calibration.low_volts) / span * (
+    percent = calibration.low_percent + (volts - calibration.low_volts) / span * (
         calibration.high_percent - calibration.low_percent
     )
+    if percent < DIAL_MIN_PERCENT:
+        return DIAL_MIN_PERCENT
+    if percent > DIAL_MAX_PERCENT:
+        return DIAL_MAX_PERCENT
+    return percent
 
 
 def volts_to_liters(volts: float, calibration: LevelCalibration) -> float:

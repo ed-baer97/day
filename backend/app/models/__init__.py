@@ -6,7 +6,7 @@ from app.models.dispenser import Dispenser, DispenseRecord
 from app.models.event import DiscrepancyEvent
 from app.models.factory import Factory, Supplier
 from app.models.sale import Sale
-from app.models.station import Station, Tank
+from app.models.station import LevelReading, Station, StationUser, Tank
 from app.models.supply import Supply
 from app.models.truck import Truck, TruckPosition, TruckTrip
 
@@ -18,6 +18,8 @@ __all__ = [
     "TruckTrip",
     "Station",
     "Tank",
+    "LevelReading",
+    "StationUser",
     "Dispenser",
     "DispenseRecord",
     "Batch",

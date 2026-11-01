@@ -29,6 +29,7 @@ export interface PublicTank {
   remainder_liters: number | null;
   fill_percent: number | null;
   measured_at: string | null;
+  online?: boolean;
 }
 
 export interface PublicStation {
@@ -46,6 +47,64 @@ export interface TankDevice {
   ingest_token: string;
   level_path: string;
   shelly: ShellyLink | null;
+}
+
+export interface TankIngestState {
+  station_id: string;
+  tank_id: string;
+  opening_liters: number | null;
+  receipts_liters: number;
+  dispense_liters: number;
+  pending_dispense_liters: number;
+  calculated_remainder_liters: number | null;
+  actual_remainder_liters: number | null;
+  delta_liters: number | null;
+  balance_status: string;
+  calibrated: boolean;
+  last_volts: number | null;
+  last_measured_at: string | null;
+}
+
+export interface IngestAck {
+  accepted: boolean;
+  message: string;
+  entity_id?: string | null;
+  duplicate: boolean;
+  actual_remainder_liters?: number | null;
+  calculated_remainder_liters?: number | null;
+  delta_liters?: number | null;
+  balance_status?: string | null;
+}
+
+export interface BatchRecord {
+  id: string;
+  trail_code: string;
+  supplier_id?: string | null;
+  factory_id?: string | null;
+  product_grade?: string | null;
+  density_kg_per_liter?: number | null;
+  volume_liters: number;
+  mass_kg?: number | null;
+  status: string;
+  formed_at?: string | null;
+  notes?: string | null;
+  created_at: string;
+}
+
+export interface BalanceSnapshot {
+  id: string;
+  station_id: string;
+  tank_id: string;
+  period_start: string;
+  period_end: string;
+  previous_remainder_liters: number;
+  receipts_liters: number;
+  dispense_liters: number;
+  calculated_remainder_liters: number;
+  actual_remainder_liters: number | null;
+  delta_liters: number | null;
+  status: string;
+  created_at: string;
 }
 
 export interface CatalogStation {
@@ -86,13 +145,14 @@ export type TruckDraft = {
   lon?: number | null;
 };
 
-function authHeader(): Record<string, string> {
+function authHeader(extraHeaders?: Record<string, string>): Record<string, string> {
   const token = readSession()?.token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const base: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  return extraHeaders ? { ...base, ...extraHeaders } : base;
 }
 
 async function readError(res: Response, path: string): Promise<Error> {
-  if (res.status === 401 && !path.startsWith("/auth/")) {
+  if (res.status === 401 && !path.startsWith("/auth/") && !path.startsWith("/ingest/")) {
     expireSession();
     return new Error("Сессия закончилась");
   }
@@ -101,14 +161,19 @@ async function readError(res: Response, path: string): Promise<Error> {
   return new Error(text || res.statusText);
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { headers: authHeader() });
+async function getJson<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeader(extraHeaders) });
   if (!res.ok) throw await readError(res, path);
   return res.json() as Promise<T>;
 }
 
-async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { ...authHeader() };
+async function sendJson<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>
+): Promise<T> {
+  const headers: Record<string, string> = { ...authHeader(extraHeaders) };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(`${API_BASE}${path}`, {
     method,
@@ -116,6 +181,7 @@ async function sendJson<T>(method: string, path: string, body?: unknown): Promis
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res, path);
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -131,18 +197,31 @@ export const api = {
     } catch {
       throw new Error("Сервер не ответил");
     }
+    if (res.status === 429) {
+      throw new Error("Слишком много неудачных попыток входа. Подождите минуту.");
+    }
     if (res.status === 401) throw new Error("Неверный логин или пароль");
     if (!res.ok) throw new Error("Сервер не ответил");
     return res.json() as Promise<AdminSession>;
   },
+  logout: async (): Promise<void> => {
+    try {
+      await sendJson("POST", "/auth/logout");
+    } catch {
+      /* игнорируем при недоступности сервера */
+    }
+  },
   mapOverview: () => getJson<MapOverview>("/map/overview"),
   stations: () => getJson<CatalogStation[]>("/stations"),
   createStation: (body: StationDraft) => sendJson<CatalogStation>("POST", "/stations", body),
-  updateStation: (id: string, body: StationDraft) =>
+  updateStation: (id: string, body: Partial<StationDraft>) =>
     sendJson<CatalogStation>("PATCH", `/stations/${id}`, body),
+  deleteStation: (id: string) => sendJson<void>("DELETE", `/stations/${id}`),
   trucks: () => getJson<CatalogTruck[]>("/trucks"),
   createTruck: (body: TruckDraft) => sendJson<CatalogTruck>("POST", "/trucks", body),
-  updateTruck: (id: string, body: TruckDraft) => sendJson<CatalogTruck>("PATCH", `/trucks/${id}`, body),
+  updateTruck: (id: string, body: Partial<TruckDraft>) =>
+    sendJson<CatalogTruck>("PATCH", `/trucks/${id}`, body),
+  deleteTruck: (id: string) => sendJson<void>("DELETE", `/trucks/${id}`),
   tankDevices: (stationId: string) => getJson<TankDevice[]>(`/stations/${stationId}/devices`),
   createTankDevice: (stationId: string, body: { code: string; capacity_liters: number }) =>
     sendJson<TankDevice>("POST", `/stations/${stationId}/devices`, body),
@@ -151,14 +230,102 @@ export const api = {
     tankId: string,
     body: { code: string; capacity_liters: number }
   ) => sendJson<TankDevice>("PATCH", `/stations/${stationId}/devices/${tankId}`, body),
+  deleteTankDevice: (stationId: string, tankId: string) =>
+    sendJson<void>("DELETE", `/stations/${stationId}/devices/${tankId}`),
   connectShelly: (stationId: string, tankId: string, host: string) =>
     sendJson<TankDevice>("PUT", `/stations/${stationId}/devices/${tankId}/shelly`, { host }),
   disconnectShelly: (stationId: string, tankId: string) =>
     sendJson<TankDevice>("DELETE", `/stations/${stationId}/devices/${tankId}/shelly`),
+  calibrateTank: (
+    body: {
+      station_id?: string;
+      tank_id?: string;
+      capacity_liters?: number;
+      low_volts: number;
+      low_percent: number;
+      high_volts: number;
+      high_percent: number;
+    },
+    deviceToken?: string
+  ) =>
+    sendJson<TankIngestState>(
+      "PUT",
+      "/ingest/calibration",
+      body,
+      deviceToken ? { "X-Device-Token": deviceToken } : undefined
+    ),
+  ingestLevel: (
+    body: {
+      station_id?: string;
+      tank_id?: string;
+      actual_remainder_liters?: number;
+      volts?: number;
+      level_source?: string;
+      recorded_at: string;
+      source_event_id?: string;
+    },
+    deviceToken?: string
+  ) =>
+    sendJson<IngestAck>(
+      "POST",
+      "/ingest/level",
+      body,
+      deviceToken ? { "X-Device-Token": deviceToken } : undefined
+    ),
+  ingestReceipt: (
+    body: {
+      station_id: string;
+      tank_id: string;
+      volume_liters: number;
+      recorded_at: string;
+      source_event_id?: string;
+    },
+    deviceToken?: string
+  ) =>
+    sendJson<IngestAck>(
+      "POST",
+      "/ingest/receipt",
+      body,
+      deviceToken ? { "X-Device-Token": deviceToken } : undefined
+    ),
+  tankIngestState: (tankId: string, deviceToken?: string) =>
+    getJson<TankIngestState>(
+      `/ingest/tanks/${tankId}`,
+      deviceToken ? { "X-Device-Token": deviceToken } : undefined
+    ),
+  batches: () => getJson<BatchRecord[]>("/batches"),
+  createBatch: (body: {
+    trail_code: string;
+    product_grade?: string;
+    density_kg_per_liter?: number;
+    volume_liters: number;
+    mass_kg?: number;
+    notes?: string;
+  }) => sendJson<BatchRecord>("POST", "/batches", body),
   truck: (id: string) => getJson<TruckDetail>(`/trucks/${id}`),
   station: (id: string) => getJson<StationDetail>(`/stations/${id}`),
   trailByCode: (code: string) =>
     getJson<BatchTrail>(`/batches/by-code/${encodeURIComponent(code)}/trail`),
-  events: () => getJson<DiscrepancyEvent[]>("/events?unresolved_only=true"),
+  events: (stationId?: string, unresolvedOnly = true) => {
+    const params = new URLSearchParams();
+    if (stationId) params.set("station_id", stationId);
+    if (unresolvedOnly) params.set("unresolved_only", "true");
+    const q = params.toString();
+    return getJson<DiscrepancyEvent[]>(`/events${q ? `?${q}` : ""}`);
+  },
+  resolveEvent: (eventId: string, note?: string) =>
+    sendJson<DiscrepancyEvent>("POST", `/events/${eventId}/resolve`, { note: note ?? null }),
+  reconcileBalance: (body: {
+    station_id: string;
+    tank_id: string;
+    period_start: string;
+    period_end: string;
+    previous_remainder_liters: number;
+    receipts_liters: number;
+    dispense_liters: number;
+    actual_remainder_liters: number | null;
+  }) => sendJson<BalanceSnapshot>("POST", "/balance/reconcile", body),
+  stationSnapshots: (stationId: string) =>
+    getJson<BalanceSnapshot[]>(`/balance/stations/${stationId}/snapshots`),
   publicLevels: () => getJson<PublicStation[]>("/public/levels"),
 };

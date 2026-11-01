@@ -8,11 +8,11 @@ from pydantic import BaseModel, Field, model_validator
 
 class GpsIngest(BaseModel):
     truck_id: UUID
-    lat: float
-    lon: float
-    speed_kmh: float | None = None
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    speed_kmh: float | None = Field(default=None, ge=0, le=300)
     recorded_at: datetime
-    source_event_id: str | None = Field(default=None, description="Idempotency key from gateway")
+    source_event_id: str | None = Field(default=None, max_length=128, description="Idempotency key from gateway")
 
 
 class LevelIngest(BaseModel):
@@ -24,11 +24,11 @@ class LevelIngest(BaseModel):
 
     station_id: UUID | None = None
     tank_id: UUID | None = None
-    actual_remainder_liters: float | None = None
-    volts: float | None = None
-    level_source: str = "electronic"  # manual | electronic
+    actual_remainder_liters: float | None = Field(default=None, ge=0, le=1_000_000)
+    volts: float | None = Field(default=None, ge=-50, le=50)
+    level_source: str = Field(default="electronic", max_length=32)  # manual | electronic
     recorded_at: datetime
-    source_event_id: str | None = None
+    source_event_id: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def reading_present(self) -> "LevelIngest":
@@ -44,11 +44,11 @@ class DispenseIngest(BaseModel):
     dispenser_id: UUID
     tank_id: UUID | None = None
     batch_id: UUID | None = None
-    volume_liters: float = Field(gt=0)
+    volume_liters: float = Field(gt=0, le=100_000)
     started_at: datetime
     finished_at: datetime | None = None
-    external_txn_id: str | None = None
-    raw_payload: str | None = None
+    external_txn_id: str | None = Field(default=None, max_length=128)
+    raw_payload: str | None = Field(default=None, max_length=4096)
 
 
 class ReceiptIngest(BaseModel):
@@ -56,9 +56,9 @@ class ReceiptIngest(BaseModel):
 
     station_id: UUID
     tank_id: UUID
-    volume_liters: float = Field(gt=0)
+    volume_liters: float = Field(gt=0, le=1_000_000)
     recorded_at: datetime
-    source_event_id: str | None = None
+    source_event_id: str | None = Field(default=None, max_length=128)
 
 
 class CalibrationIn(BaseModel):
@@ -69,10 +69,10 @@ class CalibrationIn(BaseModel):
 
     station_id: UUID | None = None
     tank_id: UUID | None = None
-    capacity_liters: float | None = Field(default=None, gt=0)
-    low_volts: float
+    capacity_liters: float | None = Field(default=None, gt=0, le=1_000_000)
+    low_volts: float = Field(ge=-50, le=50)
     low_percent: float = Field(ge=0, le=100)
-    high_volts: float
+    high_volts: float = Field(ge=-50, le=50)
     high_percent: float = Field(ge=0, le=100)
 
 

@@ -20,6 +20,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    void api.logout();
     writeSession(null);
     setSession(null);
   }, []);

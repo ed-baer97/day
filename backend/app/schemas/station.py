@@ -84,6 +84,7 @@ class TankDeviceOut(BaseModel):
     capacity_liters: float
     ingest_token: str
     level_path: str = "/api/v1/ingest/level"
+    ingest_url: str | None = None
     shelly: ShellyLinkOut | None = None
 
 

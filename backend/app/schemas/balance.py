@@ -11,10 +11,10 @@ class BalanceReconcileRequest(BaseModel):
     tank_id: UUID
     period_start: datetime
     period_end: datetime
-    previous_remainder_liters: float
-    receipts_liters: float = 0.0
-    dispense_liters: float = 0.0
-    actual_remainder_liters: float | None = None
+    previous_remainder_liters: float = Field(ge=0, le=1_000_000)
+    receipts_liters: float = Field(default=0.0, ge=0, le=1_000_000)
+    dispense_liters: float = Field(default=0.0, ge=0, le=1_000_000)
+    actual_remainder_liters: float | None = Field(default=None, ge=0, le=1_000_000)
 
 
 class BalanceSnapshotOut(BaseModel):
