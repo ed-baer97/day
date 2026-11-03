@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.services.calibration import LevelCalibration, round_volts, volts_to_liters, volts_to_percent
+from app.services.calibration import LevelCalibration, round_percent, round_volts, volts_to_liters, volts_to_percent
 
 # 1.2 В = 20 %, 3.8 В = 80 %, сосуд 10 000 л
 CAL = LevelCalibration(
@@ -35,6 +35,12 @@ def test_volts_round_to_tenth():
     assert round_volts(3.19) == pytest.approx(3.2)
     assert round_volts(3.14) == pytest.approx(3.1)
     assert round_volts(3.15) == pytest.approx(3.2)
+
+
+def test_percent_rounds_to_one():
+    assert round_percent(65.4) == 65
+    assert round_percent(65.5) == 66
+    assert round_percent(64.769) == 65
 
 
 def test_same_volts_rejected():

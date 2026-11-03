@@ -25,9 +25,15 @@ class LevelCalibration:
 
 
 def round_volts(volts: float) -> float:
-    """Шаг 0,1 В: 3,19 → 3,2, 3,14 → 3,1. Мельче — погрешность, не изменение."""
+    """Шаг 0,1 В: 3,19 → 3,2, 3,14 → 3,1."""
 
     return float(Decimal(str(volts)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def round_percent(percent: float) -> int:
+    """Шаг 1 %: 65,4 → 65, 65,5 → 66. Мельче — погрешность, не изменение."""
+
+    return int(Decimal(str(percent)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def volts_to_percent(volts: float, calibration: LevelCalibration) -> float:

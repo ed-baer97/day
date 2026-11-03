@@ -272,7 +272,7 @@ def test_site_tank_card_sets_volume_and_token():
     assert any(row["id"] == tank_id and row["capacity_liters"] == 20000 for row in listed.json())
 
 
-def test_volt_noise_inside_tenth_is_not_a_change():
+def test_level_is_stored_only_when_percent_changes():
     client.put(
         "/api/v1/ingest/calibration",
         json={
@@ -324,23 +324,21 @@ def test_volt_noise_inside_tenth_is_not_a_change():
     )
     assert step.status_code == 200
     assert step.json()["message"] == "level accepted"
-    assert step.json()["actual_remainder_liters"] != pytest.approx(held)
+    assert step.json()["actual_remainder_liters"] == pytest.approx(6600)
 
-    held_step = step.json()["actual_remainder_liters"]
-    for index, volts in enumerate((3.16, 3.17, 3.20), start=4):
-        wobble = client.post(
-            "/api/v1/ingest/level",
-            json={
-                "station_id": STATION,
-                "tank_id": TANK,
-                "volts": volts,
-                "recorded_at": f"2026-10-04T11:0{index}:00Z",
-                "source_event_id": f"noise-{index}",
-            },
-        )
-        assert wobble.status_code == 200
-        assert wobble.json()["message"] == "level unchanged"
-        assert wobble.json()["actual_remainder_liters"] == pytest.approx(held_step)
+    same_percent = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volts": 3.20,
+            "recorded_at": "2026-10-04T11:03:00Z",
+            "source_event_id": "noise-4",
+        },
+    )
+    assert same_percent.status_code == 200
+    assert same_percent.json()["message"] == "level unchanged"
+    assert same_percent.json()["actual_remainder_liters"] == pytest.approx(6600)
 
     state = client.get(f"/api/v1/ingest/tanks/{TANK}")
     assert state.json()["last_volts"] == pytest.approx(3.2)

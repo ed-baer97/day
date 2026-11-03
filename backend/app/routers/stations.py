@@ -20,7 +20,7 @@ from app.schemas.station import (
     TankOut,
 )
 from app.services.account_mode import use_postgres
-from app.services.calibration import round_volts
+from app.services.calibration import round_percent
 from app.services.catalog import (
     StationCard,
     create_station,
@@ -287,7 +287,7 @@ def list_device_levels(
     previous: float | None = None
     previous_step: float | None = None
     for row in rows:
-        step = round_volts(row.volts) if row.volts is not None else None
+        step = None if row.fill_percent is None else float(round_percent(row.fill_percent))
         if changes_only and step is not None and previous_step is not None and step == previous_step:
             continue
         liters = float(row.remainder_liters)
@@ -298,7 +298,7 @@ def list_device_levels(
             LevelReadingOut(
                 id=row.id,
                 tank_id=row.tank_id,
-                volts=step,
+                volts=row.volts,
                 remainder_liters=liters,
                 fill_percent=None if row.fill_percent is None else float(round(row.fill_percent)),
                 recorded_at=row.recorded_at.isoformat(),

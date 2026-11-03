@@ -28,7 +28,7 @@ from app.schemas.ingest import (
     TankIngestState,
 )
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, round_volts, volts_to_liters
+from app.services.calibration import LevelCalibration, round_percent, volts_to_percent
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
 _MAX_SEEN = 10_000
@@ -456,32 +456,31 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
     return tank_state(body.tank_id)
 
 
-def _rounded_volts(body: LevelIngest) -> float | None:
-    if body.volts is None:
+def _sensor_percent(book: TankBook, volts: float) -> int:
+    if book.calibration is None:
+        raise HTTPException(status_code=422, detail=CALIBRATION_REQUIRED)
+    return round_percent(volts_to_percent(volts, book.calibration))
+
+
+def _stored_percent(book: TankBook) -> int | None:
+    if book.calibration is None or book.actual_remainder_liters is None:
         return None
-    return round_volts(body.volts)
-
-
-def _same_volt_step(book: TankBook, volts: float) -> bool:
-    if book.last_volts is None or book.actual_remainder_liters is None:
-        return False
-    return round_volts(book.last_volts) == volts
+    capacity = book.calibration.capacity_liters
+    if capacity <= 0:
+        return None
+    return round_percent(book.actual_remainder_liters / capacity * 100)
 
 
 def _liters_from_level(body: LevelIngest, book: TankBook) -> float:
-    volts = _rounded_volts(body)
     if body.actual_remainder_liters is not None:
-        if volts is not None:
-            book.last_volts = volts
+        if body.volts is not None:
+            book.last_volts = body.volts
         return body.actual_remainder_liters
-    if book.calibration is None:
-        raise HTTPException(
-            status_code=422,
-            detail=CALIBRATION_REQUIRED,
-        )
-    assert volts is not None
-    book.last_volts = volts
-    return volts_to_liters(volts, book.calibration)
+    if book.calibration is None or body.volts is None:
+        raise HTTPException(status_code=422, detail=CALIBRATION_REQUIRED)
+    percent = _sensor_percent(book, body.volts)
+    book.last_volts = body.volts
+    return percent / 100 * book.calibration.capacity_liters
 
 
 def accept_level(body: LevelIngest) -> IngestAck:
@@ -501,13 +500,17 @@ def accept_level(body: LevelIngest) -> IngestAck:
         book = _book(body.station_id, body.tank_id)
         if key in _seen:
             return _ack(book, message="duplicate", duplicate=True, entity_id=book.level_ids.get(key))
-        volts = _rounded_volts(body)
-        if volts is not None and body.actual_remainder_liters is None and _same_volt_step(book, volts):
-            book.last_volts = volts
+        if (
+            body.volts is not None
+            and body.actual_remainder_liters is None
+            and book.calibration is not None
+            and (stored := _stored_percent(book)) is not None
+            and _sensor_percent(book, body.volts) == stored
+        ):
+            book.last_volts = body.volts
             book.last_measured_at = body.recorded_at
-            if book.calibration is not None:
-                book.actual_remainder_liters = volts_to_liters(volts, book.calibration)
-                _recompute(book)
+            book.actual_remainder_liters = stored / 100 * book.calibration.capacity_liters
+            _recompute(book)
             ack = _ack(book, message="level unchanged")
         else:
             liters = _liters_from_level(body, book)

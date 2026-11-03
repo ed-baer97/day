@@ -19,7 +19,7 @@ from app.database import SessionLocal
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
 from app.schemas.ingest import CalibrationIn, IngestAck, LevelIngest, TankIngestState
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, round_volts, volts_to_liters, volts_to_percent
+from app.services.calibration import LevelCalibration, round_percent, volts_to_percent
 from app.services.catalog import StationCard
 from app.services.device_ingest import TankDevice
 from app.services.passwords import hash_password, verify_password
@@ -350,37 +350,34 @@ def accept_level(body: LevelIngest) -> IngestAck:
         if existing is not None:
             return _ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
-        volts = round_volts(body.volts) if body.volts is not None else None
-        same_step = (
-            volts is not None
-            and body.actual_remainder_liters is None
-            and row.last_volts is not None
-            and row.actual_remainder_liters is not None
-            and round_volts(row.last_volts) == volts
+        calibration = _calibration(row) if body.volts is not None and body.actual_remainder_liters is None else None
+        percent = (
+            round_percent(volts_to_percent(body.volts, calibration))
+            if calibration is not None and body.volts is not None
+            else None
         )
-        if same_step:
-            row.last_volts = volts
+        stored = None
+        if row.actual_remainder_liters is not None and row.capacity_liters > 0:
+            stored = round_percent(row.actual_remainder_liters / row.capacity_liters * 100)
+        if percent is not None and stored is not None and percent == stored and body.volts is not None:
+            row.last_volts = body.volts
             row.last_measured_at = body.recorded_at
-            calibration = _calibration(row)
-            if calibration is not None and volts is not None:
-                row.actual_remainder_liters = volts_to_liters(volts, calibration)
-                _recompute(row)
+            row.actual_remainder_liters = percent / 100 * row.capacity_liters
+            _recompute(row)
             db.commit()
             db.refresh(row)
             return _ack(row, message="level unchanged")
 
-        if volts is not None:
-            row.last_volts = volts
+        if body.volts is not None:
+            row.last_volts = body.volts
         if body.actual_remainder_liters is not None:
             liters = body.actual_remainder_liters
-            fill = None if row.capacity_liters <= 0 else float(round(liters / row.capacity_liters * 100))
+            fill = None if row.capacity_liters <= 0 else float(round_percent(liters / row.capacity_liters * 100))
         else:
-            calibration = _calibration(row)
-            if calibration is None:
+            if calibration is None or percent is None:
                 raise HTTPException(status_code=422, detail=CALIBRATION_REQUIRED)
-            assert volts is not None
-            liters = volts_to_liters(volts, calibration)
-            fill = float(round(volts_to_percent(volts, calibration)))
+            liters = percent / 100 * row.capacity_liters
+            fill = float(percent)
 
         if row.opening_liters is None or (
             row.opening_liters < 0 and row.receipts_liters == 0 and row.dispense_liters == 0
@@ -396,7 +393,7 @@ def accept_level(body: LevelIngest) -> IngestAck:
                 id=entity_id,
                 tank_id=row.id,
                 station_id=row.station_id,
-                volts=volts,
+                volts=body.volts,
                 remainder_liters=liters,
                 fill_percent=fill,
                 recorded_at=body.recorded_at,
