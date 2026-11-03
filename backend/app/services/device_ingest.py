@@ -463,12 +463,9 @@ def _rounded_volts(body: LevelIngest) -> float | None:
 
 
 def _same_volt_step(book: TankBook, volts: float) -> bool:
-    if book.calibration is None or book.last_volts is None or book.actual_remainder_liters is None:
+    if book.last_volts is None or book.actual_remainder_liters is None:
         return False
-    if round_volts(book.last_volts) != volts:
-        return False
-    expected = volts_to_liters(volts, book.calibration)
-    return abs(book.actual_remainder_liters - expected) < 0.05
+    return round_volts(book.last_volts) == volts
 
 
 def _liters_from_level(body: LevelIngest, book: TankBook) -> float:
@@ -508,6 +505,9 @@ def accept_level(body: LevelIngest) -> IngestAck:
         if volts is not None and body.actual_remainder_liters is None and _same_volt_step(book, volts):
             book.last_volts = volts
             book.last_measured_at = body.recorded_at
+            if book.calibration is not None:
+                book.actual_remainder_liters = volts_to_liters(volts, book.calibration)
+                _recompute(book)
             ack = _ack(book, message="level unchanged")
         else:
             liters = _liters_from_level(body, book)

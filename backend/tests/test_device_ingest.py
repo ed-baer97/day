@@ -326,5 +326,21 @@ def test_volt_noise_inside_tenth_is_not_a_change():
     assert step.json()["message"] == "level accepted"
     assert step.json()["actual_remainder_liters"] != pytest.approx(held)
 
+    held_step = step.json()["actual_remainder_liters"]
+    for index, volts in enumerate((3.16, 3.17, 3.20), start=4):
+        wobble = client.post(
+            "/api/v1/ingest/level",
+            json={
+                "station_id": STATION,
+                "tank_id": TANK,
+                "volts": volts,
+                "recorded_at": f"2026-10-04T11:0{index}:00Z",
+                "source_event_id": f"noise-{index}",
+            },
+        )
+        assert wobble.status_code == 200
+        assert wobble.json()["message"] == "level unchanged"
+        assert wobble.json()["actual_remainder_liters"] == pytest.approx(held_step)
+
     state = client.get(f"/api/v1/ingest/tanks/{TANK}")
     assert state.json()["last_volts"] == pytest.approx(3.2)

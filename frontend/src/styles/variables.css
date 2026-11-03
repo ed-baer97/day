@@ -1286,6 +1286,12 @@ select {
 .admin-editor {
   position: sticky;
   top: 12px;
+  align-self: start;
+  max-height: calc(100vh - 108px);
+  overflow: auto;
+}
+.admin-editor .admin-form {
+  grid-template-columns: 1fr 1fr;
 }
 .admin-editor h3,
 .admin-sub {
@@ -1367,6 +1373,7 @@ select {
   }
   .admin-split,
   .admin-form,
+  .admin-editor .admin-form,
   .tank-row {
     grid-template-columns: 1fr;
   }

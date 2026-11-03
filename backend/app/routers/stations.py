@@ -20,6 +20,7 @@ from app.schemas.station import (
     TankOut,
 )
 from app.services.account_mode import use_postgres
+from app.services.calibration import round_volts
 from app.services.catalog import (
     StationCard,
     create_station,
@@ -284,23 +285,29 @@ def list_device_levels(
     )
     out: list[LevelReadingOut] = []
     previous: float | None = None
+    previous_step: float | None = None
     for row in rows:
+        step = round_volts(row.volts) if row.volts is not None else None
+        if changes_only and step is not None and previous_step is not None and step == previous_step:
+            continue
         liters = float(row.remainder_liters)
         delta = None if previous is None else liters - previous
-        if changes_only and previous is not None and abs(delta) < 0.5:
+        if changes_only and previous is not None and step is None and abs(delta) < 0.5:
             continue
         out.append(
             LevelReadingOut(
                 id=row.id,
                 tank_id=row.tank_id,
-                volts=row.volts,
+                volts=step,
                 remainder_liters=liters,
-                fill_percent=row.fill_percent,
+                fill_percent=None if row.fill_percent is None else float(round(row.fill_percent)),
                 recorded_at=row.recorded_at.isoformat(),
                 delta_liters=delta,
             )
         )
         previous = liters
+        if step is not None:
+            previous_step = step
     out.reverse()
     return out
 

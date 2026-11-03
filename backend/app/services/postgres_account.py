@@ -351,14 +351,20 @@ def accept_level(body: LevelIngest) -> IngestAck:
             return _ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
         volts = round_volts(body.volts) if body.volts is not None else None
-        calibration = _calibration(row) if volts is not None and body.actual_remainder_liters is None else None
-        same_step = False
-        if volts is not None and calibration is not None and row.last_volts is not None and row.actual_remainder_liters is not None:
-            expected = volts_to_liters(volts, calibration)
-            same_step = round_volts(row.last_volts) == volts and abs(row.actual_remainder_liters - expected) < 0.05
+        same_step = (
+            volts is not None
+            and body.actual_remainder_liters is None
+            and row.last_volts is not None
+            and row.actual_remainder_liters is not None
+            and round_volts(row.last_volts) == volts
+        )
         if same_step:
             row.last_volts = volts
             row.last_measured_at = body.recorded_at
+            calibration = _calibration(row)
+            if calibration is not None and volts is not None:
+                row.actual_remainder_liters = volts_to_liters(volts, calibration)
+                _recompute(row)
             db.commit()
             db.refresh(row)
             return _ack(row, message="level unchanged")
