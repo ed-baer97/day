@@ -36,6 +36,26 @@ def round_percent(percent: float) -> int:
     return int(Decimal(str(percent)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+# До 0,1 В журнал не считает сменой остатка: шум 0,01 В иначе прыгает через границу процента.
+LEVEL_NOISE_VOLTS = 0.1
+
+
+def same_published_level(
+    previous_volts: float | None,
+    volts: float | None,
+    previous_percent: float | None,
+    percent: float | None,
+    tolerance: float = LEVEL_NOISE_VOLTS,
+) -> bool:
+    """Сдвиг меньше tolerance — погрешность датчика, не новая строка журнала."""
+
+    if volts is not None and previous_volts is not None:
+        return abs(volts - previous_volts) <= tolerance + 1e-9
+    if percent is not None and previous_percent is not None:
+        return round_percent(percent) == round_percent(previous_percent)
+    return False
+
+
 def volts_to_percent(volts: float, calibration: LevelCalibration) -> float:
     span = calibration.high_volts - calibration.low_volts
     if span == 0:

@@ -28,7 +28,7 @@ from app.schemas.ingest import (
     TankIngestState,
 )
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, round_percent, volts_to_percent
+from app.services.calibration import LevelCalibration, round_percent, same_published_level, volts_to_percent
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
 _MAX_SEEN = 10_000
@@ -501,6 +501,18 @@ def accept_level(body: LevelIngest) -> IngestAck:
         if key in _seen:
             return _ack(book, message="duplicate", duplicate=True, entity_id=book.level_ids.get(key))
         if (
+            body.volts is not None
+            and body.actual_remainder_liters is None
+            and book.last_volts is not None
+            and book.calibration is not None
+            and same_published_level(book.last_volts, body.volts, None, None, tolerance=0.02)
+        ):
+            percent = _sensor_percent(book, book.last_volts)
+            book.actual_remainder_liters = percent / 100 * book.calibration.capacity_liters
+            book.last_measured_at = body.recorded_at
+            _recompute(book)
+            ack = _ack(book, message="level unchanged")
+        elif (
             body.volts is not None
             and body.actual_remainder_liters is None
             and book.calibration is not None

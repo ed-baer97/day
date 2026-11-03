@@ -100,8 +100,8 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
         )}
       </div>
       <p className="dash-muted">
-        Публикуются смены остатка с полуночи по местному времени. Повторные пакеты Shelly с тем же
-        уровнем скрыты.
+        Публикуются смены остатка с полуночи по местному времени. Сдвиг датчика меньше 0,1 В — погрешность,
+        такие пакеты Shelly в журнал не попадают.
       </p>
       {error ? <p className="tank-error">{error}</p> : null}
       {loading && rows.length === 0 ? <p className="dash-muted">Загрузка…</p> : null}

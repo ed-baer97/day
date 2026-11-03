@@ -2,7 +2,14 @@
 
 import pytest
 
-from app.services.calibration import LevelCalibration, round_percent, round_volts, volts_to_liters, volts_to_percent
+from app.services.calibration import (
+    LevelCalibration,
+    round_percent,
+    round_volts,
+    same_published_level,
+    volts_to_liters,
+    volts_to_percent,
+)
 
 # 1.2 В = 20 %, 3.8 В = 80 %, сосуд 10 000 л
 CAL = LevelCalibration(
@@ -35,6 +42,12 @@ def test_volts_round_to_tenth():
     assert round_volts(3.19) == pytest.approx(3.2)
     assert round_volts(3.14) == pytest.approx(3.1)
     assert round_volts(3.15) == pytest.approx(3.2)
+
+
+def test_hundredth_of_a_volt_is_the_same_level():
+    assert same_published_level(3.15, 3.16, 65, 66)
+    assert same_published_level(3.1, 3.2, 64, 67)
+    assert not same_published_level(3.0, 3.2, 60, 67)
 
 
 def test_percent_rounds_to_one():

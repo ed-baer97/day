@@ -20,7 +20,7 @@ from app.schemas.station import (
     TankOut,
 )
 from app.services.account_mode import use_postgres
-from app.services.calibration import round_percent
+from app.services.calibration import round_percent, same_published_level
 from app.services.catalog import (
     StationCard,
     create_station,
@@ -285,29 +285,31 @@ def list_device_levels(
     )
     out: list[LevelReadingOut] = []
     previous: float | None = None
+    previous_volts: float | None = None
     previous_step: float | None = None
     for row in rows:
-        step = None if row.fill_percent is None else float(round_percent(row.fill_percent))
-        if changes_only and step is not None and previous_step is not None and step == previous_step:
-            continue
+        volts = None if row.volts is None else float(row.volts)
+        step = None if row.fill_percent is None else float(row.fill_percent)
         liters = float(row.remainder_liters)
         delta = None if previous is None else liters - previous
-        if changes_only and previous is not None and step is None and abs(delta) < 0.5:
+        if changes_only and previous is not None and same_published_level(previous_volts, volts, previous_step, step):
+            continue
+        if changes_only and previous is not None and volts is None and step is None and abs(delta) < 0.5:
             continue
         out.append(
             LevelReadingOut(
                 id=row.id,
                 tank_id=row.tank_id,
-                volts=row.volts,
+                volts=volts,
                 remainder_liters=liters,
-                fill_percent=None if row.fill_percent is None else float(round(row.fill_percent)),
+                fill_percent=None if step is None else float(round_percent(step)),
                 recorded_at=row.recorded_at.isoformat(),
                 delta_liters=delta,
             )
         )
         previous = liters
-        if step is not None:
-            previous_step = step
+        previous_volts = volts
+        previous_step = step
     out.reverse()
     return out
 

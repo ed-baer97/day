@@ -312,6 +312,20 @@ def test_level_is_stored_only_when_percent_changes():
     assert noise.json()["message"] == "level unchanged"
     assert noise.json()["actual_remainder_liters"] == pytest.approx(held)
 
+    hundredth = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volts": 3.15,
+            "recorded_at": "2026-10-04T11:01:30Z",
+            "source_event_id": "noise-2b",
+        },
+    )
+    assert hundredth.status_code == 200
+    assert hundredth.json()["message"] == "level unchanged"
+    assert hundredth.json()["actual_remainder_liters"] == pytest.approx(held)
+
     step = client.post(
         "/api/v1/ingest/level",
         json={
@@ -341,4 +355,4 @@ def test_level_is_stored_only_when_percent_changes():
     assert same_percent.json()["actual_remainder_liters"] == pytest.approx(6600)
 
     state = client.get(f"/api/v1/ingest/tanks/{TANK}")
-    assert state.json()["last_volts"] == pytest.approx(3.2)
+    assert state.json()["last_volts"] == pytest.approx(3.19)
