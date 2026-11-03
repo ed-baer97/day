@@ -44,10 +44,12 @@ def test_volts_round_to_tenth():
     assert round_volts(3.15) == pytest.approx(3.2)
 
 
-def test_hundredth_of_a_volt_is_the_same_level():
-    assert same_published_level(3.15, 3.16, 65, 66)
-    assert same_published_level(3.1, 3.2, 64, 67)
-    assert not same_published_level(3.0, 3.2, 60, 67)
+def test_published_level_follows_percent_then_volts():
+    assert same_published_level(3.15, 3.16, 65, 65)
+    assert not same_published_level(3.15, 3.16, 65, 66)
+    assert not same_published_level(3.1, 3.2, 64, 67)
+    assert same_published_level(3.15, 3.16, None, None, tolerance=0.02)
+    assert not same_published_level(3.0, 3.2, None, None, tolerance=0.1)
 
 
 def test_percent_rounds_to_one():

@@ -355,4 +355,4 @@ def test_level_is_stored_only_when_percent_changes():
     assert same_percent.json()["actual_remainder_liters"] == pytest.approx(6600)
 
     state = client.get(f"/api/v1/ingest/tanks/{TANK}")
-    assert state.json()["last_volts"] == pytest.approx(3.19)
+    assert state.json()["last_volts"] == pytest.approx(3.20)

@@ -19,7 +19,7 @@ from app.database import SessionLocal
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
 from app.schemas.ingest import CalibrationIn, IngestAck, LevelIngest, TankIngestState
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, round_percent, same_published_level, volts_to_percent
+from app.services.calibration import LevelCalibration, round_percent, volts_to_percent
 from app.services.catalog import StationCard
 from app.services.device_ingest import TankDevice
 from app.services.passwords import hash_password, verify_password
@@ -351,21 +351,6 @@ def accept_level(body: LevelIngest) -> IngestAck:
             return _ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
         calibration = _calibration(row) if body.volts is not None and body.actual_remainder_liters is None else None
-        if (
-            body.volts is not None
-            and body.actual_remainder_liters is None
-            and row.last_volts is not None
-            and calibration is not None
-            and same_published_level(row.last_volts, body.volts, None, None, tolerance=0.02)
-        ):
-            percent = round_percent(volts_to_percent(row.last_volts, calibration))
-            row.actual_remainder_liters = percent / 100 * row.capacity_liters
-            row.last_measured_at = body.recorded_at
-            _recompute(row)
-            db.commit()
-            db.refresh(row)
-            return _ack(row, message="level unchanged")
-
         percent = (
             round_percent(volts_to_percent(body.volts, calibration))
             if calibration is not None and body.volts is not None
