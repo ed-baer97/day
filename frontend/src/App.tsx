@@ -12,7 +12,7 @@ import { SensorStatus, sensorLabel, usePublicLevels } from "./liveLevels";
 import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
 
-type Page = "landing" | "map" | "dashboard" | "admin";
+type Page = "landing" | "map" | "dashboard" | "admin" | "supply";
 type Selection = { kind: "truck"; id: string } | { kind: "station"; id: string } | null;
 
 export default function App() {
@@ -149,6 +149,9 @@ export default function App() {
           </button>
           <button type="button" className={`nav-page${page === "map" ? " active" : ""}`} onClick={() => setPage("map")}>
             Карта
+          </button>
+          <button type="button" className={`nav-page${page === "supply" ? " active" : ""}`} onClick={() => setPage("supply")}>
+            Поставки
           </button>
           <button type="button" className={`nav-page${page === "admin" ? " active" : ""}`} onClick={() => setPage("admin")}>
             Админка
@@ -346,6 +349,22 @@ export default function App() {
               />
             </div>
           ) : null}
+        </main>
+      ) : page === "supply" ? (
+        <main className="page dash-page" ref={dashRef}>
+          <div className="dash">
+            <header className="dash-hero">
+              <p className="kicker">Контур поставок</p>
+              <h2>Партии и рейсы</h2>
+            </header>
+            <section className="dash-card">
+              <h3>Поставки не подключены</h3>
+              <p className="dash-muted">
+                Рейсов, партий и сливов в кабинете нет. Раздел оставлен в навигации: цифры появятся, когда контур
+                будет подключён.
+              </p>
+            </section>
+          </div>
         </main>
       ) : page === "admin" ? (
         <main className="page dash-page" ref={dashRef}>

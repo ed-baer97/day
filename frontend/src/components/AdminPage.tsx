@@ -20,7 +20,7 @@ function statusLabel(value: string) {
   return TRUCK_STATUS.find((row) => row.value === value)?.label ?? value;
 }
 
-type AdminTab = "stations" | "trucks" | "security";
+type AdminTab = "stations" | "trucks" | "supplies" | "reconcile" | "security";
 
 export default function AdminPage({
   initialStationId,
@@ -141,6 +141,24 @@ export default function AdminPage({
             onClick={() => setTab("trucks")}
           >
             Газовозы ({catalog.trucks.length})
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "supplies"}
+            className={tab === "supplies" ? "active" : ""}
+            onClick={() => setTab("supplies")}
+          >
+            Партии и поставки
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "reconcile"}
+            className={tab === "reconcile" ? "active" : ""}
+            onClick={() => setTab("reconcile")}
+          >
+            Сверка и инциденты
           </button>
           <button
             type="button"
@@ -468,6 +486,24 @@ export default function AdminPage({
             </aside>
           </div>
         </>
+      )}
+
+      {tab === "supplies" && (
+        <section className="dash-card">
+          <h3>Партии и поставки</h3>
+          <p className="dash-muted">
+            Контур поставок не подключён. Партий, рейсов и сливов в кабинете нет — раздел оставлен в навигации.
+          </p>
+        </section>
+      )}
+
+      {tab === "reconcile" && (
+        <section className="dash-card">
+          <h3>Сверка и инциденты</h3>
+          <p className="dash-muted">
+            Колонки, КГД и акты сверки не подключены. Расхождений и инцидентов по ним нет.
+          </p>
+        </section>
       )}
 
       {tab === "security" && (
