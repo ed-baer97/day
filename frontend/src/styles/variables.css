@@ -1295,6 +1295,24 @@ select {
   margin: 18px 0 10px;
   font-size: 14px;
 }
+.admin-level-log {
+  margin-top: 18px;
+}
+.admin-level-log-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.admin-level-log-head .admin-sub {
+  margin: 0;
+}
+.admin-level-log .dash-table-wrap {
+  margin-top: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
 .admin-empty {
   margin: 8px 0;
   color: var(--muted);

@@ -1,5 +1,6 @@
 """Station endpoints."""
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
@@ -38,19 +39,6 @@ from app.services.device_ingest import (
 from app.services.shelly_link import connect_shelly, disconnect_shelly, shelly_view
 
 router = APIRouter(prefix="/stations", tags=["stations"])
-
-_DEMO_STATIONS: list[dict] = [
-    {
-        "id": UUID("a1111111-1111-1111-1111-111111111101"),
-        "code": "AGZS-AKT-12",
-        "name": "АГЗС Актау · 12 мкр",
-        "address": "Актау, 12 микрорайон",
-        "lat": 43.6479,
-        "lon": 51.2480,
-        "is_active": True,
-        "tanks": [],
-    },
-]
 
 
 def _station_out(station: StationCard) -> StationOut:
@@ -138,65 +126,30 @@ def get_station_card(
 ) -> StationDetailOut:
     require_station_access(station_id, principal)
     station = get_station(station_id)
-    demo = next((item for item in _DEMO_STATIONS if item["id"] == station_id), None)
-    tanks = [TankOut(**tank) for tank in (demo["tanks"] if demo else [])]
-    devices = list_tank_devices(station_id)
-    if devices and not tanks:
-        tanks = [
+    from app.services.device_ingest import tank_remainder
+
+    tanks = []
+    for device in list_tank_devices(station_id):
+        remainder, measured = tank_remainder(device.tank_id)
+        tanks.append(
             TankOut(
                 id=device.tank_id,
                 code=device.code,
                 capacity_liters=device.capacity_liters,
                 has_electronic_sensor=True,
-                actual_remainder_liters=None,
-                calculated_remainder_liters=None,
+                actual_remainder_liters=remainder,
+                calculated_remainder_liters=remainder,
                 level_source="electronic",
-                last_measured_at=None,
+                last_measured_at=measured,
             )
-            for device in devices
-        ]
-        from app.services.device_ingest import tank_remainder
-
-        filled = []
-        for tank, device in zip(tanks, devices):
-            remainder, measured = tank_remainder(device.tank_id)
-            filled.append(
-                tank.model_copy(
-                    update={
-                        "actual_remainder_liters": remainder,
-                        "calculated_remainder_liters": remainder,
-                        "last_measured_at": measured,
-                    }
-                )
-            )
-        tanks = filled
-    if demo is None or not tanks:
-        return StationDetailOut(
-            **_station_out(station).model_dump(),
-            tanks=tanks,
-            remainder_liters=sum(t.actual_remainder_liters or 0 for t in tanks) if tanks else 0,
-            capacity_liters=sum(t.capacity_liters for t in tanks) if tanks else 0,
-            balance_status="unknown",
-            calculated_vs_actual_delta=0,
         )
-    capacity = sum(tank.capacity_liters for tank in tanks) or 15000
-    actual = sum(tank.actual_remainder_liters or 0 for tank in tanks) or 5000
-    calculated = sum(tank.calculated_remainder_liters or 0 for tank in tanks) or actual
-    delta = actual - calculated
-    status = "ok" if abs(delta) < 50 else ("shortage" if delta < 0 else "surplus")
     return StationDetailOut(
         **_station_out(station).model_dump(),
         tanks=tanks,
-        remainder_liters=actual,
-        capacity_liters=capacity,
-        receipts_day_liters=8200,
-        consumption_day_liters=3100,
-        consumption_week_liters=21400,
-        consumption_month_liters=86500,
-        sales_day_count=142,
-        active_trucks=[{"plate": "705 ABA 12", "status": "arrived"}],
-        balance_status=status,
-        calculated_vs_actual_delta=delta,
+        remainder_liters=sum(t.actual_remainder_liters or 0 for t in tanks) if tanks else None,
+        capacity_liters=sum(t.capacity_liters for t in tanks) if tanks else None,
+        balance_status="unknown",
+        calculated_vs_actual_delta=None,
     )
 
 
@@ -207,10 +160,24 @@ def list_tanks(
 ) -> list[TankOut]:
     require_station_access(station_id, principal)
     get_station(station_id)
-    for station in _DEMO_STATIONS:
-        if station["id"] == station_id:
-            return [TankOut(**tank) for tank in station["tanks"]]
-    return []
+    from app.services.device_ingest import tank_remainder
+
+    tanks: list[TankOut] = []
+    for device in list_tank_devices(station_id):
+        remainder, measured = tank_remainder(device.tank_id)
+        tanks.append(
+            TankOut(
+                id=device.tank_id,
+                code=device.code,
+                capacity_liters=device.capacity_liters,
+                has_electronic_sensor=True,
+                actual_remainder_liters=remainder,
+                calculated_remainder_liters=remainder,
+                level_source="electronic",
+                last_measured_at=measured,
+            )
+        )
+    return tanks
 
 
 def _require_station(station_id: UUID, principal: Principal) -> None:
@@ -295,25 +262,47 @@ def list_device_levels(
     station_id: UUID,
     tank_id: UUID,
     principal: Principal = Depends(require_principal),
+    since: datetime | None = None,
+    changes_only: bool = True,
+    limit: int = 2000,
 ) -> list[LevelReadingOut]:
+    """Журнал замеров. По умолчанию только смены остатка (не каждый пакет Shelly)."""
+
     _require_station(station_id, principal)
     get_tank_device(station_id, tank_id)
     if not use_postgres():
         return []
     from app.services import postgres_account
 
-    rows = postgres_account.list_level_readings(station_id, tank_id)
-    return [
-        LevelReadingOut(
-            id=row.id,
-            tank_id=row.tank_id,
-            volts=row.volts,
-            remainder_liters=row.remainder_liters,
-            fill_percent=row.fill_percent,
-            recorded_at=row.recorded_at.isoformat(),
+    capped = max(1, min(limit, 5000))
+    rows = postgres_account.list_level_readings(
+        station_id,
+        tank_id,
+        since=since,
+        limit=capped,
+        newest_first=False,
+    )
+    out: list[LevelReadingOut] = []
+    previous: float | None = None
+    for row in rows:
+        liters = float(row.remainder_liters)
+        delta = None if previous is None else liters - previous
+        if changes_only and previous is not None and abs(delta) < 0.5:
+            continue
+        out.append(
+            LevelReadingOut(
+                id=row.id,
+                tank_id=row.tank_id,
+                volts=row.volts,
+                remainder_liters=liters,
+                fill_percent=row.fill_percent,
+                recorded_at=row.recorded_at.isoformat(),
+                delta_liters=delta,
+            )
         )
-        for row in rows
-    ]
+        previous = liters
+    out.reverse()
+    return out
 
 
 @router.post("/{station_id}/users", response_model=StationUserCreated, status_code=201)

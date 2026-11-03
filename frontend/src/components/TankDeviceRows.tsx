@@ -3,7 +3,6 @@ import { api, type ShellyLink, type TankDevice } from "../api/client";
 import { useCatalog } from "../catalog";
 import { liters } from "../format";
 import { tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
-import { useSim } from "../sim/SimContext";
 import { useToast } from "./Toast";
 
 type Row = {
@@ -37,7 +36,6 @@ function ingestUrl(path: string) {
 }
 
 export default function TankDeviceRows({ stationId }: { stationId: string }) {
-  const { state, updateStationTankLevel, recordStationReceipt } = useSim();
   const { byCode } = usePublicLevels();
   const toast = useToast();
   const [rows, setRows] = useState<Row[]>([]);
@@ -51,9 +49,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
   const shellyFresh = useRef<Record<string, number>>({});
 
   const catalog = useCatalog();
-  const simStation = state.stations.find((s) => s.detail.id === stationId)?.detail;
-  const stationCode =
-    simStation?.code ?? catalog.stations.find((row) => row.id === stationId)?.code;
+  const stationCode = catalog.stations.find((row) => row.id === stationId)?.code;
   const live = stationCode ? byCode.get(stationCode) : undefined;
 
   useEffect(() => {
@@ -64,49 +60,12 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       .tankDevices(stationId)
       .then((devices) => {
         if (!live) return;
-        if (devices.length > 0) {
-          setRows(devices.map((d) => toRow(d, simStation?.tanks[0]?.actual_remainder_liters ?? undefined)));
-        } else if (simStation && simStation.tanks.length > 0) {
-          setRows(
-            simStation.tanks.map((t) => ({
-              id: t.id,
-              code: t.code,
-              capacity: String(t.capacity_liters),
-              token: `tk_${t.id.replace(/[^a-zA-Z0-9]/g, "")}_sec`,
-              path: `/api/v1/ingest/tanks/${t.id}/level`,
-              shellyHost: "",
-              shelly: null,
-              zeroVolts: "0.5",
-              fullVolts: "4.5",
-              manualLiters: String(t.actual_remainder_liters),
-              receiptLiters: "",
-            }))
-          );
-        } else {
-          setRows([]);
-        }
+        setRows(devices.map((device) => toRow(device)));
       })
-      .catch(() => {
+      .catch((err) => {
         if (!live) return;
-        if (simStation && simStation.tanks.length > 0) {
-          setRows(
-            simStation.tanks.map((t) => ({
-              id: t.id,
-              code: t.code,
-              capacity: String(t.capacity_liters),
-              token: `tk_${t.id.replace(/[^a-zA-Z0-9]/g, "")}_sec`,
-              path: `/api/v1/ingest/tanks/${t.id}/level`,
-              shellyHost: "",
-              shelly: null,
-              zeroVolts: "0.5",
-              fullVolts: "4.5",
-              manualLiters: String(t.actual_remainder_liters),
-              receiptLiters: "",
-            }))
-          );
-        } else {
-          setRows([]);
-        }
+        setRows([]);
+        setError(messageOf(err));
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -114,7 +73,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
     return () => {
       live = false;
     };
-  }, [stationId, simStation]);
+  }, [stationId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -153,24 +112,8 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       setCode("");
       setCapacity("");
       toast.ok(`Резервуар ${created.code} добавлен`);
-    } catch {
-      const fallback: Row = {
-        id: `tank-${Date.now().toString(36)}`,
-        code: code.trim(),
-        capacity: String(volume),
-        token: `tk_${Math.random().toString(36).slice(2, 12)}`,
-        path: `/api/v1/ingest/tanks/tank-${Date.now().toString(36)}/level`,
-        shellyHost: "",
-        shelly: null,
-        zeroVolts: "0.5",
-        fullVolts: "4.5",
-        manualLiters: "0",
-        receiptLiters: "",
-      };
-      setRows((current) => [...current, fallback]);
-      setCode("");
-      setCapacity("");
-      toast.ok(`Резервуар ${fallback.code} добавлен`);
+    } catch (err) {
+      setError(messageOf(err));
     } finally {
       setSavingId(null);
     }
@@ -215,12 +158,12 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
     setError(null);
     try {
       await api.deleteTankDevice(stationId, row.id);
-    } catch {
-      /* резервуар мог быть только локальным */
-    } finally {
       setRows((current) => current.filter((item) => item.id !== row.id));
-      setSavingId(null);
       toast.ok(`Резервуар ${row.code} удалён`);
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setSavingId(null);
     }
   }
 
@@ -295,8 +238,8 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
         capacity_liters: Number.isFinite(cap) && cap > 0 ? cap : undefined,
       });
       toast.ok(`Калибровка ${row.code} сохранена (${z} В … ${f} В)`);
-    } catch {
-      toast.ok(`Калибровка ${row.code} применена (${z} В … ${f} В)`);
+    } catch (err) {
+      setError(messageOf(err));
     } finally {
       setSavingId(null);
     }
@@ -304,14 +247,12 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
 
   async function submitManualLevel(row: Row) {
     const lit = Number(row.manualLiters.replace(",", "."));
-    const cap = Number(row.capacity.replace(",", ".")) || 10000;
     if (!Number.isFinite(lit) || lit < 0) {
       setError("Укажите корректный остаток в литрах (≥ 0)");
       return;
     }
     setSavingId(`lvl:${row.id}`);
     setError(null);
-    updateStationTankLevel(stationId, row.code, lit, cap);
     try {
       await api.ingestLevel({
         station_id: stationId,
@@ -319,11 +260,11 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
         actual_remainder_liters: lit,
         recorded_at: new Date().toISOString(),
       });
-    } catch {
-      /* синхронизировано с локальным состоянием стенда */
+      toast.ok(`Замер остатка ${row.code}: ${Math.round(lit)} л опубликован`);
+    } catch (err) {
+      setError(messageOf(err));
     } finally {
       setSavingId(null);
-      toast.ok(`Замер остатка ${row.code}: ${Math.round(lit)} л опубликован`);
     }
   }
 
@@ -335,7 +276,6 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
     }
     setSavingId(`rec:${row.id}`);
     setError(null);
-    recordStationReceipt(stationId, lit);
     try {
       await api.ingestReceipt({
         station_id: stationId,
@@ -343,9 +283,6 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
         volume_liters: lit,
         recorded_at: new Date().toISOString(),
       });
-    } catch {
-      /* синхронизировано с локальным состоянием стенда */
-    } finally {
       setRows((current) =>
         current.map((item) =>
           item.id === row.id
@@ -353,17 +290,17 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
                 ...item,
                 receiptLiters: "",
                 manualLiters: String(
-                  Math.min(
-                    Number(item.capacity) || 20000,
-                    (Number(item.manualLiters) || 0) + lit
-                  )
+                  Math.min(Number(item.capacity) || 20000, (Number(item.manualLiters) || 0) + lit)
                 ),
               }
             : item
         )
       );
-      setSavingId(null);
       toast.ok(`Приход ${Math.round(lit)} л принят на ${row.code}`);
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setSavingId(null);
     }
   }
 

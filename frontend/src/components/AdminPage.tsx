@@ -1,19 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type CatalogStation, type CatalogTruck, type StationDraft, type TruckDraft } from "../api/client";
+import { type CatalogStation, type CatalogTruck, type StationDraft, type TruckDraft } from "../api/client";
 import { useAuth } from "../auth";
 import { messageOf, useCatalog } from "../catalog";
-import {
-  balBadge,
-  dateTime,
-  fiscalBadge,
-  liters,
-  REGIONS,
-  signedLiters,
-  stationRegion,
-} from "../format";
+import { liters, REGIONS, stationRegion } from "../format";
 import { SensorStatus, usePublicLevels } from "../liveLevels";
-import { fiscalCheck, stationBalance, withMeasured } from "../sim/engine";
-import { useSim } from "../sim/SimContext";
+import LevelChangesToday from "./LevelChangesToday";
 import TankDeviceRows from "./TankDeviceRows";
 import { useToast } from "./Toast";
 
@@ -29,7 +20,7 @@ function statusLabel(value: string) {
   return TRUCK_STATUS.find((row) => row.value === value)?.label ?? value;
 }
 
-type AdminTab = "stations" | "trucks" | "supplies" | "reconcile" | "security";
+type AdminTab = "stations" | "trucks" | "security";
 
 export default function AdminPage({
   initialStationId,
@@ -42,7 +33,6 @@ export default function AdminPage({
 }) {
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
-  const { state, createSimSupply, resolveSimEvent, addSimEvent, updateStationTankLevel } = useSim();
   const { session } = useAuth();
   const toast = useToast();
 
@@ -63,20 +53,6 @@ export default function AdminPage({
   const [trQuery, setTrQuery] = useState("");
   const [trStatus, setTrStatus] = useState<string>("all");
 
-  // Форма новой поставки
-  const [supFactoryId, setSupFactoryId] = useState(state.factories[0]?.id ?? "");
-  const [supTruckId, setSupTruckId] = useState(state.trucks[0]?.detail.id ?? "");
-  const [supStationId, setSupStationId] = useState(state.stations[0]?.detail.id ?? "");
-  const [supVolume, setSupVolume] = useState("18000");
-
-  // Форма сверки баланса
-  const [recStationId, setRecStationId] = useState(state.stations[0]?.detail.id ?? "");
-  const [recOpening, setRecOpening] = useState("10200");
-  const [recReceipts, setRecReceipts] = useState("4500");
-  const [recDispensed, setRecDispensed] = useState("3120");
-  const [recActual, setRecActual] = useState("11580");
-  const [evFilter, setEvFilter] = useState<"all" | "open" | "resolved">("all");
-
   useEffect(() => {
     if (initialStationId) {
       setTab("stations");
@@ -84,32 +60,18 @@ export default function AdminPage({
     }
   }, [initialStationId]);
 
-  const simById = useMemo(
-    () => new Map(state.stations.map((s) => [s.detail.id, s.detail])),
-    [state.stations]
-  );
-
   const enrichedCatalogStations = useMemo(
     () =>
       catalog.stations.map((row) => {
-        const sim = simById.get(row.id);
         const live = byCode.get(row.code) ?? null;
         const hasLive = !!live && live.tanks.length > 0;
-        const bal = sim ? withMeasured(stationBalance(sim), hasLive ? live.remainder : null) : null;
-        const fc = sim ? fiscalCheck(sim) : null;
-        const cap = hasLive && live.capacity > 0 ? live.capacity : (sim?.capacity_liters ?? 0);
-        const actual = hasLive ? live.remainder : bal ? bal.storage_actual : null;
-        const fill = hasLive
-          ? live.fill == null
-            ? null
-            : Math.round(live.fill)
-          : cap && actual != null
-            ? Math.min(100, Math.round((actual / cap) * 100))
-            : null;
+        const cap = hasLive && live.capacity > 0 ? live.capacity : 0;
+        const actual = hasLive ? live.remainder : null;
+        const fill = hasLive && live.fill != null ? Math.round(live.fill) : null;
         const region = stationRegion(row);
-        return { row, sim, bal, fc, cap, actual, fill, live, region };
+        return { row, cap, actual, fill, live, region };
       }),
-    [catalog.stations, simById, byCode]
+    [catalog.stations, byCode]
   );
 
   const filteredStations = useMemo(() => {
@@ -124,7 +86,7 @@ export default function AdminPage({
       if (stRegion !== "all" && item.region !== stRegion) return false;
       if (stFilter === "active" && !item.row.is_active) return false;
       if (stFilter === "inactive" && item.row.is_active) return false;
-      if (stFilter === "issue" && (!item.bal || item.bal.status === "ok")) return false;
+      if (stFilter === "issue" && !(item.live && item.live.tanks.length > 0 && !item.live.tanks.some((tank) => tank.online))) return false;
       if (stFilter === "low" && (item.fill == null || item.fill >= 25)) return false;
       return true;
     });
@@ -154,109 +116,6 @@ export default function AdminPage({
   const station = catalog.stations.find((row) => row.id === stationId) ?? null;
   const truck = catalog.trucks.find((row) => row.id === truckId) ?? null;
 
-  // При выборе станции в сверке подставляем её текущие показатели
-  useEffect(() => {
-    const st = simById.get(recStationId);
-    if (!st) return;
-    const bal = stationBalance(st);
-    setRecOpening(String(bal.opening));
-    setRecReceipts(String(bal.delivered));
-    setRecDispensed(String(bal.through_pumps));
-    setRecActual(String(bal.storage_actual));
-  }, [recStationId, simById]);
-
-  async function handleCreateSupply(e: React.FormEvent) {
-    e.preventDefault();
-    const vol = Number(supVolume.replace(",", "."));
-    if (!supFactoryId || !supTruckId || !supStationId || !Number.isFinite(vol) || vol <= 0) {
-      toast.err("Заполните завод, газовоз, АГЗС и объём партии");
-      return;
-    }
-    const waybillCode = `ТТН-${Date.now().toString().slice(-5)}`;
-    const created = createSimSupply({
-      waybill: waybillCode,
-      stationId: supStationId,
-      truckId: supTruckId,
-      volumeLiters: vol,
-    });
-    const code = created?.supply_id ?? waybillCode;
-    try {
-      await api.createBatch({
-        trail_code: code,
-        volume_liters: vol,
-      });
-    } catch {
-      /* синхронизировано с локальным реестром поставок */
-    }
-    toast.ok(`Партия ${code} (${liters(vol)}) оформлена и отправлена в рейс`);
-  }
-
-  async function handleReconcile(e: React.FormEvent) {
-    e.preventDefault();
-    const op = Number(recOpening.replace(",", "."));
-    const rc = Number(recReceipts.replace(",", "."));
-    const dp = Number(recDispensed.replace(",", "."));
-    const ac = Number(recActual.replace(",", "."));
-    if (![op, rc, dp, ac].every((n) => Number.isFinite(n) && n >= 0)) {
-      toast.err("Все объёмы сверки должны быть неотрицательными числами");
-      return;
-    }
-    const st = simById.get(recStationId);
-    const tankId = st?.tanks[0]?.id ?? `${recStationId}-t1`;
-    const tankCode = st?.tanks[0]?.code ?? "R-1";
-    const calc = Math.round((op + rc - dp) * 100) / 100;
-    const delta = Math.round((ac - calc) * 100) / 100;
-
-    updateStationTankLevel(recStationId, tankCode, ac);
-
-    const nowIso = new Date().toISOString();
-    try {
-      await api.reconcileBalance({
-        station_id: recStationId,
-        tank_id: tankId,
-        period_start: nowIso,
-        period_end: nowIso,
-        previous_remainder_liters: op,
-        receipts_liters: rc,
-        dispense_liters: dp,
-        actual_remainder_liters: ac,
-      });
-    } catch {
-      /* обработано локально */
-    }
-
-    if (Math.abs(delta) > 150) {
-      addSimEvent({
-        event_type: delta < 0 ? "shortage" : "surplus",
-        severity: "critical",
-        title: delta < 0 ? "Недостача по акту сверки" : "Излишек по акту сверки",
-        description: `${st?.name ?? recStationId}: книжный ${liters(calc)}, фактический ${liters(ac)} (Δ ${signedLiters(delta)}).`,
-        station_id: recStationId,
-        delta_liters: delta,
-      });
-      toast.err(`Зафиксировано расхождение: Δ ${signedLiters(delta)}`);
-    } else {
-      toast.ok(`Сверка пройдена: баланс сходится (Δ ${signedLiters(delta)})`);
-    }
-  }
-
-  async function handleResolveEvent(id: string) {
-    resolveSimEvent(id);
-    try {
-      await api.resolveEvent(id);
-    } catch {
-      /* локальное событие закрыто */
-    }
-    toast.ok("Инцидент проверен и закрыт");
-  }
-
-  const openEventsCount = state.events.filter((e) => !e.is_resolved).length;
-  const visibleEvents = state.events.filter((e) => {
-    if (evFilter === "open") return !e.is_resolved;
-    if (evFilter === "resolved") return e.is_resolved;
-    return true;
-  });
-
   return (
     <div className="dash admin">
       <header className="admin-toolbar">
@@ -282,24 +141,6 @@ export default function AdminPage({
             onClick={() => setTab("trucks")}
           >
             Газовозы ({catalog.trucks.length})
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "supplies"}
-            className={tab === "supplies" ? "active" : ""}
-            onClick={() => setTab("supplies")}
-          >
-            Партии и поставки ({state.supplies.length})
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "reconcile"}
-            className={tab === "reconcile" ? "active" : ""}
-            onClick={() => setTab("reconcile")}
-          >
-            Сверка и инциденты ({openEventsCount})
           </button>
           <button
             type="button"
@@ -359,7 +200,7 @@ export default function AdminPage({
               <option value="all">Все статусы ({catalog.stations.length})</option>
               <option value="active">Работают</option>
               <option value="inactive">Выключены</option>
-              <option value="issue">Расхождение баланса</option>
+              <option value="issue">Нет связи с датчиком</option>
               <option value="low">Мало газа (&lt; 25%)</option>
             </select>
             <select
@@ -389,13 +230,13 @@ export default function AdminPage({
                     <tr>
                       <th>Код / Район</th>
                       <th>Название и адрес</th>
-                      <th>Остаток на лэндинге</th>
-                      <th>Внутренняя сверка</th>
+                      <th>Остаток датчика</th>
+                      <th>Датчик</th>
                       <th>Статус</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {pagedStations.map(({ row, bal, fc, actual, cap, fill, live, region }) => (
+                    {pagedStations.map(({ row, actual, cap, fill, live, region }) => (
                       <tr
                         key={row.id}
                         className={`dash-row-link${stationId === row.id ? " active" : ""}`}
@@ -416,21 +257,9 @@ export default function AdminPage({
                           <div className="dash-muted">
                             {actual == null ? "замера ещё нет" : `${liters(actual)} / ${liters(cap)}`}
                           </div>
-                          {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
                         </td>
                         <td>
-                          {bal ? (
-                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                              <span className={`badge ${balBadge(bal.status)}`}>
-                                {bal.status === "ok" ? "Баланс ОК" : signedLiters(bal.delta)}
-                              </span>
-                              {fc && fc.status !== "ok" && (
-                                <span className={`badge ${fiscalBadge(fc.status)}`}>КГД</span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="dash-muted">—</span>
-                          )}
+                          {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : <span className="badge warn">не подключён</span>}
                         </td>
                         <td>
                           <span className={`badge ${row.is_active ? "ok" : "warn"}`}>
@@ -533,6 +362,7 @@ export default function AdminPage({
                   />
                   <h3 className="admin-sub">Резервуары, датчики Shelly и публикация остатка</h3>
                   <TankDeviceRows stationId={station.id} />
+                  <LevelChangesToday stationId={station.id} />
                 </>
               ) : (
                 <p className="admin-empty">
@@ -638,248 +468,6 @@ export default function AdminPage({
             </aside>
           </div>
         </>
-      )}
-
-      {tab === "supplies" && (
-        <div className="admin-split">
-          <div className="dash-table-wrap admin-table">
-            <table className="dash-table">
-              <thead>
-                <tr>
-                  <th>Код партии</th>
-                  <th>Завод</th>
-                  <th>Газовоз</th>
-                  <th>Целевая АГЗС</th>
-                  <th>Отгружено / Принято</th>
-                  <th>Статус</th>
-                </tr>
-              </thead>
-              <tbody>
-                {state.supplies.map((sp) => {
-                  const diff =
-                    sp.accepted_liters != null
-                      ? sp.accepted_liters - sp.shipped_liters
-                      : null;
-                  return (
-                    <tr key={sp.supply_id}>
-                      <td>
-                        <strong>{sp.waybill || sp.supply_id}</strong>
-                        <div className="dash-muted">{sp.departed_at ? dateTime(sp.departed_at) : "—"}</div>
-                      </td>
-                      <td>{sp.factory_name}</td>
-                      <td>{sp.plate}</td>
-                      <td>{sp.station_name}</td>
-                      <td>
-                        <strong>{liters(sp.shipped_liters)}</strong> →{" "}
-                        {sp.accepted_liters != null
-                          ? liters(sp.accepted_liters)
-                          : "в пути"}
-                        {diff != null && diff !== 0 && (
-                          <div className={Math.abs(diff) > 100 ? "text-danger" : "dash-muted"}>
-                            Δ {signedLiters(diff)}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <span className="badge ok">{sp.status}</span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <aside className="admin-editor dash-card">
-            <form className="admin-form" onSubmit={handleCreateSupply}>
-              <h3 className="span-3">Оформить новую отгрузку с завода</h3>
-              <label className="span-3">
-                Завод-отправитель
-                <select value={supFactoryId} onChange={(e) => setSupFactoryId(e.target.value)}>
-                  {state.factories.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="span-3">
-                Газовоз
-                <select value={supTruckId} onChange={(e) => setSupTruckId(e.target.value)}>
-                  {state.trucks.map((t) => (
-                    <option key={t.detail.id} value={t.detail.id}>
-                      {t.detail.plate_number} · {t.detail.carrier_name} ({liters(t.detail.capacity_liters)})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="span-3">
-                Целевая АГЗС назначения
-                <select value={supStationId} onChange={(e) => setSupStationId(e.target.value)}>
-                  {state.stations.map((s) => (
-                    <option key={s.detail.id} value={s.detail.id}>
-                      {s.detail.name} ({s.detail.code} · {stationRegion(s.detail)})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="span-2">
-                Отгруженный объём по кориолису, л
-                <input
-                  inputMode="decimal"
-                  value={supVolume}
-                  onChange={(e) => setSupVolume(e.target.value)}
-                />
-              </label>
-              <div className="admin-actions span-3">
-                <button type="submit" className="btn small">
-                  Создать партию и выпустить рейс
-                </button>
-              </div>
-            </form>
-          </aside>
-        </div>
-      )}
-
-      {tab === "reconcile" && (
-        <div className="admin-split">
-          <div>
-            <div className="st-filter-bar" style={{ marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>Журнал инцидентов и расхождений</h3>
-              <div className="mini-tabs">
-                <button
-                  type="button"
-                  className={evFilter === "all" ? "active" : ""}
-                  onClick={() => setEvFilter("all")}
-                >
-                  Все ({state.events.length})
-                </button>
-                <button
-                  type="button"
-                  className={evFilter === "open" ? "active" : ""}
-                  onClick={() => setEvFilter("open")}
-                >
-                  Открытые ({openEventsCount})
-                </button>
-                <button
-                  type="button"
-                  className={evFilter === "resolved" ? "active" : ""}
-                  onClick={() => setEvFilter("resolved")}
-                >
-                  Закрытые ({state.events.length - openEventsCount})
-                </button>
-              </div>
-            </div>
-
-            <div className="dash-table-wrap admin-table">
-              <table className="dash-table">
-                <thead>
-                  <tr>
-                    <th>Время</th>
-                    <th>Событие</th>
-                    <th>Описание</th>
-                    <th>Отклонение</th>
-                    <th>Статус</th>
-                    <th>Действие</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleEvents.map((ev) => (
-                    <tr key={ev.id}>
-                      <td className="dash-muted">{dateTime(ev.detected_at)}</td>
-                      <td>
-                        <strong>{ev.title}</strong>
-                      </td>
-                      <td>{ev.description}</td>
-                      <td>
-                        {ev.delta_liters != null ? (
-                          <strong className="text-danger">{signedLiters(ev.delta_liters)}</strong>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td>
-                        <span className={`badge ${!ev.is_resolved ? "danger" : "ok"}`}>
-                          {!ev.is_resolved ? "Открыт" : "Закрыт"}
-                        </span>
-                      </td>
-                      <td>
-                        {!ev.is_resolved ? (
-                          <button
-                            type="button"
-                            className="btn secondary small"
-                            onClick={() => void handleResolveEvent(ev.id)}
-                          >
-                            Закрыть
-                          </button>
-                        ) : (
-                          <span className="dash-muted">Решено</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <aside className="admin-editor dash-card">
-            <form className="admin-form" onSubmit={handleReconcile}>
-              <h3 className="span-3">Ручной акт сверки книжного и фактического остатка</h3>
-              <label className="span-3">
-                Выберите АГЗС
-                <select value={recStationId} onChange={(e) => setRecStationId(e.target.value)}>
-                  {state.stations.map((s) => (
-                    <option key={s.detail.id} value={s.detail.id}>
-                      {s.detail.name} ({s.detail.code})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Начало смены, л
-                <input
-                  inputMode="decimal"
-                  value={recOpening}
-                  onChange={(e) => setRecOpening(e.target.value)}
-                />
-              </label>
-              <label>
-                Приход (слив), л
-                <input
-                  inputMode="decimal"
-                  value={recReceipts}
-                  onChange={(e) => setRecReceipts(e.target.value)}
-                />
-              </label>
-              <label>
-                Расход ТРК, л
-                <input
-                  inputMode="decimal"
-                  value={recDispensed}
-                  onChange={(e) => setRecDispensed(e.target.value)}
-                />
-              </label>
-              <label className="span-2">
-                Фактический замер уровнемером, л
-                <input
-                  inputMode="decimal"
-                  value={recActual}
-                  onChange={(e) => setRecActual(e.target.value)}
-                />
-              </label>
-              <p className="dash-muted span-3">
-                Книжный остаток = Начало + Приход − Расход. При отклонении более 150 л система
-                автоматически зафиксирует инцидент недостачи или излишка.
-              </p>
-              <div className="admin-actions span-3">
-                <button type="submit" className="btn small">
-                  Провести сверку и обновить остаток
-                </button>
-              </div>
-            </form>
-          </aside>
-        </div>
       )}
 
       {tab === "security" && (

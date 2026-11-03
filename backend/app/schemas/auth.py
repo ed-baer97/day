@@ -36,3 +36,4 @@ class LevelReadingOut(BaseModel):
     remainder_liters: float
     fill_percent: float | None
     recorded_at: str
+    delta_liters: float | None = None

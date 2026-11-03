@@ -1,46 +1,21 @@
-import type { StationDetail, TruckDetail } from "../types";
-import { fiscalCheck } from "../sim/engine";
-import { useSim } from "../sim/SimContext";
-import { supplyForFactory, supplyForStation, supplyForTruck } from "../sim/supply";
-import { celsius, dateTime, fiscalBadge, fiscalText, liters, vsBase } from "../format";
+import type { CatalogStation, CatalogTruck } from "../api/client";
+import { liters, phaseLabel } from "../format";
 import { SensorStatus, usePublicLevels } from "../liveLevels";
-import { SRC } from "../sources";
-import StationBalanceCard from "./StationBalanceCard";
-
-function phaseLabel(status?: string | null) {
-  const map: Record<string, string> = {
-    loading: "погрузка",
-    routing: "маршрут",
-    in_transit: "в пути",
-    arrived: "прибыл",
-    unloading: "слив",
-    idle: "ожидание",
-  };
-  return status ? map[status] ?? status : "—";
-}
 
 export default function MapPopup({
   truck,
   station,
-  factoryName,
   onClose,
   onOpenStation,
-  onOpenSupply,
 }: {
-  truck?: TruckDetail | null;
-  station?: StationDetail | null;
-  factoryName?: string | null;
+  truck?: CatalogTruck | null;
+  station?: CatalogStation | null;
   onClose: () => void;
   onOpenStation?: (id: string) => void;
-  onOpenSupply?: (id: string) => void;
 }) {
-  const { state } = useSim();
   const { byCode } = usePublicLevels();
-  const truckSupply = truck ? supplyForTruck(state, truck.id) : null;
-  const stationSupply = station ? supplyForStation(state, station.id) : null;
-  const factory = factoryName ? state.factories.find((f) => f.name === factoryName) : null;
-  const factorySupply = factory ? supplyForFactory(state, factory.id) : null;
-  if (!truck && !station && !factoryName) return null;
+  if (!truck && !station) return null;
+  const live = station ? byCode.get(station.code) : undefined;
 
   return (
     <aside className="map-popup" role="dialog" aria-label="Краткая информация">
@@ -48,137 +23,50 @@ export default function MapPopup({
         ×
       </button>
 
-      {truck && (
+      {truck ? (
         <>
           <p className="kicker">Газовоз</p>
           <h2>{truck.plate_number}</h2>
           <dl className="kv">
             <dt>Статус</dt>
-            <dd>
-              <span className="badge ok">{phaseLabel(truck.status)}</span>
-            </dd>
-            <dt>Груз</dt>
-            <dd>{liters(truckSupply?.delivered_liters ?? truck.cargo_volume_liters)}</dd>
-            {truckSupply?.delivered_liters != null && (
-              <>
-                <dt>К отгрузке</dt>
-                <dd>{vsBase(truckSupply.delivered_liters, truckSupply.shipped_liters, "отгрузке")}</dd>
-              </>
-            )}
-            <dt>Куда</dt>
-            <dd>{truck.destination_name ?? "—"}</dd>
-            <dt>GPS</dt>
+            <dd>{phaseLabel(truck.status)}</dd>
+            <dt>Вместимость</dt>
+            <dd>{liters(truck.capacity_liters)}</dd>
+            <dt>Перевозчик</dt>
+            <dd>{truck.carrier_name || "не указан"}</dd>
+            <dt>Координаты</dt>
             <dd>
               {truck.lat != null && truck.lon != null
                 ? `${truck.lat.toFixed(4)}, ${truck.lon.toFixed(4)}`
-                : "—"}
+                : "не передаёт"}
             </dd>
-            <dt>Температура</dt>
-            <dd>{celsius(truckSupply?.truck_temp_c)}</dd>
           </dl>
-          <p className="src-line">
-            <span>Источник</span>
-            {SRC.gps} · {SRC.quantity} · {SRC.temperature}
-          </p>
-          {truckSupply && onOpenSupply && (
-            <button type="button" className="btn small map-popup-more" onClick={() => onOpenSupply(truckSupply.supply_id)}>
-              Поставка {truckSupply.supply_id} →
-            </button>
-          )}
+          <p className="dash-muted">Рейс и груз не подключены.</p>
         </>
-      )}
+      ) : null}
 
-      {station && (
+      {station ? (
         <>
           <p className="kicker">АГЗС</p>
           <h2>{station.name}</h2>
-          {(() => {
-            const live = byCode.get(station.code);
-            if (!live || live.tanks.length === 0) return null;
-            return (
-              <p className="stage-vol">
-                <SensorStatus level={live} />{" "}
-                {live.remainder == null
-                  ? "замера ещё нет"
-                  : `${liters(live.remainder)} из ${liters(live.capacity)}`}
-              </p>
-            );
-          })()}
-          <StationBalanceCard
-            station={station}
-            compact
-            measuredLiters={byCode.get(station.code)?.remainder ?? null}
-          />
-          {(() => {
-            const fc = fiscalCheck(station);
-            return (
-              <div className="map-popup-fiscal">
-                <span>ТРК → ККМ → ОФД → КГД</span>
-                <span className={`badge ${fiscalBadge(fc.status)}`}>
-                  {fc.status === "ok"
-                    ? fiscalText(fc.status)
-                    : `${fiscalText(fc.status)} · ${liters(fc.gap_liters)}`}
-                </span>
-              </div>
-            );
-          })()}
-          {onOpenStation && (
-            <button
-              type="button"
-              className="btn small map-popup-more"
-              onClick={() => onOpenStation(station.id)}
-            >
+          <p className="dash-muted">{station.address || station.code}</p>
+          {live && live.tanks.length > 0 ? (
+            <p className="stage-vol">
+              <SensorStatus level={live} />{" "}
+              {live.remainder == null
+                ? "замера ещё нет"
+                : `${liters(live.remainder)} из ${liters(live.capacity)}`}
+            </p>
+          ) : (
+            <p className="dash-muted">Датчик не подключён.</p>
+          )}
+          {onOpenStation ? (
+            <button type="button" className="btn small map-popup-more" onClick={() => onOpenStation(station.id)}>
               Подробнее →
             </button>
-          )}
-          {stationSupply && onOpenSupply && (
-            <button
-              type="button"
-              className="btn secondary small map-popup-more"
-              onClick={() => onOpenSupply(stationSupply.supply_id)}
-            >
-              Поставка {stationSupply.supply_id} →
-            </button>
-          )}
+          ) : null}
         </>
-      )}
-
-      {factoryName && !truck && !station && (
-        <>
-          <p className="kicker">Завод</p>
-          <h2>{factoryName}</h2>
-          {factorySupply ? (
-            <>
-              <p className="stage-vol">
-                Отгружено: <strong>{liters(factorySupply.shipped_liters)}</strong>
-              </p>
-              <dl className="kv">
-                <dt>Дата и время</dt>
-                <dd>{dateTime(factorySupply.shipped_at)}</dd>
-                <dt>Накладная</dt>
-                <dd>{factorySupply.waybill}</dd>
-                <dt>Температура</dt>
-                <dd>{celsius(factorySupply.shipped_temp_c)}</dd>
-              </dl>
-              <p className="src-line">
-                <span>Источник</span>
-                {SRC.factory}
-              </p>
-              {onOpenSupply && (
-                <button
-                  type="button"
-                  className="btn small map-popup-more"
-                  onClick={() => onOpenSupply(factorySupply.supply_id)}
-                >
-                  Поставка {factorySupply.supply_id} →
-                </button>
-              )}
-            </>
-          ) : (
-            <p className="map-popup-note">Точка отгрузки LPG · Жанаозен</p>
-          )}
-        </>
-      )}
+      ) : null}
     </aside>
   );
 }

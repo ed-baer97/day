@@ -18,4 +18,6 @@ class PublicStationOut(BaseModel):
     code: str
     name: str
     address: str | None
+    lat: float
+    lon: float
     tanks: list[PublicTankOut]

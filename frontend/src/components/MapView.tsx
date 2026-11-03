@@ -3,8 +3,14 @@ import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useTheme, type Theme } from "../theme";
 import type { MapPoint } from "../types";
-import type { MapRouteLayer } from "../sim/engine";
-import type { Coord } from "../sim/geo";
+
+type Coord = [number, number];
+
+export type MapRouteLayer = {
+  id: string;
+  planned: Coord[];
+  traveled: Coord[];
+};
 
 /** OSM HOT — тот же граф дорог, что у OSRM. */
 function mapStyle(_theme: Theme): maplibregl.StyleSpecification {

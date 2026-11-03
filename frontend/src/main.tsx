@@ -4,7 +4,6 @@ import App from "./App";
 import { AuthProvider } from "./auth";
 import { CatalogProvider } from "./catalog";
 import { ToastProvider } from "./components/Toast";
-import { SimProvider } from "./sim/SimContext";
 import { ThemeProvider } from "./theme";
 import "./styles/variables.css";
 
@@ -13,11 +12,9 @@ createRoot(document.getElementById("root")!).render(
     <ThemeProvider>
       <ToastProvider>
         <AuthProvider>
-          <SimProvider>
-            <CatalogProvider>
-              <App />
-            </CatalogProvider>
-          </SimProvider>
+          <CatalogProvider>
+            <App />
+          </CatalogProvider>
         </AuthProvider>
       </ToastProvider>
     </ThemeProvider>

@@ -36,6 +36,8 @@ export interface PublicStation {
   code: string;
   name: string;
   address?: string | null;
+  lat?: number;
+  lon?: number;
   tanks: PublicTank[];
 }
 
@@ -47,6 +49,16 @@ export interface TankDevice {
   ingest_token: string;
   level_path: string;
   shelly: ShellyLink | null;
+}
+
+export interface LevelReading {
+  id: string;
+  tank_id: string;
+  volts: number | null;
+  remainder_liters: number;
+  fill_percent: number | null;
+  recorded_at: string;
+  delta_liters?: number | null;
 }
 
 export interface TankIngestState {
@@ -236,6 +248,12 @@ export const api = {
     sendJson<TankDevice>("PUT", `/stations/${stationId}/devices/${tankId}/shelly`, { host }),
   disconnectShelly: (stationId: string, tankId: string) =>
     sendJson<TankDevice>("DELETE", `/stations/${stationId}/devices/${tankId}/shelly`),
+  tankLevels: (stationId: string, tankId: string, since?: string) => {
+    const query = since
+      ? `?since=${encodeURIComponent(since)}&changes_only=true&limit=2000`
+      : "?changes_only=true&limit=200";
+    return getJson<LevelReading[]>(`/stations/${stationId}/devices/${tankId}/levels${query}`);
+  },
   calibrateTank: (
     body: {
       station_id?: string;

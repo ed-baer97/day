@@ -396,19 +396,24 @@ def accept_level(body: LevelIngest) -> IngestAck:
         return _ack(row, message="level accepted", entity_id=entity_id)
 
 
-def list_level_readings(station_id: UUID, tank_id: UUID, *, limit: int = 50) -> list[LevelReading]:
+def list_level_readings(
+    station_id: UUID,
+    tank_id: UUID,
+    *,
+    since: datetime | None = None,
+    limit: int = 50,
+    newest_first: bool = True,
+) -> list[LevelReading]:
     with session() as db:
         row = db.get(Tank, tank_id)
         if row is None or row.station_id != station_id:
             raise HTTPException(status_code=404, detail="резервуар не найден")
-        return list(
-            db.scalars(
-                select(LevelReading)
-                .where(LevelReading.tank_id == tank_id)
-                .order_by(LevelReading.recorded_at.desc())
-                .limit(limit)
-            ).all()
-        )
+        query = select(LevelReading).where(LevelReading.tank_id == tank_id)
+        if since is not None:
+            stamp = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
+            query = query.where(LevelReading.recorded_at >= stamp)
+        order = LevelReading.recorded_at.desc() if newest_first else LevelReading.recorded_at.asc()
+        return list(db.scalars(query.order_by(order).limit(limit)).all())
 
 
 def create_station_user(station_id: UUID, username: str, password: str) -> StationUser:

@@ -50,6 +50,8 @@ def public_levels() -> list[PublicStationOut]:
                 code=station.code,
                 name=station.name,
                 address=station.address,
+                lat=station.lat,
+                lon=station.lon,
                 tanks=tanks,
             )
         )

@@ -4,7 +4,6 @@ import { useAuth } from "../auth";
 import { dateTime, liters, REGIONS, stationRegion } from "../format";
 import Logo from "./Logo";
 import MapView from "./MapView";
-import { useSim } from "../sim/SimContext";
 import { useTheme } from "../theme";
 import type { MapPoint } from "../types";
 
@@ -22,7 +21,6 @@ function jump(id: string) {
 export default function Landing({ onEnter }: { onEnter: () => void }) {
   const { theme, toggle } = useTheme();
   const { session, login, logout } = useAuth();
-  const { state, pause } = useSim();
   const [apiLevels, setApiLevels] = useState<PublicStation[]>([]);
   const [levelsLoading, setLevelsLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(new Date());
@@ -34,11 +32,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
   const [stationQuery, setStationQuery] = useState("");
   const [regionFilter, setRegionFilter] = useState<string>("all");
   const [availFilter, setAvailFilter] = useState<"all" | "plenty" | "low">("all");
-
-  // На публичном лэндинге симуляция маршрутов остановлена — рейсы и телеметрия конфиденциальны
-  useEffect(() => {
-    pause();
-  }, [pause]);
 
   useEffect(() => {
     if (!authOpen) return;
@@ -73,24 +66,22 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
     };
   }, []);
 
-  // На фоновую карту лэндинга передаются ТОЛЬКО координаты работающих АГЗС (без заводов, газовозов, маршрутов и статусов сверки)
+  const levels = useMemo<PublicStation[]>(() => apiLevels, [apiLevels]);
+
   const publicMapPoints = useMemo<MapPoint[]>(
     () =>
-      state.stations
-        .filter((s) => s.detail.is_active)
-        .map((s) => ({
-          id: s.detail.id,
+      levels
+        .filter((station) => station.lat != null && station.lon != null)
+        .map((station) => ({
+          id: station.code,
           kind: "station" as const,
-          name: s.detail.name,
-          lat: s.detail.lat,
-          lon: s.detail.lon,
+          name: station.name,
+          lat: station.lat as number,
+          lon: station.lon as number,
           status: "active",
         })),
-    [state.stations]
+    [levels]
   );
-
-  // Публичная витрина берёт остатки только с сервера. Симуляция литров сюда не подмешивается.
-  const levels = useMemo<PublicStation[]>(() => apiLevels, [apiLevels]);
 
   const visibleStations = useMemo(() => {
     const query = stationQuery.trim().toLowerCase();

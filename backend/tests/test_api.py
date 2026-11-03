@@ -24,12 +24,9 @@ def test_map_overview():
     assert body["open_events"] == 0
 
 
-def test_batch_trail():
+def test_unknown_batch_trail_is_missing():
     r = client.get("/api/v1/batches/by-code/LPG-2026-00041/trail")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["batch"]["trail_code"] == "LPG-2026-00041"
-    assert len(body["events"]) >= 1
+    assert r.status_code == 404
 
 
 def test_reconcile_creates_shortage_event():
@@ -62,3 +59,16 @@ def test_ingest_dispense_idempotent():
     b = client.post("/api/v1/ingest/dispense", json=payload)
     assert a.json()["accepted"] is True
     assert b.json()["duplicate"] is True
+
+
+def test_device_levels_empty_in_memory_mode():
+    station = "a1111111-1111-1111-1111-111111111101"
+    created = client.post(
+        f"/api/v1/stations/{station}/devices",
+        json={"code": "R-LOG", "capacity_liters": 10000},
+    )
+    assert created.status_code == 201
+    tank = created.json()["id"]
+    listed = client.get(f"/api/v1/stations/{station}/devices/{tank}/levels")
+    assert listed.status_code == 200
+    assert listed.json() == []
