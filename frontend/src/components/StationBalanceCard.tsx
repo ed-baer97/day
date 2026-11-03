@@ -1,5 +1,5 @@
 import type { StationBalance, StationDetail } from "../types";
-import { stationBalance } from "../sim/engine";
+import { stationBalance, withMeasured } from "../sim/engine";
 
 function liters(v: number) {
   return `${Math.round(v).toLocaleString("ru-RU")} л`;
@@ -28,11 +28,13 @@ function statusText(status: StationBalance["status"]) {
 export default function StationBalanceCard({
   station,
   compact = false,
+  measuredLiters = null,
 }: {
   station: StationDetail;
   compact?: boolean;
+  measuredLiters?: number | null;
 }) {
-  const bal = stationBalance(station);
+  const bal = withMeasured(stationBalance(station), measuredLiters);
 
   return (
     <div className={`bal-card${compact ? " compact" : ""}`}>
@@ -45,7 +47,7 @@ export default function StationBalanceCard({
         <div className="bal-cell">
           <span>В хранилище</span>
           <strong>{liters(bal.storage_actual)}</strong>
-          {!compact && <em>факт · датчик / замер</em>}
+          {!compact && <em>{measuredLiters != null ? "факт · датчик" : "факт · датчик / замер"}</em>}
         </div>
         <div className="bal-cell">
           <span>Через колонки</span>

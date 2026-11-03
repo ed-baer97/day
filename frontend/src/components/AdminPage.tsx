@@ -11,7 +11,8 @@ import {
   signedLiters,
   stationRegion,
 } from "../format";
-import { fiscalCheck, stationBalance } from "../sim/engine";
+import { SensorStatus, usePublicLevels } from "../liveLevels";
+import { fiscalCheck, stationBalance, withMeasured } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import TankDeviceRows from "./TankDeviceRows";
 import { useToast } from "./Toast";
@@ -40,6 +41,7 @@ export default function AdminPage({
   onOpenStationMap?: (id: string) => void;
 }) {
   const catalog = useCatalog();
+  const { byCode } = usePublicLevels();
   const { state, createSimSupply, resolveSimEvent, addSimEvent, updateStationTankLevel } = useSim();
   const { session } = useAuth();
   const toast = useToast();
@@ -91,15 +93,23 @@ export default function AdminPage({
     () =>
       catalog.stations.map((row) => {
         const sim = simById.get(row.id);
-        const bal = sim ? stationBalance(sim) : null;
+        const live = byCode.get(row.code) ?? null;
+        const hasLive = !!live && live.tanks.length > 0;
+        const bal = sim ? withMeasured(stationBalance(sim), hasLive ? live.remainder : null) : null;
         const fc = sim ? fiscalCheck(sim) : null;
-        const cap = sim?.capacity_liters ?? 20000;
-        const actual = bal ? bal.storage_actual : 10000;
-        const fill = cap ? Math.min(100, Math.round((actual / cap) * 100)) : 0;
+        const cap = hasLive && live.capacity > 0 ? live.capacity : (sim?.capacity_liters ?? 0);
+        const actual = hasLive ? live.remainder : bal ? bal.storage_actual : null;
+        const fill = hasLive
+          ? live.fill == null
+            ? null
+            : Math.round(live.fill)
+          : cap && actual != null
+            ? Math.min(100, Math.round((actual / cap) * 100))
+            : null;
         const region = stationRegion(row);
-        return { row, sim, bal, fc, cap, actual, fill, region };
+        return { row, sim, bal, fc, cap, actual, fill, live, region };
       }),
-    [catalog.stations, simById]
+    [catalog.stations, simById, byCode]
   );
 
   const filteredStations = useMemo(() => {
@@ -115,7 +125,7 @@ export default function AdminPage({
       if (stFilter === "active" && !item.row.is_active) return false;
       if (stFilter === "inactive" && item.row.is_active) return false;
       if (stFilter === "issue" && (!item.bal || item.bal.status === "ok")) return false;
-      if (stFilter === "low" && item.fill >= 25) return false;
+      if (stFilter === "low" && (item.fill == null || item.fill >= 25)) return false;
       return true;
     });
   }, [enrichedCatalogStations, stQuery, stRegion, stFilter]);
@@ -385,7 +395,7 @@ export default function AdminPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {pagedStations.map(({ row, bal, fc, actual, cap, fill, region }) => (
+                    {pagedStations.map(({ row, bal, fc, actual, cap, fill, live, region }) => (
                       <tr
                         key={row.id}
                         className={`dash-row-link${stationId === row.id ? " active" : ""}`}
@@ -400,10 +410,13 @@ export default function AdminPage({
                           <div className="dash-muted">{row.address || "—"}</div>
                         </td>
                         <td>
-                          <strong className={fill < 25 ? "text-danger" : ""}>{fill}%</strong>
+                          <strong className={fill != null && fill < 25 ? "text-danger" : ""}>
+                            {fill == null ? "—" : `${fill}%`}
+                          </strong>
                           <div className="dash-muted">
-                            {liters(actual)} / {liters(cap)}
+                            {actual == null ? "замера ещё нет" : `${liters(actual)} / ${liters(cap)}`}
                           </div>
+                          {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
                         </td>
                         <td>
                           {bal ? (

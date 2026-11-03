@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { fiscalCheck, stationBalance, stationHourly } from "../sim/engine";
+import { fiscalCheck, stationBalance, stationHourly, withMeasured } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import {
   balBadge,
@@ -15,6 +15,7 @@ import {
   tenge,
   timeHM,
 } from "../format";
+import { SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
 import { SRC } from "../sources";
 import { BarChart } from "./Charts";
 import ColumnCard, { type ColumnOperation } from "./ColumnCard";
@@ -38,6 +39,7 @@ export default function StationDetailPage({
   onOpenMap?: (id: string) => void;
 }) {
   const { state, resolveSimEvent } = useSim();
+  const { byCode } = usePublicLevels();
   const [tab, setTab] = useState<DetailTab>("overview");
 
   const stationIndex = state.stations.findIndex((s) => s.detail.id === stationId);
@@ -68,12 +70,20 @@ export default function StationDetailPage({
     );
   }
 
-  const bal = stationBalance(station);
   const fc = fiscalCheck(station);
   const tank = station.tanks[0];
-  const cap = tank?.capacity_liters ?? station.capacity_liters ?? 0;
-  const stored = tank?.actual_remainder_liters ?? bal.storage_actual;
-  const fillPct = cap ? Math.min(100, Math.round((stored / cap) * 100)) : 0;
+  const live = byCode.get(station.code) ?? null;
+  const hasLive = !!live && live.tanks.length > 0;
+  const bal = withMeasured(stationBalance(station), hasLive ? live.remainder : null);
+  const cap = hasLive && live.capacity > 0 ? live.capacity : (tank?.capacity_liters ?? station.capacity_liters ?? 0);
+  const stored = hasLive ? live.remainder : (tank?.actual_remainder_liters ?? bal.storage_actual);
+  const fillPct = hasLive
+    ? live.fill == null
+      ? 0
+      : Math.min(100, live.fill)
+    : cap
+      ? Math.min(100, Math.round(((stored ?? 0) / cap) * 100))
+      : 0;
   const region = stationRegion(station);
 
   const stationSupplies = state.supplies.filter((s) => s.station_id === station.id);
@@ -156,6 +166,7 @@ export default function StationDetailPage({
           </span>
         </div>
         <div className="st-row-badges">
+          {hasLive && live ? <SensorStatus level={live} /> : null}
           <span className={`badge ${balBadge(bal.status)}`}>
             Баланс ёмкости: Δ {signedLiters(bal.delta)} · {balText(bal.status)}
           </span>
@@ -207,7 +218,7 @@ export default function StationDetailPage({
       {tab === "overview" && (
         <>
           <section className="dash-section">
-            <StationBalanceCard station={station} />
+            <StationBalanceCard station={station} measuredLiters={hasLive ? live?.remainder : null} />
           </section>
 
           <div className="st-grid">
@@ -237,17 +248,38 @@ export default function StationDetailPage({
                   />
                 </div>
                 <div className="gauge-meta">
-                  <strong>{fillPct}%</strong>
+                  <strong>{hasLive && live?.fill == null ? "—" : `${Math.round(fillPct)}%`}</strong>
                   <span>
-                    {liters(stored)} из {liters(cap)}
+                    {stored == null ? "замера ещё нет" : `${liters(stored)} из ${liters(cap)}`}
                   </span>
-                  <span>{tank ? `резервуар ${tank.code}` : "резервуар"}</span>
-                  <span>Температура: {celsius(tank?.temperature_c)}</span>
-                  <span className="dash-muted">{tank ? dateTime(tank.last_measured_at) : "—"}</span>
+                  {hasLive && live
+                    ? live.tanks.map((item) => (
+                        <span key={item.code}>
+                          резервуар {item.code} ·{" "}
+                          <span className={`badge ${tankSensorBadge(item)}`}>{tankSensorLabel(item)}</span>
+                          {" · "}
+                          {item.remainder_liters == null
+                            ? "замера нет"
+                            : `${liters(item.remainder_liters)} из ${liters(item.capacity_liters)}`}
+                        </span>
+                      ))
+                    : (
+                      <span>{tank ? `резервуар ${tank.code}` : "резервуар"}</span>
+                    )}
+                  {!hasLive ? <span>Температура: {celsius(tank?.temperature_c)}</span> : null}
                   <span className="dash-muted">
-                    {tank?.phone_label ?? SRC.phone}
-                    {tank ? ` · связь ${linkText(tank.link_quality)}` : ""}
+                    {hasLive && live?.measuredAt
+                      ? dateTime(live.measuredAt)
+                      : tank
+                        ? dateTime(tank.last_measured_at)
+                        : "—"}
                   </span>
+                  {!hasLive ? (
+                    <span className="dash-muted">
+                      {tank?.phone_label ?? SRC.phone}
+                      {tank ? ` · связь ${linkText(tank.link_quality)}` : ""}
+                    </span>
+                  ) : null}
                   <span className="src-line">
                     <span>Источник</span>
                     {SRC.srg} · {SRC.rochester} · {SRC.bluetooth}

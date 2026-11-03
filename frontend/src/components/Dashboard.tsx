@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useCatalog } from "../catalog";
-import { fiscalCheck, fleetStats, stationBalance, stationHourly } from "../sim/engine";
+import { fiscalCheck, fleetStats, stationBalance, stationHourly, withMeasured } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import {
   balBadge,
@@ -15,6 +15,7 @@ import {
   stationRegion,
   tenge,
 } from "../format";
+import { SensorStatus, usePublicLevels } from "../liveLevels";
 import { BarChart } from "./Charts";
 import StationDetailPage from "./StationDetailPage";
 
@@ -65,6 +66,7 @@ function Overview({
 }) {
   const { state } = useSim();
   const catalog = useCatalog();
+  const { byCode } = usePublicLevels();
 
   const [query, setQuery] = useState("");
   const [regionFilter, setRegionFilter] = useState<string>("all");
@@ -92,17 +94,22 @@ function Overview({
     () =>
       liveStations.map((s) => {
         const d = s.detail;
-        const bal = stationBalance(d);
         const fc = fiscalCheck(d);
-        const fill = d.capacity_liters
+        const live = byCode.get(d.code) ?? null;
+        const hasLive = !!live && live.tanks.length > 0;
+        const bal = withMeasured(stationBalance(d), hasLive ? live.remainder : null);
+        const simFill = d.capacity_liters
           ? Math.min(100, Math.round((bal.storage_actual / d.capacity_liters) * 100))
           : 0;
+        const fill = hasLive ? (live.fill == null ? null : Math.round(live.fill)) : simFill;
+        const gasLiters = hasLive ? live.remainder : bal.storage_actual;
+        const gasCap = hasLive && live.capacity > 0 ? live.capacity : (d.capacity_liters ?? 0);
         const region = stationRegion(d);
         const severity =
-          Math.abs(bal.delta) + fc.gap_liters + (fill < 25 ? 800 : 0);
-        return { d, bal, fc, fill, region, severity };
+          Math.abs(bal.delta) + fc.gap_liters + (fill != null && fill < 25 ? 800 : 0);
+        return { d, bal, fc, fill, gasLiters, gasCap, live, region, severity };
       }),
-    [liveStations]
+    [liveStations, byCode]
   );
 
   // Счётчики для быстрых фильтров
@@ -114,8 +121,8 @@ function Overview({
     for (const item of enrichedStations) {
       if (item.bal.status !== "ok") balanceIssue++;
       if (item.fc.status !== "ok") kgdIssue++;
-      if (item.fill < 25) lowGas++;
-      if (item.bal.status === "ok" && item.fc.status === "ok" && item.fill >= 25) ok++;
+      if (item.fill != null && item.fill < 25) lowGas++;
+      if (item.bal.status === "ok" && item.fc.status === "ok" && item.fill != null && item.fill >= 25) ok++;
     }
     return {
       all: enrichedStations.length,
@@ -140,10 +147,10 @@ function Overview({
       }
       if (statusFilter === "balance_issue" && item.bal.status === "ok") return false;
       if (statusFilter === "kgd_issue" && item.fc.status === "ok") return false;
-      if (statusFilter === "low_gas" && item.fill >= 25) return false;
+      if (statusFilter === "low_gas" && (item.fill == null || item.fill >= 25)) return false;
       if (
         statusFilter === "ok" &&
-        (item.bal.status !== "ok" || item.fc.status !== "ok" || item.fill < 25)
+        (item.bal.status !== "ok" || item.fc.status !== "ok" || item.fill == null || item.fill < 25)
       )
         return false;
       return true;
@@ -151,7 +158,7 @@ function Overview({
 
     return [...list].sort((a, b) => {
       if (sortBy === "severity") return b.severity - a.severity;
-      if (sortBy === "fill_asc") return a.fill - b.fill;
+      if (sortBy === "fill_asc") return (a.fill ?? 101) - (b.fill ?? 101);
       if (sortBy === "sales_desc") return b.bal.through_pumps - a.bal.through_pumps;
       return a.d.name.localeCompare(b.d.name, "ru");
     });
@@ -508,7 +515,7 @@ function Overview({
           </div>
         ) : viewMode === "list" ? (
           <ul className="st-list">
-            {pagedStations.map(({ d, bal, fc, fill, region }) => (
+            {pagedStations.map(({ d, bal, fc, fill, gasLiters, gasCap, live, region }) => (
               <li key={d.id} className="st-list-item">
                 <div className="st-row" onClick={() => onOpenStation(d.id)}>
                   <div className="st-row-main">
@@ -521,15 +528,18 @@ function Overview({
                     <div className="fill-bar">
                       <i
                         style={{
-                          width: `${fill}%`,
-                          background: fill < 25 ? "var(--coral)" : "var(--sea)",
+                          width: `${fill ?? 0}%`,
+                          background: fill != null && fill < 25 ? "var(--coral)" : "var(--sea)",
                         }}
                       />
                     </div>
                     <span>
-                      {liters(bal.storage_actual)} из {liters(d.capacity_liters)} ·{" "}
-                      <strong className={fill < 25 ? "text-danger" : ""}>{fill}%</strong>
+                      {gasLiters == null ? "замера ещё нет" : `${liters(gasLiters)} из ${liters(gasCap)}`} ·{" "}
+                      <strong className={fill != null && fill < 25 ? "text-danger" : ""}>
+                        {fill == null ? "—" : `${fill}%`}
+                      </strong>
                     </span>
+                    {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
                   </div>
                   <div className="st-row-num">
                     <strong>{liters(bal.delivered)}</strong>
@@ -578,7 +588,7 @@ function Overview({
           </ul>
         ) : viewMode === "grid" ? (
           <div className="st-card-grid">
-            {pagedStations.map(({ d, bal, fc, fill, region }) => (
+            {pagedStations.map(({ d, bal, fc, fill, gasLiters, gasCap, live, region }) => (
               <article
                 key={d.id}
                 className="dash-card st-grid-card"
@@ -592,15 +602,15 @@ function Overview({
                       {d.code} · {d.address}
                     </span>
                   </div>
-                  <strong className={`st-grid-pct${fill < 25 ? " text-danger" : ""}`}>
-                    {fill}%
+                  <strong className={`st-grid-pct${fill != null && fill < 25 ? " text-danger" : ""}`}>
+                    {fill == null ? "—" : `${fill}%`}
                   </strong>
                 </div>
                 <div className="fill-bar" style={{ margin: "10px 0 6px" }}>
                   <i
                     style={{
-                      width: `${fill}%`,
-                      background: fill < 25 ? "var(--coral)" : "var(--sea)",
+                      width: `${fill ?? 0}%`,
+                      background: fill != null && fill < 25 ? "var(--coral)" : "var(--sea)",
                     }}
                   />
                 </div>
@@ -608,7 +618,7 @@ function Overview({
                   <div>
                     <span>Факт / Ёмкость</span>
                     <strong>
-                      {liters(bal.storage_actual)} / {liters(d.capacity_liters)}
+                      {gasLiters == null ? "замера нет" : liters(gasLiters)} / {liters(gasCap)}
                     </strong>
                   </div>
                   <div>
@@ -625,6 +635,7 @@ function Overview({
                   </div>
                 </div>
                 <div className="st-grid-footer">
+                  {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
                   <span className={`badge ${balBadge(bal.status)}`}>
                     {bal.status === "ok" ? "Баланс ОК" : `Δ ${signedLiters(bal.delta)}`}
                   </span>
@@ -643,11 +654,11 @@ function Overview({
                   <h4>{region}</h4>
                   <span>
                     {items.length} АГЗС · остаток{" "}
-                    {liters(items.reduce((s, x) => s + x.bal.storage_actual, 0))}
+                    {liters(items.reduce((s, x) => s + (x.gasLiters ?? 0), 0))}
                   </span>
                 </header>
                 <ul className="st-list">
-                  {items.map(({ d, bal, fc, fill }) => (
+                  {items.map(({ d, bal, fc, fill, gasLiters, live }) => (
                     <li key={d.id}>
                       <button
                         type="button"
@@ -664,14 +675,16 @@ function Overview({
                           <div className="fill-bar">
                             <i
                               style={{
-                                width: `${fill}%`,
-                                background: fill < 25 ? "var(--coral)" : "var(--sea)",
+                                width: `${fill ?? 0}%`,
+                                background: fill != null && fill < 25 ? "var(--coral)" : "var(--sea)",
                               }}
                             />
                           </div>
                           <span>
-                            {liters(bal.storage_actual)} · {fill}%
+                            {gasLiters == null ? "замера нет" : liters(gasLiters)} ·{" "}
+                            {fill == null ? "—" : `${fill}%`}
                           </span>
+                          {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
                         </div>
                         <div className="st-row-num">
                           <strong>{liters(bal.delivered)}</strong>

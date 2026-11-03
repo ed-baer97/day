@@ -3,6 +3,7 @@ import { fiscalCheck } from "../sim/engine";
 import { useSim } from "../sim/SimContext";
 import { supplyForFactory, supplyForStation, supplyForTruck } from "../sim/supply";
 import { celsius, dateTime, fiscalBadge, fiscalText, liters, vsBase } from "../format";
+import { SensorStatus, usePublicLevels } from "../liveLevels";
 import { SRC } from "../sources";
 import StationBalanceCard from "./StationBalanceCard";
 
@@ -34,6 +35,7 @@ export default function MapPopup({
   onOpenSupply?: (id: string) => void;
 }) {
   const { state } = useSim();
+  const { byCode } = usePublicLevels();
   const truckSupply = truck ? supplyForTruck(state, truck.id) : null;
   const stationSupply = station ? supplyForStation(state, station.id) : null;
   const factory = factoryName ? state.factories.find((f) => f.name === factoryName) : null;
@@ -90,7 +92,23 @@ export default function MapPopup({
         <>
           <p className="kicker">АГЗС</p>
           <h2>{station.name}</h2>
-          <StationBalanceCard station={station} compact />
+          {(() => {
+            const live = byCode.get(station.code);
+            if (!live || live.tanks.length === 0) return null;
+            return (
+              <p className="stage-vol">
+                <SensorStatus level={live} />{" "}
+                {live.remainder == null
+                  ? "замера ещё нет"
+                  : `${liters(live.remainder)} из ${liters(live.capacity)}`}
+              </p>
+            );
+          })()}
+          <StationBalanceCard
+            station={station}
+            compact
+            measuredLiters={byCode.get(station.code)?.remainder ?? null}
+          />
           {(() => {
             const fc = fiscalCheck(station);
             return (

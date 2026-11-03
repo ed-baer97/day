@@ -65,6 +65,16 @@ export function stationBalance(d: StationDetail): StationBalance {
   };
 }
 
+/** Подменяет факт хранилища живым замером датчика и пересчитывает Δ к книге. */
+export function withMeasured(bal: StationBalance, measuredLiters: number | null | undefined): StationBalance {
+  if (measuredLiters == null) return bal;
+  const delta = Math.round((measuredLiters - bal.book_remainder) * 10) / 10;
+  const abs = Math.abs(delta);
+  const status: StationBalance["status"] =
+    abs < 40 ? "ok" : abs < 120 ? "warn" : delta < 0 ? "shortage" : "surplus";
+  return { ...bal, storage_actual: measuredLiters, delta, status };
+}
+
 /** Допуск на округление, л */
 const FISCAL_TOLERANCE_L = 1;
 

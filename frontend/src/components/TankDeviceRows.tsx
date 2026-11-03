@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type ShellyLink, type TankDevice } from "../api/client";
+import { useCatalog } from "../catalog";
+import { liters } from "../format";
+import { tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
 import { useSim } from "../sim/SimContext";
 import { useToast } from "./Toast";
 
@@ -35,6 +38,7 @@ function ingestUrl(path: string) {
 
 export default function TankDeviceRows({ stationId }: { stationId: string }) {
   const { state, updateStationTankLevel, recordStationReceipt } = useSim();
+  const { byCode } = usePublicLevels();
   const toast = useToast();
   const [rows, setRows] = useState<Row[]>([]);
   const [code, setCode] = useState("");
@@ -46,7 +50,11 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
   const [expandedToolsId, setExpandedToolsId] = useState<string | null>(null);
   const shellyFresh = useRef<Record<string, number>>({});
 
+  const catalog = useCatalog();
   const simStation = state.stations.find((s) => s.detail.id === stationId)?.detail;
+  const stationCode =
+    simStation?.code ?? catalog.stations.find((row) => row.id === stationId)?.code;
+  const live = stationCode ? byCode.get(stationCode) : undefined;
 
   useEffect(() => {
     let live = true;
@@ -379,8 +387,19 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       {loading ? <p className="dash-muted">Загрузка…</p> : null}
       {rows.map((row) => {
         const isExpanded = expandedToolsId === row.id;
+        const measured = live?.tanks.find((tank) => tank.code === row.code);
         return (
           <div className="tank-block" key={row.id}>
+            {measured ? (
+              <p className="dash-muted">
+                <span className={`badge ${tankSensorBadge(measured)}`}>{tankSensorLabel(measured)}</span>
+                {" · "}
+                {measured.remainder_liters == null
+                  ? "количество газа ещё не пришло"
+                  : `${liters(measured.remainder_liters)} из ${liters(measured.capacity_liters)}`}
+                {measured.fill_percent != null ? ` · ${Math.round(measured.fill_percent)}%` : ""}
+              </p>
+            ) : null}
             <div className="tank-row">
               <label>
                 Код резервуара

@@ -10,7 +10,8 @@ import MapView from "./components/MapView";
 import SupplyPage from "./components/SupplyPage";
 import { useToast } from "./components/Toast";
 import { balBadge, fiscalBadge, liters, phaseLabel, REGIONS, signedLiters, stationRegion } from "./format";
-import { fiscalCheck, stationBalance } from "./sim/engine";
+import { SensorStatus, sensorLabel, usePublicLevels } from "./liveLevels";
+import { fiscalCheck, stationBalance, withMeasured } from "./sim/engine";
 import { IDS } from "./sim/seed";
 import { useSim } from "./sim/SimContext";
 import { useTheme } from "./theme";
@@ -30,6 +31,7 @@ export default function App() {
   const { session, logout } = useAuth();
   const { overview, routes, state, playing, speed, play, pause, setSpeed, reset, applyFleetCards } = useSim();
   const catalog = useCatalog();
+  const { byCode } = usePublicLevels();
   const [page, setPage] = useState<Page>("landing");
   const [selection, setSelection] = useState<Selection>(null);
   const [dashStationId, setDashStationId] = useState<string | null>(null);
@@ -137,18 +139,27 @@ export default function App() {
         return false;
       }
       if (mapStatus !== "all") {
-        const bal = stationBalance(detail);
+        const live = byCode.get(detail.code);
+        const bal = withMeasured(
+          stationBalance(detail),
+          live && live.tanks.length > 0 ? live.remainder : null
+        );
         const fc = fiscalCheck(detail);
-        const fill = detail.capacity_liters
-          ? Math.round((bal.storage_actual / detail.capacity_liters) * 100)
-          : 0;
+        const fill =
+          live && live.tanks.length > 0
+            ? live.fill == null
+              ? null
+              : Math.round(live.fill)
+            : detail.capacity_liters
+              ? Math.round((bal.storage_actual / detail.capacity_liters) * 100)
+              : 0;
         if (mapStatus === "issue" && bal.status === "ok") return false;
         if (mapStatus === "kgd" && fc.status === "ok") return false;
-        if (mapStatus === "low" && fill >= 25) return false;
+        if (mapStatus === "low" && (fill == null || fill >= 25)) return false;
       }
       return true;
     });
-  }, [activeStations, mapSearch, mapRegion, mapStatus]);
+  }, [activeStations, mapSearch, mapRegion, mapStatus, byCode]);
 
   const truck = useMemo(() => {
     if (selection?.kind !== "truck") return null;
@@ -264,11 +275,18 @@ export default function App() {
               </div>
               <ul className="quick-jumper-list">
                 {quickStations.map(({ detail }) => {
-                  const bal = stationBalance(detail);
+                  const live = byCode.get(detail.code);
+                  const hasLive = !!live && live.tanks.length > 0;
+                  const bal = withMeasured(stationBalance(detail), hasLive ? live.remainder : null);
                   const fc = fiscalCheck(detail);
-                  const fill = detail.capacity_liters
-                    ? Math.round((bal.storage_actual / detail.capacity_liters) * 100)
-                    : 0;
+                  const fill = hasLive
+                    ? live.fill == null
+                      ? null
+                      : Math.round(live.fill)
+                    : detail.capacity_liters
+                      ? Math.round((bal.storage_actual / detail.capacity_liters) * 100)
+                      : 0;
+                  const gas = hasLive ? live.remainder : bal.storage_actual;
                   return (
                     <li key={detail.id} className="quick-jumper-item">
                       <div
@@ -278,8 +296,10 @@ export default function App() {
                         <div>
                           <strong>{detail.name}</strong>
                           <span className="dash-muted">
-                            {detail.code} · {stationRegion(detail)} · {fill}% ({liters(bal.storage_actual)})
+                            {detail.code} · {stationRegion(detail)} · {fill == null ? "—" : `${fill}%`} (
+                            {gas == null ? "замера нет" : liters(gas)})
                           </span>
+                          {hasLive && live ? <SensorStatus level={live} /> : null}
                         </div>
                         <div className="quick-jumper-badges">
                           <span className={`badge ${balBadge(bal.status)}`}>
@@ -498,10 +518,17 @@ export default function App() {
                 {mapHudTab === "stations" && (
                   <ul className="object-list">
                     {filteredMapStations.map(({ detail }) => {
-                      const bal = stationBalance(detail);
-                      const fill = detail.capacity_liters
-                        ? Math.round((bal.storage_actual / detail.capacity_liters) * 100)
-                        : 0;
+                      const live = byCode.get(detail.code);
+                      const hasLive = !!live && live.tanks.length > 0;
+                      const bal = withMeasured(stationBalance(detail), hasLive ? live.remainder : null);
+                      const fill = hasLive
+                        ? live.fill == null
+                          ? null
+                          : Math.round(live.fill)
+                        : detail.capacity_liters
+                          ? Math.round((bal.storage_actual / detail.capacity_liters) * 100)
+                          : 0;
+                      const gas = hasLive ? live.remainder : bal.storage_actual;
                       const isSel = selection?.kind === "station" && selection.id === detail.id;
                       return (
                         <li key={detail.id}>
@@ -528,7 +555,8 @@ export default function App() {
                               </span>
                             </div>
                             <em>
-                              {fill}% · {liters(bal.storage_actual)}
+                              {hasLive && live ? `${sensorLabel(live)} · ` : ""}
+                              {fill == null ? "—" : `${fill}%`} · {gas == null ? "замера нет" : liters(gas)}
                             </em>
                           </button>
                         </li>
