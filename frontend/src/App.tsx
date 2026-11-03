@@ -154,7 +154,7 @@ export default function App() {
             Поставки
           </button>
           <button type="button" className={`nav-page${page === "admin" ? " active" : ""}`} onClick={() => setPage("admin")}>
-            Админка
+            Администратор
           </button>
         </nav>
         <div className="quick-jumper" ref={quickRef}>

@@ -164,7 +164,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             {session ? (
               <>
                 <button type="button" className="btn small" onClick={onEnter}>
-                  В админку
+                  Администратор
                 </button>
                 <button type="button" className="btn secondary small" onClick={logout}>
                   Выйти

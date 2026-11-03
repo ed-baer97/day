@@ -693,7 +693,7 @@ function StationListRow({
           ) : null}
           {onAdmin ? (
             <button type="button" className="btn secondary small" onClick={onAdmin}>
-              Админка
+              Администратор
             </button>
           ) : null}
         </div>

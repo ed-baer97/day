@@ -86,7 +86,7 @@ export default function StationDetailPage({
           ) : null}
           {onOpenAdmin ? (
             <button type="button" className="btn small" onClick={() => onOpenAdmin(station.id)}>
-              Настроить в админке
+              Администратор
             </button>
           ) : null}
         </div>

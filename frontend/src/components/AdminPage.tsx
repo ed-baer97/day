@@ -22,6 +22,18 @@ function statusLabel(value: string) {
 
 type AdminTab = "stations" | "trucks" | "supplies" | "reconcile" | "security";
 
+const ADMIN_SECTIONS: { id: AdminTab; label: string; note: string }[] = [
+  { id: "stations", label: "АГЗС", note: "Карточки и резервуары" },
+  { id: "trucks", label: "Газовозы", note: "Парк и GPS" },
+  { id: "supplies", label: "Поставки", note: "Партии и рейсы" },
+  { id: "reconcile", label: "Сверка", note: "Инциденты" },
+  { id: "security", label: "Доступ", note: "Что видно снаружи" },
+];
+
+function scrollAdminTop() {
+  document.querySelector(".page.dash-page")?.scrollTo({ top: 0 });
+}
+
 export default function AdminPage({
   initialStationId,
   onOpenStationDashboard,
@@ -37,10 +49,8 @@ export default function AdminPage({
   const toast = useToast();
 
   const [tab, setTab] = useState<AdminTab>("stations");
-  const [stationId, setStationId] = useState<string | "new" | null>(
-    initialStationId ?? catalog.stations[0]?.id ?? null
-  );
-  const [truckId, setTruckId] = useState<string | "new" | null>(catalog.trucks[0]?.id ?? null);
+  const [stationId, setStationId] = useState<string | "new" | null>(initialStationId ?? null);
+  const [truckId, setTruckId] = useState<string | "new" | null>(null);
 
   // Фильтры и пагинация для большого количества АГЗС в админке
   const [stQuery, setStQuery] = useState("");
@@ -115,66 +125,61 @@ export default function AdminPage({
 
   const station = catalog.stations.find((row) => row.id === stationId) ?? null;
   const truck = catalog.trucks.find((row) => row.id === truckId) ?? null;
+  const heading =
+    tab === "stations"
+      ? stationId === "new"
+        ? "Новая АГЗС"
+        : (station?.name ?? "Сеть АГЗС")
+      : tab === "trucks"
+        ? truckId === "new"
+          ? "Новый газовоз"
+          : (truck?.plate_number ?? "Газовозы")
+        : tab === "supplies"
+          ? "Партии и поставки"
+          : tab === "reconcile"
+            ? "Сверка и инциденты"
+            : "Безопасность и доступ";
 
   return (
     <div className="dash admin">
+      <div className="admin-shell">
+        <nav className="admin-nav" aria-label="Разделы администратора">
+          <p className="kicker">Разделы</p>
+          {ADMIN_SECTIONS.map((item) => {
+            const count =
+              item.id === "stations" ? catalog.stations.length : item.id === "trucks" ? catalog.trucks.length : null;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={tab === item.id ? "active" : ""}
+                aria-current={tab === item.id ? "page" : undefined}
+                onClick={() => {
+                  setTab(item.id);
+                  scrollAdminTop();
+                }}
+              >
+                <span className="admin-nav-label">
+                  {item.label}
+                  {count != null ? <em>{count}</em> : null}
+                </span>
+                <small>{item.note}</small>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="admin-main">
       <header className="admin-toolbar">
         <div>
-          <p className="kicker">Защищённый административный контур</p>
-          <h2>Панель управления сетью АГЗС Мангыстау</h2>
-        </div>
-        <div className="admin-tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "stations"}
-            className={tab === "stations" ? "active" : ""}
-            onClick={() => setTab("stations")}
-          >
-            АГЗС и резервуары ({catalog.stations.length})
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "trucks"}
-            className={tab === "trucks" ? "active" : ""}
-            onClick={() => setTab("trucks")}
-          >
-            Газовозы ({catalog.trucks.length})
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "supplies"}
-            className={tab === "supplies" ? "active" : ""}
-            onClick={() => setTab("supplies")}
-          >
-            Партии и поставки
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "reconcile"}
-            className={tab === "reconcile" ? "active" : ""}
-            onClick={() => setTab("reconcile")}
-          >
-            Сверка и инциденты
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "security"}
-            className={tab === "security" ? "active" : ""}
-            onClick={() => setTab("security")}
-          >
-            Безопасность и доступ
-          </button>
+          <p className="kicker">Администратор</p>
+          <h2>{heading}</h2>
         </div>
       </header>
       {catalog.error ? <p className="tank-error">{catalog.error}</p> : null}
 
       {tab === "stations" && (
         <>
+          {stationId == null && (
           <div className="st-filter-bar" style={{ marginBottom: 14 }}>
             <input
               type="search"
@@ -235,13 +240,24 @@ export default function AdminPage({
               <option value={20}>По 20 строк</option>
               <option value={100}>Все ({filteredStations.length})</option>
             </select>
-            <button type="button" className="btn" onClick={() => setStationId("new")}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setStationId("new");
+                scrollAdminTop();
+              }}
+            >
               + Новая АГЗС
             </button>
           </div>
+          )}
 
-          <div className="admin-split">
+          {stationId == null ? (
             <div>
+              <p className="dash-muted" style={{ margin: "0 0 8px" }}>
+                Нажмите строку, чтобы открыть карточку.
+              </p>
               <div className="dash-table-wrap admin-table">
                 <table className="dash-table">
                   <thead>
@@ -258,7 +274,10 @@ export default function AdminPage({
                       <tr
                         key={row.id}
                         className={`dash-row-link${stationId === row.id ? " active" : ""}`}
-                        onClick={() => setStationId(row.id)}
+                        onClick={() => {
+                          setStationId(row.id);
+                          scrollAdminTop();
+                        }}
                       >
                         <td>
                           <strong>{row.code}</strong>
@@ -333,21 +352,13 @@ export default function AdminPage({
                 </div>
               )}
             </div>
-
-            <aside className="admin-editor dash-card">
-              {stationId === "new" ? (
-                <StationForm
-                  key="new-station"
-                  initial={null}
-                  onCancel={() => setStationId(null)}
-                  onSaved={(saved) => {
-                    setStationId(saved.id);
-                    toast.ok(`Заправка ${saved.name} создана`);
-                  }}
-                  onDeleted={() => setStationId(null)}
-                />
-              ) : station ? (
-                <>
+          ) : (
+            <div className="admin-workspace">
+              <div className="admin-backbar">
+                <button type="button" className="btn secondary small" onClick={() => setStationId(null)}>
+                  ← К списку АГЗС
+                </button>
+                {station ? (
                   <div className="admin-editor-head-actions">
                     {onOpenStationDashboard && (
                       <button
@@ -355,7 +366,7 @@ export default function AdminPage({
                         className="btn secondary small"
                         onClick={() => onOpenStationDashboard(station.id)}
                       >
-                        Открыть детальную сводку
+                        Детальная сводка
                       </button>
                     )}
                     {onOpenStationMap && (
@@ -364,36 +375,57 @@ export default function AdminPage({
                         className="btn secondary small"
                         onClick={() => onOpenStationMap(station.id)}
                       >
-                        Показать на карте
+                        На карте
                       </button>
                     )}
                   </div>
+                ) : null}
+              </div>
+              {stationId === "new" ? (
+                <section className="dash-card admin-form-card">
                   <StationForm
-                    key={station.id}
-                    initial={station}
+                    key="new-station"
+                    initial={null}
                     onCancel={() => setStationId(null)}
-                    onSaved={(saved) => toast.ok(`Карточка ${saved.name} обновлена`)}
-                    onDeleted={() => {
-                      setStationId(null);
-                      toast.ok(`Заправка ${station.name} удалена`);
+                    onSaved={(saved) => {
+                      setStationId(saved.id);
+                      toast.ok(`Заправка ${saved.name} создана`);
                     }}
+                    onDeleted={() => setStationId(null)}
                   />
-                  <h3 className="admin-sub">Резервуары, датчики Shelly и публикация остатка</h3>
-                  <TankDeviceRows stationId={station.id} />
-                  <LevelChangesToday stationId={station.id} />
+                </section>
+              ) : station ? (
+                <>
+                  <section className="dash-card admin-form-card">
+                    <StationForm
+                      key={station.id}
+                      initial={station}
+                      onCancel={() => setStationId(null)}
+                      onSaved={(saved) => toast.ok(`Карточка ${saved.name} обновлена`)}
+                      onDeleted={() => {
+                        setStationId(null);
+                        toast.ok(`Заправка ${station.name} удалена`);
+                      }}
+                    />
+                  </section>
+                  <section className="dash-card">
+                    <h3>Резервуары и датчики</h3>
+                    <p className="dash-muted">Shelly, токен приёма и публикация остатка на лэндинге.</p>
+                    <TankDeviceRows stationId={station.id} />
+                    <LevelChangesToday stationId={station.id} />
+                  </section>
                 </>
               ) : (
-                <p className="admin-empty">
-                  Выберите заправку в таблице слева или нажмите «+ Новая АГЗС».
-                </p>
+                <p className="admin-empty">Эта АГЗС больше не в списке.</p>
               )}
-            </aside>
-          </div>
+            </div>
+          )}
         </>
       )}
 
       {tab === "trucks" && (
         <>
+          {truckId == null && (
           <div className="st-filter-bar" style={{ marginBottom: 14 }}>
             <input
               type="search"
@@ -415,12 +447,20 @@ export default function AdminPage({
                 </option>
               ))}
             </select>
-            <button type="button" className="btn" onClick={() => setTruckId("new")}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setTruckId("new");
+                scrollAdminTop();
+              }}
+            >
               + Новый газовоз
             </button>
           </div>
+          )}
 
-          <div className="admin-split">
+          {truckId == null ? (
             <div className="dash-table-wrap admin-table">
               <table className="dash-table">
                 <thead>
@@ -437,7 +477,10 @@ export default function AdminPage({
                     <tr
                       key={row.id}
                       className={`dash-row-link${truckId === row.id ? " active" : ""}`}
-                      onClick={() => setTruckId(row.id)}
+                      onClick={() => {
+                        setTruckId(row.id);
+                        scrollAdminTop();
+                      }}
                     >
                       <td>
                         <strong>{row.plate_number}</strong>
@@ -457,34 +500,42 @@ export default function AdminPage({
                 </tbody>
               </table>
             </div>
-            <aside className="admin-editor dash-card">
-              {truckId === "new" ? (
-                <TruckForm
-                  key="new-truck"
-                  initial={null}
-                  onCancel={() => setTruckId(null)}
-                  onSaved={(saved) => {
-                    setTruckId(saved.id);
-                    toast.ok(`Газовоз ${saved.plate_number} добавлен`);
-                  }}
-                  onDeleted={() => setTruckId(null)}
-                />
-              ) : truck ? (
-                <TruckForm
-                  key={truck.id}
-                  initial={truck}
-                  onCancel={() => setTruckId(null)}
-                  onSaved={(saved) => toast.ok(`Газовоз ${saved.plate_number} обновлён`)}
-                  onDeleted={() => {
-                    setTruckId(null);
-                    toast.ok(`Газовоз ${truck.plate_number} удалён`);
-                  }}
-                />
-              ) : (
-                <p className="admin-empty">Выберите газовоз в таблице или создайте новый.</p>
-              )}
-            </aside>
-          </div>
+          ) : (
+            <div className="admin-workspace">
+              <div className="admin-backbar">
+                <button type="button" className="btn secondary small" onClick={() => setTruckId(null)}>
+                  ← К списку газовозов
+                </button>
+              </div>
+              <section className="dash-card admin-form-card">
+                {truckId === "new" ? (
+                  <TruckForm
+                    key="new-truck"
+                    initial={null}
+                    onCancel={() => setTruckId(null)}
+                    onSaved={(saved) => {
+                      setTruckId(saved.id);
+                      toast.ok(`Газовоз ${saved.plate_number} добавлен`);
+                    }}
+                    onDeleted={() => setTruckId(null)}
+                  />
+                ) : truck ? (
+                  <TruckForm
+                    key={truck.id}
+                    initial={truck}
+                    onCancel={() => setTruckId(null)}
+                    onSaved={(saved) => toast.ok(`Газовоз ${saved.plate_number} обновлён`)}
+                    onDeleted={() => {
+                      setTruckId(null);
+                      toast.ok(`Газовоз ${truck.plate_number} удалён`);
+                    }}
+                  />
+                ) : (
+                  <p className="admin-empty">Этот газовоз больше не в списке.</p>
+                )}
+              </section>
+            </div>
+          )}
         </>
       )}
 
@@ -618,6 +669,8 @@ export default function AdminPage({
           </section>
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -691,7 +744,7 @@ function StationForm({
         void submit();
       }}
     >
-      <h3 className="span-3">{initial ? initial.name : "Новая заправка"}</h3>
+      <h3 className="span-3">{initial ? "Карточка станции" : "Новая заправка"}</h3>
       <label>
         Код
         <input value={code} onChange={(event) => setCode(event.target.value)} />
@@ -701,8 +754,12 @@ function StationForm({
         <input value={name} onChange={(event) => setName(event.target.value)} />
       </label>
       <label className="span-3">
-        Адрес (с указанием города/района для авто-группировки)
-        <input value={address} onChange={(event) => setAddress(event.target.value)} />
+        Адрес
+        <input
+          value={address}
+          placeholder="Город, район, улица — район нужен для группировки"
+          onChange={(event) => setAddress(event.target.value)}
+        />
       </label>
       <label>
         Широта
@@ -712,7 +769,7 @@ function StationForm({
         Долгота
         <input inputMode="decimal" value={lon} onChange={(event) => setLon(event.target.value)} />
       </label>
-      <label className="admin-check">
+      <label className="admin-check span-3">
         <input
           type="checkbox"
           checked={active}
@@ -736,7 +793,7 @@ function StationForm({
           </button>
         )}
         <button type="button" className="btn secondary small" onClick={onCancel}>
-          Закрыть
+          К списку
         </button>
       </div>
     </form>
@@ -821,7 +878,7 @@ function TruckForm({
         void submit();
       }}
     >
-      <h3 className="span-3">{initial ? initial.plate_number : "Новый газовоз"}</h3>
+      <h3 className="span-3">Карточка газовоза</h3>
       <label>
         Номер
         <input value={plate} onChange={(event) => setPlate(event.target.value)} />
@@ -875,7 +932,7 @@ function TruckForm({
           </button>
         )}
         <button type="button" className="btn secondary small" onClick={onCancel}>
-          Закрыть
+          К списку
         </button>
       </div>
     </form>
