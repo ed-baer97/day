@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useCatalog } from "../catalog";
-import { dateTime, liters, signedLiters, stationRegion, timeHM } from "../format";
+import { dateTime, liters, stationRegion, timeHM } from "../format";
 import { SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
 import { hoursToday, useSensorDay } from "../sensorDay";
-import { BarChart, LineChart } from "./Charts";
+import { LineChart } from "./Charts";
 import TankDeviceRows from "./TankDeviceRows";
 
 type DetailTab = "overview" | "tanks" | "pumps" | "history";
@@ -46,8 +46,9 @@ export default function StationDetailPage({
   const fillPct = hasTanks && live?.fill != null ? Math.max(0, Math.min(100, live.fill)) : 0;
   const prev = index > 0 ? stations[index - 1] : stations[stations.length - 1];
   const next = index >= 0 && index < stations.length - 1 ? stations[index + 1] : stations[0];
-  const hours = hoursToday();
   const points = series?.points ?? [];
+  const levelHours = hoursToday().filter((hour) => series?.hourlyLevel[hour] != null);
+  const levelValues = levelHours.map((hour) => series?.hourlyLevel[hour] ?? 0);
 
   return (
     <div className="dash">
@@ -101,7 +102,8 @@ export default function StationDetailPage({
         </div>
         <div className="st-row-badges">
           {hasTanks && live ? <SensorStatus level={live} /> : <span className="badge warn">датчик не подключён</span>}
-          {series?.delta != null ? <span className="badge">{signedLiters(series.delta)} за сегодня</span> : null}
+          <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
+          {series && series.points.length > 0 ? <span className="badge">расход {liters(series.outflow)}</span> : null}
         </div>
       </header>
 
@@ -123,24 +125,29 @@ export default function StationDetailPage({
       {tab === "overview" ? (
         <div className="st-grid">
           <section className="dash-card">
-            <h3>Изменение датчика по часам (сегодня)</h3>
-            <BarChart
-              labels={hours.map((hour) => String(hour).padStart(2, "0"))}
-              series={[
-                { name: "Приход", color: "var(--dust)", values: hours.map((hour) => series?.hourlyIn[hour] ?? 0) },
-                { name: "Расход", color: "var(--sea)", values: hours.map((hour) => series?.hourlyOut[hour] ?? 0) },
-              ]}
-            />
+            <h3>Остаток датчика сегодня</h3>
+            <p className="dash-muted">
+              Приход {liters(series?.inflow ?? 0)}
+              {(series?.inflow ?? 0) > 0 ? " — поставка." : ": поставки не было."} На линии газ, который уже был в
+              резервуаре.
+              {series && series.points.length > 0 ? ` Расход ${liters(series.outflow)}.` : ""}
+            </p>
             {points.length > 1 ? (
-              <>
-                <h3 style={{ marginTop: 18 }}>Остаток по замерам сегодня</h3>
-                <LineChart
-                  labels={points.map((point) => timeHM(point.recorded_at))}
-                  series={[{ name: "Остаток", color: "var(--sea)", values: points.map((point) => point.remainder_liters) }]}
-                />
-              </>
+              <LineChart
+                labels={points.map((point) => timeHM(point.recorded_at))}
+                series={[{ name: "Остаток", color: "var(--sea)", values: points.map((point) => point.remainder_liters) }]}
+              />
+            ) : levelHours.length > 1 ? (
+              <LineChart
+                labels={levelHours.map((hour) => String(hour).padStart(2, "0"))}
+                series={[{ name: "Остаток", color: "var(--sea)", values: levelValues }]}
+              />
             ) : (
-              <p className="dash-muted">Кривая остатка появится, когда за сегодня будет больше одной смены уровня.</p>
+              <p className="dash-muted">
+                {hasTanks && live?.remainder != null
+                  ? `Сейчас в резервуаре ${liters(live.remainder)}. Смен уровня за сегодня не было.`
+                  : "Замера датчика ещё нет."}
+              </p>
             )}
           </section>
           <section className="dash-card">

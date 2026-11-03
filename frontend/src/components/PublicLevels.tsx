@@ -4,8 +4,7 @@ import { dateTime, liters } from "../format";
 import Logo from "./Logo";
 
 function percentLabel(value: number) {
-  const rounded = Math.round(value * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+  return String(Math.round(value));
 }
 
 export default function PublicLevels({

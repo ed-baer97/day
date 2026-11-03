@@ -19,7 +19,7 @@ export function summarizeLevel(station: PublicStation): LiveLevel {
     ? known.reduce((sum, tank) => sum + (tank.remainder_liters ?? 0), 0)
     : null;
   const fill =
-    remainder != null && capacity > 0 ? Math.round((remainder / capacity) * 1000) / 10 : null;
+    remainder != null && capacity > 0 ? Math.round((remainder / capacity) * 100) : null;
   const measuredAt =
     tanks
       .map((tank) => tank.measured_at)

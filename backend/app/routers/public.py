@@ -15,7 +15,7 @@ router = APIRouter(prefix="/public", tags=["public"])
 def _percent(remainder: float | None, capacity: float) -> float | None:
     if remainder is None or capacity <= 0:
         return None
-    return round(remainder / capacity * 100, 1)
+    return float(round(remainder / capacity * 100))
 
 
 def _online(measured_at: datetime | None) -> bool:

@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import type { CatalogStation } from "../api/client";
 import { useCatalog } from "../catalog";
-import { liters, REGIONS, shortStationName, signedLiters, stationRegion } from "../format";
+import { liters, REGIONS, shortStationName, stationRegion } from "../format";
 import { SensorStatus, usePublicLevels, type LiveLevel } from "../liveLevels";
 import { hoursToday, useSensorDay } from "../sensorDay";
-import { BarChart } from "./Charts";
+import { BarChart, LineChart } from "./Charts";
 import StationDetailPage from "./StationDetailPage";
 
 type StatusFilter = "all" | "low" | "offline" | "no_sensor" | "ok";
@@ -75,7 +75,8 @@ function Overview({
       const hasTanks = !!live && live.tanks.length > 0;
       const fill = hasTanks && live.fill != null ? Math.round(live.fill) : null;
       const online = !!live && live.tanks.some((tank) => tank.online === true && tank.remainder_liters != null);
-      const change = day.get(station.id)?.delta ?? null;
+      const spent = day.get(station.id)?.outflow ?? null;
+      const hasJournal = (day.get(station.id)?.points.length ?? 0) > 0;
       const attention = (!hasTanks ? 2 : !online ? 3 : 0) + (fill != null && fill < 25 ? 2 : 0);
       return {
         station,
@@ -83,7 +84,7 @@ function Overview({
         hasTanks,
         fill,
         online,
-        change,
+        spent: hasJournal ? spent : null,
         region: stationRegion(station),
         gas: hasTanks ? live?.remainder ?? null : null,
         cap: hasTanks ? live?.capacity ?? 0 : 0,
@@ -98,20 +99,22 @@ function Overview({
     let offline = 0;
     let noSensor = 0;
     let low = 0;
-    let change = 0;
-    let changeKnown = false;
+    let spent = 0;
+    let spentKnown = false;
+    let inflow = 0;
     for (const row of rows) {
       if (!row.hasTanks) noSensor++;
       else if (row.online) online++;
       else offline++;
       if (row.fill != null && row.fill < 25) low++;
       if (row.gas != null) litersSum += row.gas;
-      if (row.change != null) {
-        change += row.change;
-        changeKnown = true;
+      if (row.spent != null) {
+        spent += row.spent;
+        spentKnown = true;
       }
+      inflow += day.get(row.station.id)?.inflow ?? 0;
     }
-    return { litersSum, online, offline, noSensor, low, change, changeKnown, all: rows.length, ok: online };
+    return { litersSum, online, offline, noSensor, low, spent, spentKnown, inflow, all: rows.length, ok: online };
   }, [rows]);
 
   const filtered = useMemo(() => {
@@ -133,7 +136,7 @@ function Overview({
     return [...list].sort((a, b) => {
       if (sortBy === "attention") return b.attention - a.attention || a.station.name.localeCompare(b.station.name, "ru");
       if (sortBy === "fill_asc") return (a.fill ?? 101) - (b.fill ?? 101);
-      if (sortBy === "change_desc") return Math.abs(b.change ?? 0) - Math.abs(a.change ?? 0);
+      if (sortBy === "change_desc") return (b.spent ?? 0) - (a.spent ?? 0);
       return a.station.name.localeCompare(b.station.name, "ru");
     });
   }, [rows, query, regionFilter, statusFilter, sortBy]);
@@ -174,21 +177,16 @@ function Overview({
     }
     if (chartMode === "change") {
       const top = [...rows]
-        .filter((row) => row.change != null)
-        .sort((a, b) => Math.abs(b.change ?? 0) - Math.abs(a.change ?? 0))
+        .filter((row) => row.spent != null)
+        .sort((a, b) => (b.spent ?? 0) - (a.spent ?? 0))
         .slice(0, 10);
       return {
         labels: top.map((row) => shortStationName(row.station.name)),
         series: [
           {
-            name: "Приход за сегодня",
-            color: "var(--dust)",
-            values: top.map((row) => Math.max(0, row.change ?? 0)),
-          },
-          {
-            name: "Расход за сегодня",
+            name: "Расход",
             color: "var(--coral)",
-            values: top.map((row) => Math.max(0, -(row.change ?? 0))),
+            values: top.map((row) => row.spent ?? 0),
           },
         ],
       };
@@ -203,13 +201,31 @@ function Overview({
     };
   }, [chartMode, rows]);
 
-  const hours = hoursToday();
-  const hourlyIn = hours.map((hour) =>
-    rows.reduce((sum, row) => sum + (day.get(row.station.id)?.hourlyIn[hour] ?? 0), 0)
-  );
-  const hourlyOut = hours.map((hour) =>
-    rows.reduce((sum, row) => sum + (day.get(row.station.id)?.hourlyOut[hour] ?? 0), 0)
-  );
+  const levelChart = useMemo(() => {
+    const hours = hoursToday();
+    const values = hours.map((hour) => {
+      let sum = 0;
+      let known = false;
+      for (const row of rows) {
+        const level = day.get(row.station.id)?.hourlyLevel[hour];
+        if (level == null) continue;
+        sum += level;
+        known = true;
+      }
+      return known ? sum : null;
+    });
+    const start = values.findIndex((value) => value != null);
+    if (start >= 0) {
+      return {
+        labels: hours.slice(start).map((hour) => String(hour).padStart(2, "0")),
+        values: values.slice(start).map((value) => value ?? 0),
+      };
+    }
+    const now = new Date().getHours();
+    const gas = rows.reduce((sum, row) => sum + (row.gas ?? 0), 0);
+    if (!rows.some((row) => row.gas != null)) return { labels: [] as string[], values: [] as number[] };
+    return { labels: [String(now).padStart(2, "0")], values: [gas] };
+  }, [rows, day]);
 
   function pickFilter(next: StatusFilter) {
     setStatusFilter(next);
@@ -255,9 +271,14 @@ function Overview({
           <em>резервуара в кабинете нет</em>
         </div>
         <div className="dash-kpi">
-          <span>Изменение за сегодня</span>
-          <strong>{totals.changeKnown ? signedLiters(totals.change) : "—"}</strong>
-          <em>сумма смен остатка с полуночи</em>
+          <span>Приход сегодня</span>
+          <strong>{liters(totals.inflow)}</strong>
+          <em>{totals.inflow > 0 ? "принятые поставки" : "поставок не было, газ уже был в резервуаре"}</em>
+        </div>
+        <div className="dash-kpi">
+          <span>Расход сегодня</span>
+          <strong>{totals.spentKnown ? liters(totals.spent) : "—"}</strong>
+          <em>только падение уровня датчика</em>
         </div>
       </div>
 
@@ -270,7 +291,7 @@ function Overview({
                 Остаток
               </button>
               <button type="button" className={chartMode === "change" ? "active" : ""} onClick={() => setChartMode("change")}>
-                Изменение
+                Расход
               </button>
               <button type="button" className={chartMode === "by_region" ? "active" : ""} onClick={() => setChartMode("by_region")}>
                 По районам
@@ -278,20 +299,35 @@ function Overview({
             </div>
           </div>
           {chartData.labels.length === 0 ? (
-            <p className="dash-muted">На диаграмме появятся станции, у которых есть замер датчика.</p>
+            <p className="dash-muted">
+              {chartMode === "change"
+                ? "Расхода нет: уровень не падал. Приход 0 л — поставки не было."
+                : "На диаграмме появятся станции, у которых есть замер датчика."}
+            </p>
           ) : (
             <BarChart labels={chartData.labels} series={chartData.series} />
           )}
         </section>
         <section className="dash-card">
-          <h3>Изменение датчиков по часам · сегодня</h3>
-          <BarChart
-            labels={hours.map((hour) => String(hour).padStart(2, "0"))}
-            series={[
-              { name: "Приход", color: "var(--dust)", values: hourlyIn },
-              { name: "Расход", color: "var(--sea)", values: hourlyOut },
-            ]}
-          />
+          <h3>Остаток в резервуаре · сегодня</h3>
+          <p className="dash-muted">
+            Приход {liters(totals.inflow)}
+            {totals.inflow > 0 ? " — это поставки." : ": поставки не было."} Линия — газ, который уже был, по замерам
+            датчика.
+          </p>
+          {levelChart.labels.length === 0 ? (
+            <p className="dash-muted">Замера датчика ещё нет.</p>
+          ) : levelChart.labels.length === 1 ? (
+            <BarChart
+              labels={levelChart.labels}
+              series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
+            />
+          ) : (
+            <LineChart
+              labels={levelChart.labels}
+              series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
+            />
+          )}
         </section>
       </div>
 
@@ -358,7 +394,7 @@ function Overview({
             >
               <option value="attention">Сначала без связи и мало газа</option>
               <option value="fill_asc">По остатку газа (сначала мало)</option>
-              <option value="change_desc">По изменению за сегодня</option>
+              <option value="change_desc">По расходу за сегодня</option>
               <option value="name_asc">По алфавиту (А–Я)</option>
             </select>
             {viewMode !== "regions" ? (
@@ -467,8 +503,8 @@ function Overview({
                     </strong>
                   </div>
                   <div>
-                    <span>Изменение сегодня</span>
-                    <strong>{row.change == null ? "смен нет" : signedLiters(row.change)}</strong>
+                    <span>Расход сегодня</span>
+                    <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
                   </div>
                   <div>
                     <span>Резервуаров</span>
@@ -507,8 +543,8 @@ function Overview({
                         </div>
                         <FillCell fill={row.fill} gas={row.gas} cap={row.cap} live={row.hasTanks ? row.live : null} />
                         <div className="st-row-num">
-                          <strong>{row.change == null ? "—" : signedLiters(row.change)}</strong>
-                          <span>изменение сегодня</span>
+                          <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
+                          <span>расход сегодня</span>
                         </div>
                         <div className="st-row-num">
                           <strong>{row.live?.tanks.length ?? 0}</strong>
@@ -611,7 +647,7 @@ function StationListRow({
   cap,
   live,
   hasTanks,
-  change,
+  spent,
   onOpen,
   onMap,
   onAdmin,
@@ -623,7 +659,7 @@ function StationListRow({
   cap: number;
   live: LiveLevel | null;
   hasTanks: boolean;
-  change: number | null;
+  spent: number | null;
   onOpen: () => void;
   onMap?: () => void;
   onAdmin?: () => void;
@@ -639,8 +675,8 @@ function StationListRow({
         </div>
         <FillCell fill={fill} gas={gas} cap={cap} live={hasTanks ? live : null} />
         <div className="st-row-num">
-          <strong>{change == null ? "—" : signedLiters(change)}</strong>
-          <span>изменение сегодня</span>
+          <strong>{spent == null ? "—" : liters(spent)}</strong>
+          <span>расход сегодня</span>
         </div>
         <div className="st-row-num">
           <strong>{live?.tanks.length ?? 0}</strong>

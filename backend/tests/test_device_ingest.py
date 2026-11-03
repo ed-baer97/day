@@ -270,3 +270,61 @@ def test_site_tank_card_sets_volume_and_token():
     listed = client.get(f"/api/v1/stations/{station}/devices")
     assert listed.status_code == 200
     assert any(row["id"] == tank_id and row["capacity_liters"] == 20000 for row in listed.json())
+
+
+def test_volt_noise_inside_tenth_is_not_a_change():
+    client.put(
+        "/api/v1/ingest/calibration",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "capacity_liters": 10000,
+            "low_volts": 1.2,
+            "low_percent": 20,
+            "high_volts": 3.8,
+            "high_percent": 80,
+        },
+    )
+    first = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volts": 3.14,
+            "recorded_at": "2026-10-04T11:00:00Z",
+            "source_event_id": "noise-1",
+        },
+    )
+    assert first.status_code == 200
+    held = first.json()["actual_remainder_liters"]
+
+    noise = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volts": 3.141,
+            "recorded_at": "2026-10-04T11:01:00Z",
+            "source_event_id": "noise-2",
+        },
+    )
+    assert noise.status_code == 200
+    assert noise.json()["message"] == "level unchanged"
+    assert noise.json()["actual_remainder_liters"] == pytest.approx(held)
+
+    step = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volts": 3.19,
+            "recorded_at": "2026-10-04T11:02:00Z",
+            "source_event_id": "noise-3",
+        },
+    )
+    assert step.status_code == 200
+    assert step.json()["message"] == "level accepted"
+    assert step.json()["actual_remainder_liters"] != pytest.approx(held)
+
+    state = client.get(f"/api/v1/ingest/tanks/{TANK}")
+    assert state.json()["last_volts"] == pytest.approx(3.2)

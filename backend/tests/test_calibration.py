@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.services.calibration import LevelCalibration, volts_to_liters, volts_to_percent
+from app.services.calibration import LevelCalibration, round_volts, volts_to_liters, volts_to_percent
 
 # 1.2 В = 20 %, 3.8 В = 80 %, сосуд 10 000 л
 CAL = LevelCalibration(
@@ -29,6 +29,12 @@ def test_dial_does_not_leave_five_to_ninety_five():
     assert volts_to_liters(0.0, CAL) == pytest.approx(500)
     assert volts_to_percent(10.0, CAL) == pytest.approx(95)
     assert volts_to_liters(10.0, CAL) == pytest.approx(9_500)
+
+
+def test_volts_round_to_tenth():
+    assert round_volts(3.19) == pytest.approx(3.2)
+    assert round_volts(3.14) == pytest.approx(3.1)
+    assert round_volts(3.15) == pytest.approx(3.2)
 
 
 def test_same_volts_rejected():

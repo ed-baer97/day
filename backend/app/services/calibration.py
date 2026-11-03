@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
 
 
 DIAL_MIN_PERCENT = 5.0
@@ -21,6 +22,12 @@ class LevelCalibration:
     low_percent: float
     high_volts: float
     high_percent: float
+
+
+def round_volts(volts: float) -> float:
+    """Шаг 0,1 В: 3,19 → 3,2, 3,14 → 3,1. Мельче — погрешность, не изменение."""
+
+    return float(Decimal(str(volts)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
 def volts_to_percent(volts: float, calibration: LevelCalibration) -> float:

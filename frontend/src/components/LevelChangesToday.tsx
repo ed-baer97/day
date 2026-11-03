@@ -10,8 +10,7 @@ function startOfTodayIso() {
 
 function percentLabel(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return "—";
-  const rounded = Math.round(value * 10) / 10;
-  return `${rounded.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
+  return `${Math.round(value)}%`;
 }
 
 export default function LevelChangesToday({ stationId }: { stationId: string }) {

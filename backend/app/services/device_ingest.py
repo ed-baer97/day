@@ -28,7 +28,7 @@ from app.schemas.ingest import (
     TankIngestState,
 )
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, volts_to_liters
+from app.services.calibration import LevelCalibration, round_volts, volts_to_liters
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
 _MAX_SEEN = 10_000
@@ -456,19 +456,35 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
     return tank_state(body.tank_id)
 
 
+def _rounded_volts(body: LevelIngest) -> float | None:
+    if body.volts is None:
+        return None
+    return round_volts(body.volts)
+
+
+def _same_volt_step(book: TankBook, volts: float) -> bool:
+    if book.calibration is None or book.last_volts is None or book.actual_remainder_liters is None:
+        return False
+    if round_volts(book.last_volts) != volts:
+        return False
+    expected = volts_to_liters(volts, book.calibration)
+    return abs(book.actual_remainder_liters - expected) < 0.05
+
+
 def _liters_from_level(body: LevelIngest, book: TankBook) -> float:
-    if body.volts is not None:
-        book.last_volts = body.volts
+    volts = _rounded_volts(body)
     if body.actual_remainder_liters is not None:
+        if volts is not None:
+            book.last_volts = volts
         return body.actual_remainder_liters
     if book.calibration is None:
         raise HTTPException(
             status_code=422,
             detail=CALIBRATION_REQUIRED,
         )
-    assert body.volts is not None
-    book.last_volts = body.volts
-    return volts_to_liters(body.volts, book.calibration)
+    assert volts is not None
+    book.last_volts = volts
+    return volts_to_liters(volts, book.calibration)
 
 
 def accept_level(body: LevelIngest) -> IngestAck:
@@ -488,20 +504,26 @@ def accept_level(body: LevelIngest) -> IngestAck:
         book = _book(body.station_id, body.tank_id)
         if key in _seen:
             return _ack(book, message="duplicate", duplicate=True, entity_id=book.level_ids.get(key))
-        liters = _liters_from_level(body, book)
-        if book.opening_liters is None or (
-            book.opening_liters < 0 and book.receipts_liters == 0 and book.dispense_liters == 0
-        ):
-            book.opening_liters = liters
-        book.actual_remainder_liters = liters
-        book.last_measured_at = body.recorded_at
-        _recompute(book)
-        entity_id = uuid4()
-        _remember_seen(key)
-        if len(book.level_ids) >= 2000:
-            book.level_ids.clear()
-        book.level_ids[key] = entity_id
-        ack = _ack(book, message="level accepted", entity_id=entity_id)
+        volts = _rounded_volts(body)
+        if volts is not None and body.actual_remainder_liters is None and _same_volt_step(book, volts):
+            book.last_volts = volts
+            book.last_measured_at = body.recorded_at
+            ack = _ack(book, message="level unchanged")
+        else:
+            liters = _liters_from_level(body, book)
+            if book.opening_liters is None or (
+                book.opening_liters < 0 and book.receipts_liters == 0 and book.dispense_liters == 0
+            ):
+                book.opening_liters = liters
+            book.actual_remainder_liters = liters
+            book.last_measured_at = body.recorded_at
+            _recompute(book)
+            entity_id = uuid4()
+            _remember_seen(key)
+            if len(book.level_ids) >= 2000:
+                book.level_ids.clear()
+            book.level_ids[key] = entity_id
+            ack = _ack(book, message="level accepted", entity_id=entity_id)
     _commit()
     return ack
 

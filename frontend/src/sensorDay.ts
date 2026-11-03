@@ -2,16 +2,24 @@ import { useEffect, useState } from "react";
 import { api, type LevelReading } from "./api/client";
 
 export type SensorDay = {
-  delta: number | null;
-  hourlyIn: number[];
-  hourlyOut: number[];
+  /** Газ, который уже был на первом замере дня. Это не поставка. */
+  opening: number | null;
+  closing: number | null;
+  /** Поставок нет — приход не считаем из остатка, который уже был. */
+  inflow: number;
+  /** Падение уровня датчика. */
+  outflow: number;
+  /** Последний известный остаток в часе. До первого замера — пусто. */
+  hourlyLevel: (number | null)[];
   points: LevelReading[];
 };
 
 const EMPTY = (): SensorDay => ({
-  delta: null,
-  hourlyIn: Array(24).fill(0),
-  hourlyOut: Array(24).fill(0),
+  opening: null,
+  closing: null,
+  inflow: 0,
+  outflow: 0,
+  hourlyLevel: Array(24).fill(null),
   points: [],
 });
 
@@ -22,47 +30,69 @@ function startOfTodayIso() {
 }
 
 function dayOf(rows: LevelReading[]): SensorDay {
-  const hourlyIn = Array(24).fill(0);
-  const hourlyOut = Array(24).fill(0);
-  if (rows.length === 0) return { delta: null, hourlyIn, hourlyOut, points: [] };
-  const first = rows[0].remainder_liters;
-  const last = rows[rows.length - 1].remainder_liters;
-  for (const row of rows) {
-    if (row.delta_liters == null) continue;
+  const ordered = [...rows].sort(
+    (a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()
+  );
+  if (ordered.length === 0) return EMPTY();
+  const hourlyLevel: (number | null)[] = Array(24).fill(null);
+  let outflow = 0;
+  for (const row of ordered) {
     const hour = new Date(row.recorded_at).getHours();
-    if (hour < 0 || hour > 23) continue;
-    if (row.delta_liters >= 0) hourlyIn[hour] += row.delta_liters;
-    else hourlyOut[hour] += -row.delta_liters;
+    if (hour >= 0 && hour <= 23) hourlyLevel[hour] = row.remainder_liters;
+    if (row.delta_liters != null && row.delta_liters < 0) outflow += -row.delta_liters;
   }
-  return { delta: last - first, hourlyIn, hourlyOut, points: rows };
+  const now = new Date().getHours();
+  let carry: number | null = null;
+  for (let hour = 0; hour <= now; hour++) {
+    if (hourlyLevel[hour] != null) carry = hourlyLevel[hour];
+    else if (carry != null) hourlyLevel[hour] = carry;
+  }
+  return {
+    opening: ordered[0].remainder_liters,
+    closing: ordered[ordered.length - 1].remainder_liters,
+    inflow: 0,
+    outflow,
+    hourlyLevel,
+    points: ordered,
+  };
 }
 
 async function loadStation(stationId: string, since: string): Promise<SensorDay> {
   const devices = await api.tankDevices(stationId);
   if (devices.length === 0) return EMPTY();
+  const receipts = await Promise.all(
+    devices.map((device) =>
+      api
+        .tankIngestState(device.id)
+        .then((state) => state.receipts_liters || 0)
+        .catch(() => 0)
+    )
+  );
+  const inflow = receipts.reduce((sum, value) => sum + value, 0);
   const perTank = await Promise.all(
     devices.map((device) => api.tankLevels(stationId, device.id, since).catch(() => [] as LevelReading[]))
   );
-  const hourlyIn = Array(24).fill(0);
-  const hourlyOut = Array(24).fill(0);
-  let delta = 0;
+  const hourlyLevel: (number | null)[] = Array(24).fill(null);
+  let outflow = 0;
+  let opening = 0;
+  let closing = 0;
   let any = false;
   const points: LevelReading[] = [];
   perTank.forEach((rows, index) => {
     const part = dayOf(rows);
-    if (part.delta != null) {
-      delta += part.delta;
-      any = true;
-    }
-    part.hourlyIn.forEach((value, hour) => {
-      hourlyIn[hour] += value;
+    if (part.opening == null || part.closing == null) return;
+    any = true;
+    opening += part.opening;
+    closing += part.closing;
+    outflow += part.outflow;
+    part.hourlyLevel.forEach((value, hour) => {
+      if (value == null) return;
+      hourlyLevel[hour] = (hourlyLevel[hour] ?? 0) + value;
     });
-    part.hourlyOut.forEach((value, hour) => {
-      hourlyOut[hour] += value;
-    });
-    if (index === 0) points.push(...rows);
+    if (index === 0) points.push(...part.points);
   });
-  return { delta: any ? delta : null, hourlyIn, hourlyOut, points };
+  if (!any) return { ...EMPTY(), inflow };
+  return { opening, closing, inflow, outflow, hourlyLevel, points };
 }
 
 export function useSensorDay(stationIds: string[]) {
