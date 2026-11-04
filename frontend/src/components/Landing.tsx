@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { api, type PublicStation } from "../api/client";
 import { useAuth } from "../auth";
 import { dateTime, liters, REGIONS, stationRegion } from "../format";
+import { isLowFill, LOW_FILL_PERCENT, usePublicLevels } from "../liveLevels";
 import Logo from "./Logo";
 import MapView from "./MapView";
 import { useTheme } from "../theme";
@@ -18,9 +18,7 @@ function jump(id: string) {
 export default function Landing({ onEnter }: { onEnter: () => void }) {
   const { theme, toggle } = useTheme();
   const { session, login, logout } = useAuth();
-  const [apiLevels, setApiLevels] = useState<PublicStation[]>([]);
-  const [levelsLoading, setLevelsLoading] = useState(true);
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(new Date());
+  const { stations: levels, byCode, updatedAt, loading: levelsLoading } = usePublicLevels();
   const [authOpen, setAuthOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -38,32 +36,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [authOpen]);
-
-  useEffect(() => {
-    let live = true;
-    async function load() {
-      try {
-        const rows = await api.publicLevels();
-        if (!live) return;
-        setApiLevels(rows);
-        setUpdatedAt(new Date());
-      } catch {
-        // Если бэкенд недоступен — используем только публичные остатки из публичного среза АГЗС
-        if (!live) return;
-        setUpdatedAt(new Date());
-      } finally {
-        if (live) setLevelsLoading(false);
-      }
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 15000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  const levels = useMemo<PublicStation[]>(() => apiLevels, [apiLevels]);
 
   const publicMapPoints = useMemo<MapPoint[]>(
     () =>
@@ -93,24 +65,17 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
         return false;
       }
       if (availFilter !== "all") {
-        const avgFill =
-          station.tanks.length > 0
-            ? station.tanks.reduce((acc, t) => acc + (t.fill_percent ?? 0), 0) / station.tanks.length
-            : 0;
-        if (availFilter === "plenty" && avgFill <= 30) return false;
-        if (availFilter === "low" && avgFill > 30) return false;
+        const fill = byCode.get(station.code)?.fill ?? null;
+        if (availFilter === "plenty" && (fill == null || isLowFill(fill))) return false;
+        if (availFilter === "low" && !isLowFill(fill)) return false;
       }
       return true;
     });
-  }, [levels, stationQuery, regionFilter, availFilter]);
+  }, [levels, byCode, stationQuery, regionFilter, availFilter]);
 
   const totalPublicLiters = useMemo(
-    () =>
-      levels.reduce(
-        (sum, st) => sum + st.tanks.reduce((s, t) => s + (t.remainder_liters ?? 0), 0),
-        0
-      ),
-    [levels]
+    () => levels.reduce((sum, station) => sum + (byCode.get(station.code)?.remainder ?? 0), 0),
+    [levels, byCode]
   );
 
   async function onSubmit(event: FormEvent) {
@@ -229,8 +194,8 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                 onChange={(e) => setAvailFilter(e.target.value as "all" | "plenty" | "low")}
               >
                 <option value="all">Все станции ({levels.length})</option>
-                <option value="plenty">Достаточно газа (&gt; 30%)</option>
-                <option value="low">Мало газа (≤ 30%)</option>
+                <option value="plenty">Достаточно газа (≥ {LOW_FILL_PERCENT}%)</option>
+                <option value="low">Мало газа (&lt; {LOW_FILL_PERCENT}%)</option>
               </select>
             </div>
           </div>
@@ -282,7 +247,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                       const measured = tank.measured_at
                         ? `Замер ${dateTime(tank.measured_at)}`
                         : "Замера ещё нет";
-                      const lowGas = pct > 0 && pct <= 25;
+                      const lowGas = isLowFill(tank.fill_percent);
                       return (
                         <div
                           className={`level-tank${online ? "" : " level-tank-stale"}`}

@@ -4,6 +4,7 @@ import App from "./App";
 import { AuthProvider } from "./auth";
 import { CatalogProvider } from "./catalog";
 import { ToastProvider } from "./components/Toast";
+import { LevelsProvider } from "./liveLevels";
 import { ThemeProvider } from "./theme";
 import "./styles/variables.css";
 
@@ -13,7 +14,9 @@ createRoot(document.getElementById("root")!).render(
       <ToastProvider>
         <AuthProvider>
           <CatalogProvider>
-            <App />
+            <LevelsProvider>
+              <App />
+            </LevelsProvider>
           </CatalogProvider>
         </AuthProvider>
       </ToastProvider>

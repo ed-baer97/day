@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { api, type LevelReading } from "./api/client";
 
 export type SensorDay = {
@@ -7,21 +6,23 @@ export type SensorDay = {
   closing: number | null;
   /** Поставок нет — приход не считаем из остатка, который уже был. */
   inflow: number;
-  /** Падение уровня датчика. */
+  /** На сколько текущий остаток ниже первого замера дня. Скачки датчика туда-обратно не складываются. */
   outflow: number;
-  /** Последний известный остаток в часе. До первого замера — пусто. */
+  /** Последний известный остаток в часе. Текущий час — тот же остаток, что и на остальных экранах. */
   hourlyLevel: (number | null)[];
   points: LevelReading[];
 };
 
-const EMPTY = (): SensorDay => ({
-  opening: null,
-  closing: null,
-  inflow: 0,
-  outflow: 0,
-  hourlyLevel: Array(24).fill(null),
-  points: [],
-});
+export function emptySensorDay(): SensorDay {
+  return {
+    opening: null,
+    closing: null,
+    inflow: 0,
+    outflow: 0,
+    hourlyLevel: Array(24).fill(null),
+    points: [],
+  };
+}
 
 function startOfTodayIso() {
   const stamp = new Date();
@@ -29,27 +30,28 @@ function startOfTodayIso() {
   return stamp.toISOString();
 }
 
-function dayOf(rows: LevelReading[]): SensorDay {
+export function sensorDayFromReadings(rows: LevelReading[], now = new Date()): SensorDay {
   const ordered = [...rows].sort(
     (a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()
   );
-  if (ordered.length === 0) return EMPTY();
+  if (ordered.length === 0) return emptySensorDay();
   const hourlyLevel: (number | null)[] = Array(24).fill(null);
-  let outflow = 0;
   for (const row of ordered) {
     const hour = new Date(row.recorded_at).getHours();
     if (hour >= 0 && hour <= 23) hourlyLevel[hour] = row.remainder_liters;
-    if (row.delta_liters != null && row.delta_liters < 0) outflow += -row.delta_liters;
   }
-  const now = new Date().getHours();
+  const openingLiters = ordered[0].remainder_liters;
+  const closingLiters = ordered[ordered.length - 1].remainder_liters;
+  const outflow = Math.max(0, openingLiters - closingLiters);
+  const nowHour = now.getHours();
   let carry: number | null = null;
-  for (let hour = 0; hour <= now; hour++) {
+  for (let hour = 0; hour <= nowHour; hour++) {
     if (hourlyLevel[hour] != null) carry = hourlyLevel[hour];
     else if (carry != null) hourlyLevel[hour] = carry;
   }
   return {
-    opening: ordered[0].remainder_liters,
-    closing: ordered[ordered.length - 1].remainder_liters,
+    opening: openingLiters,
+    closing: closingLiters,
     inflow: 0,
     outflow,
     hourlyLevel,
@@ -57,9 +59,24 @@ function dayOf(rows: LevelReading[]): SensorDay {
   };
 }
 
-async function loadStation(stationId: string, since: string): Promise<SensorDay> {
+/** Текущий час и расход берутся из того же остатка, что карточки и карта. */
+export function withLiveRemainder(day: SensorDay, remainder: number | null, hour = new Date().getHours()): SensorDay {
+  if (remainder == null || hour < 0 || hour > 23) return day;
+  const hourlyLevel = day.hourlyLevel.slice();
+  hourlyLevel[hour] = remainder;
+  const outflow = day.opening == null ? day.outflow : Math.max(0, day.opening - remainder);
+  return {
+    ...day,
+    closing: remainder,
+    outflow,
+    hourlyLevel,
+  };
+}
+
+export async function loadStationDay(stationId: string): Promise<SensorDay> {
+  const since = startOfTodayIso();
   const devices = await api.tankDevices(stationId);
-  if (devices.length === 0) return EMPTY();
+  if (devices.length === 0) return emptySensorDay();
   const receipts = await Promise.all(
     devices.map((device) =>
       api
@@ -78,8 +95,8 @@ async function loadStation(stationId: string, since: string): Promise<SensorDay>
   let closing = 0;
   let any = false;
   const points: LevelReading[] = [];
-  perTank.forEach((rows, index) => {
-    const part = dayOf(rows);
+  perTank.forEach((rows) => {
+    const part = sensorDayFromReadings(rows);
     if (part.opening == null || part.closing == null) return;
     any = true;
     opening += part.opening;
@@ -89,46 +106,10 @@ async function loadStation(stationId: string, since: string): Promise<SensorDay>
       if (value == null) return;
       hourlyLevel[hour] = (hourlyLevel[hour] ?? 0) + value;
     });
-    if (index === 0) points.push(...part.points);
+    points.push(...part.points);
   });
-  if (!any) return { ...EMPTY(), inflow };
+  if (!any) return { ...emptySensorDay(), inflow };
   return { opening, closing, inflow, outflow, hourlyLevel, points };
-}
-
-export function useSensorDay(stationIds: string[]) {
-  const [byStation, setByStation] = useState<Map<string, SensorDay>>(new Map());
-  const key = [...stationIds].sort().join("|");
-
-  useEffect(() => {
-    const ids = key ? key.split("|") : [];
-    if (ids.length === 0) {
-      setByStation(new Map());
-      return;
-    }
-    let live = true;
-    async function load() {
-      const since = startOfTodayIso();
-      const pairs = await Promise.all(
-        ids.map(async (id) => {
-          try {
-            return [id, await loadStation(id, since)] as const;
-          } catch {
-            return [id, EMPTY()] as const;
-          }
-        })
-      );
-      if (!live) return;
-      setByStation(new Map(pairs));
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 15000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, [key]);
-
-  return byStation;
 }
 
 export function hoursToday() {

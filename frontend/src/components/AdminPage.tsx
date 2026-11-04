@@ -3,7 +3,7 @@ import { type CatalogStation, type CatalogTruck, type StationDraft, type TruckDr
 import { useAuth } from "../auth";
 import { messageOf, useCatalog } from "../catalog";
 import { liters, REGIONS, stationRegion } from "../format";
-import { SensorStatus, usePublicLevels } from "../liveLevels";
+import { isLowFill, LOW_FILL_PERCENT, SensorStatus, usePublicLevels } from "../liveLevels";
 import LevelChangesToday from "./LevelChangesToday";
 import TankDeviceRows from "./TankDeviceRows";
 import { useToast } from "./Toast";
@@ -97,7 +97,7 @@ export default function AdminPage({
       if (stFilter === "active" && !item.row.is_active) return false;
       if (stFilter === "inactive" && item.row.is_active) return false;
       if (stFilter === "issue" && !(item.live && item.live.tanks.length > 0 && !item.live.tanks.some((tank) => tank.online))) return false;
-      if (stFilter === "low" && (item.fill == null || item.fill >= 25)) return false;
+      if (stFilter === "low" && !isLowFill(item.fill)) return false;
       return true;
     });
   }, [enrichedCatalogStations, stQuery, stRegion, stFilter]);
@@ -224,7 +224,7 @@ export default function AdminPage({
               <option value="active">Работают</option>
               <option value="inactive">Выключены</option>
               <option value="issue">Нет связи с датчиком</option>
-              <option value="low">Мало газа (&lt; 25%)</option>
+              <option value="low">Мало газа (&lt; {LOW_FILL_PERCENT}%)</option>
             </select>
             <select
               className="st-select"
@@ -288,7 +288,7 @@ export default function AdminPage({
                           <div className="dash-muted">{row.address || "—"}</div>
                         </td>
                         <td>
-                          <strong className={fill != null && fill < 25 ? "text-danger" : ""}>
+                          <strong className={isLowFill(fill) ? "text-danger" : ""}>
                             {fill == null ? "—" : `${fill}%`}
                           </strong>
                           <div className="dash-muted">

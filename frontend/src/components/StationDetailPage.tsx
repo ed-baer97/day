@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useCatalog } from "../catalog";
-import { dateTime, liters, stationRegion, timeHM } from "../format";
-import { SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
-import { hoursToday, useSensorDay } from "../sensorDay";
+import { dateTime, liters, stationRegion } from "../format";
+import { isLowFill, SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels, useSensorDay } from "../liveLevels";
+import { hoursToday } from "../sensorDay";
 import { LineChart } from "./Charts";
 import TankDeviceRows from "./TankDeviceRows";
 
@@ -46,9 +46,9 @@ export default function StationDetailPage({
   const fillPct = hasTanks && live?.fill != null ? Math.max(0, Math.min(100, live.fill)) : 0;
   const prev = index > 0 ? stations[index - 1] : stations[stations.length - 1];
   const next = index >= 0 && index < stations.length - 1 ? stations[index + 1] : stations[0];
-  const points = series?.points ?? [];
   const levelHours = hoursToday().filter((hour) => series?.hourlyLevel[hour] != null);
   const levelValues = levelHours.map((hour) => series?.hourlyLevel[hour] ?? 0);
+  const hasDay = series?.opening != null;
 
   return (
     <div className="dash">
@@ -103,7 +103,7 @@ export default function StationDetailPage({
         <div className="st-row-badges">
           {hasTanks && live ? <SensorStatus level={live} /> : <span className="badge warn">датчик не подключён</span>}
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
-          {series && series.points.length > 0 ? <span className="badge">расход {liters(series.outflow)}</span> : null}
+          {hasDay && series ? <span className="badge">расход {liters(series.outflow)}</span> : null}
         </div>
       </header>
 
@@ -130,14 +130,9 @@ export default function StationDetailPage({
               Приход {liters(series?.inflow ?? 0)}
               {(series?.inflow ?? 0) > 0 ? " — поставка." : ": поставки не было."} На линии газ, который уже был в
               резервуаре.
-              {series && series.points.length > 0 ? ` Расход ${liters(series.outflow)}.` : ""}
+              {hasDay && series ? ` Расход ${liters(series.outflow)}.` : ""}
             </p>
-            {points.length > 1 ? (
-              <LineChart
-                labels={points.map((point) => timeHM(point.recorded_at))}
-                series={[{ name: "Остаток", color: "var(--sea)", values: points.map((point) => point.remainder_liters) }]}
-              />
-            ) : levelHours.length > 1 ? (
+            {levelHours.length > 1 ? (
               <LineChart
                 labels={levelHours.map((hour) => String(hour).padStart(2, "0"))}
                 series={[{ name: "Остаток", color: "var(--sea)", values: levelValues }]}
@@ -157,7 +152,7 @@ export default function StationDetailPage({
                 <i
                   style={{
                     height: `${fillPct}%`,
-                    background: fillPct < 25 ? "var(--coral)" : "linear-gradient(0deg, var(--sea-2, var(--sea)), var(--sea))",
+                    background: isLowFill(hasTanks ? live?.fill : null) ? "var(--coral)" : "linear-gradient(0deg, var(--sea-2, var(--sea)), var(--sea))",
                   }}
                 />
               </div>

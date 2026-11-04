@@ -2,8 +2,8 @@ import { useMemo, useState } from "react";
 import type { CatalogStation } from "../api/client";
 import { useCatalog } from "../catalog";
 import { liters, REGIONS, shortStationName, stationRegion } from "../format";
-import { SensorStatus, usePublicLevels, type LiveLevel } from "../liveLevels";
-import { hoursToday, useSensorDay } from "../sensorDay";
+import { isLowFill, LOW_FILL_PERCENT, SensorStatus, usePublicLevels, useSensorDay, type LiveLevel } from "../liveLevels";
+import { hoursToday } from "../sensorDay";
 import { BarChart, LineChart } from "./Charts";
 import StationDetailPage from "./StationDetailPage";
 
@@ -77,7 +77,7 @@ function Overview({
       const online = !!live && live.tanks.some((tank) => tank.online === true && tank.remainder_liters != null);
       const spent = day.get(station.id)?.outflow ?? null;
       const hasJournal = (day.get(station.id)?.points.length ?? 0) > 0;
-      const attention = (!hasTanks ? 2 : !online ? 3 : 0) + (fill != null && fill < 25 ? 2 : 0);
+      const attention = (!hasTanks ? 2 : !online ? 3 : 0) + (isLowFill(fill) ? 2 : 0);
       return {
         station,
         live,
@@ -106,7 +106,7 @@ function Overview({
       if (!row.hasTanks) noSensor++;
       else if (row.online) online++;
       else offline++;
-      if (row.fill != null && row.fill < 25) low++;
+      if (isLowFill(row.fill)) low++;
       if (row.gas != null) litersSum += row.gas;
       if (row.spent != null) {
         spent += row.spent;
@@ -127,7 +127,7 @@ function Overview({
         if (!hit) return false;
       }
       if (regionFilter !== "all" && row.region !== regionFilter) return false;
-      if (statusFilter === "low" && (row.fill == null || row.fill >= 25)) return false;
+      if (statusFilter === "low" && !isLowFill(row.fill)) return false;
       if (statusFilter === "offline" && !(row.hasTanks && !row.online)) return false;
       if (statusFilter === "no_sensor" && row.hasTanks) return false;
       if (statusFilter === "ok" && !row.online) return false;
@@ -278,7 +278,7 @@ function Overview({
         <div className="dash-kpi">
           <span>Расход сегодня</span>
           <strong>{totals.spentKnown ? liters(totals.spent) : "—"}</strong>
-          <em>только падение уровня датчика</em>
+          <em>на сколько уровень ниже первого замера сегодня</em>
         </div>
       </div>
 
@@ -420,7 +420,7 @@ function Overview({
               Все АГЗС ({totals.all})
             </button>
             <button type="button" className={`filter-pill${statusFilter === "low" ? " active" : ""}`} onClick={() => pickFilter("low")}>
-              Мало газа &lt; 25% ({totals.low})
+              Мало газа &lt; {LOW_FILL_PERCENT}% ({totals.low})
             </button>
             <button type="button" className={`filter-pill${statusFilter === "offline" ? " active" : ""}`} onClick={() => pickFilter("offline")}>
               Нет связи ({totals.offline})
@@ -483,7 +483,7 @@ function Overview({
                       {row.station.code} · {row.station.address || "адрес не указан"}
                     </span>
                   </div>
-                  <strong className={`st-grid-pct${row.fill != null && row.fill < 25 ? " text-danger" : ""}`}>
+                  <strong className={`st-grid-pct${isLowFill(row.fill) ? " text-danger" : ""}`}>
                     {row.fill == null ? "—" : `${row.fill}%`}
                   </strong>
                 </div>
@@ -491,7 +491,7 @@ function Overview({
                   <i
                     style={{
                       width: `${row.fill ?? 0}%`,
-                      background: row.fill != null && row.fill < 25 ? "var(--coral)" : "var(--sea)",
+                      background: isLowFill(row.fill) ? "var(--coral)" : "var(--sea)",
                     }}
                   />
                 </div>
@@ -626,13 +626,13 @@ function FillCell({
         <i
           style={{
             width: `${fill ?? 0}%`,
-            background: fill != null && fill < 25 ? "var(--coral)" : "var(--sea)",
+            background: isLowFill(fill) ? "var(--coral)" : "var(--sea)",
           }}
         />
       </div>
       <span>
         {gas == null ? "замера нет" : `${liters(gas)} из ${liters(cap)}`} ·{" "}
-        <strong className={fill != null && fill < 25 ? "text-danger" : ""}>{fill == null ? "—" : `${fill}%`}</strong>
+        <strong className={isLowFill(fill) ? "text-danger" : ""}>{fill == null ? "—" : `${fill}%`}</strong>
       </span>
       {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
     </div>

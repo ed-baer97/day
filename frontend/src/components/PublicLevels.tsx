@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, type PublicStation } from "../api/client";
 import { dateTime, liters } from "../format";
+import { usePublicLevels } from "../liveLevels";
 import Logo from "./Logo";
 
 function percentLabel(value: number) {
@@ -16,36 +15,7 @@ export default function PublicLevels({
   onToggleTheme: () => void;
   onOpenApp: () => void;
 }) {
-  const [stations, setStations] = useState<PublicStation[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let live = true;
-
-    async function load() {
-      try {
-        const rows = await api.publicLevels();
-        if (!live) return;
-        setStations(rows);
-        setUpdatedAt(new Date());
-        setError(null);
-      } catch {
-        if (!live) return;
-        setError("Не удалось обновить уровни");
-      } finally {
-        if (live) setLoading(false);
-      }
-    }
-
-    void load();
-    const timer = window.setInterval(() => void load(), 15000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, []);
+  const { stations, updatedAt, loading, error } = usePublicLevels();
 
   return (
     <div className="public">

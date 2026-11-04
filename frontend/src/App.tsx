@@ -8,7 +8,7 @@ import Logo from "./components/Logo";
 import MapPopup from "./components/MapPopup";
 import MapView from "./components/MapView";
 import { liters, phaseLabel, REGIONS, stationRegion } from "./format";
-import { SensorStatus, sensorLabel, usePublicLevels } from "./liveLevels";
+import { isLowFill, SensorStatus, sensorLabel, usePublicLevels } from "./liveLevels";
 import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
 
@@ -109,7 +109,7 @@ export default function App() {
       const live = byCode.get(row.code);
       const fill = live && live.tanks.length > 0 && live.fill != null ? Math.round(live.fill) : null;
       const online = !!live?.tanks.some((tank) => tank.online && tank.remainder_liters != null);
-      if (mapStatus === "low" && (fill == null || fill >= 25)) return false;
+      if (mapStatus === "low" && !isLowFill(fill)) return false;
       if (mapStatus === "offline" && online) return false;
       return true;
     });
