@@ -355,4 +355,18 @@ def test_level_is_stored_only_when_percent_changes():
     assert same_percent.json()["actual_remainder_liters"] == pytest.approx(6600)
 
     state = client.get(f"/api/v1/ingest/tanks/{TANK}")
-    assert state.json()["last_volts"] == pytest.approx(3.20)
+    assert state.json()["last_volts"] == pytest.approx(3.19)
+
+    recorded = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volts": 3.21,
+            "recorded_at": "2026-10-04T11:04:00Z",
+            "source_event_id": "noise-5",
+        },
+    )
+    assert recorded.status_code == 200
+    assert recorded.json()["message"] == "level accepted"
+    assert client.get(f"/api/v1/ingest/tanks/{TANK}").json()["last_volts"] == pytest.approx(3.21)

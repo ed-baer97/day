@@ -2,9 +2,10 @@ import { useMemo, useState } from "react";
 import type { CatalogStation } from "../api/client";
 import { useCatalog } from "../catalog";
 import { liters, REGIONS, shortStationName, stationRegion } from "../format";
-import { isLowFill, LOW_FILL_PERCENT, SensorStatus, usePublicLevels, useSensorDay, type LiveLevel } from "../liveLevels";
-import { hoursToday } from "../sensorDay";
+import { isLowFill, LOW_FILL_PERCENT, SensorStatus, usePublicLevels, useSensorDay, useViewPeriod, type LiveLevel } from "../liveLevels";
+import { chartOf } from "../sensorDay";
 import { BarChart, LineChart } from "./Charts";
+import PeriodSwitch from "./PeriodSwitch";
 import StationDetailPage from "./StationDetailPage";
 
 type StatusFilter = "all" | "low" | "offline" | "no_sensor" | "ok";
@@ -54,6 +55,7 @@ function Overview({
 }) {
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
+  const { range, historyLoading } = useViewPeriod();
   const stations = useMemo(
     () => catalog.stations.filter((row) => row.is_active),
     [catalog.stations]
@@ -202,30 +204,27 @@ function Overview({
   }, [chartMode, rows]);
 
   const levelChart = useMemo(() => {
-    const hours = hoursToday();
-    const values = hours.map((hour) => {
+    const summed = range.labels.map((_, index) => {
       let sum = 0;
       let known = false;
       for (const row of rows) {
-        const level = day.get(row.station.id)?.hourlyLevel[hour];
+        const level = day.get(row.station.id)?.series[index];
         if (level == null) continue;
         sum += level;
         known = true;
       }
       return known ? sum : null;
     });
-    const start = values.findIndex((value) => value != null);
-    if (start >= 0) {
-      return {
-        labels: hours.slice(start).map((hour) => String(hour).padStart(2, "0")),
-        values: values.slice(start).map((value) => value ?? 0),
-      };
-    }
-    const now = new Date().getHours();
+    const chart = chartOf(summed, range.labels);
+    if (chart.labels.length > 0) return chart;
+    if (!range.includesNow || !rows.some((row) => row.gas != null)) return chart;
+    const nowIndex = range.indexAt(Date.now());
     const gas = rows.reduce((sum, row) => sum + (row.gas ?? 0), 0);
-    if (!rows.some((row) => row.gas != null)) return { labels: [] as string[], values: [] as number[] };
-    return { labels: [String(now).padStart(2, "0")], values: [gas] };
-  }, [rows, day]);
+    return {
+      labels: [range.labels[nowIndex] ?? range.labels[range.labels.length - 1] ?? "сейчас"],
+      values: [gas],
+    };
+  }, [rows, day, range]);
 
   function pickFilter(next: StatusFilter) {
     setStatusFilter(next);
@@ -239,6 +238,7 @@ function Overview({
           <p className="kicker">Внутренний диспетчерский контур</p>
           <h2>Контроль сети АГЗС по датчикам ({totals.all})</h2>
         </div>
+        <PeriodSwitch />
       </header>
 
       <div className="dash-kpis">
@@ -271,14 +271,20 @@ function Overview({
           <em>резервуара в кабинете нет</em>
         </div>
         <div className="dash-kpi">
-          <span>Приход сегодня</span>
-          <strong>{liters(totals.inflow)}</strong>
-          <em>{totals.inflow > 0 ? "принятые поставки" : "поставок не было, газ уже был в резервуаре"}</em>
+          <span>{range.inflowTitle}</span>
+          <strong>{range.countsReceipts ? liters(totals.inflow) : "—"}</strong>
+          <em>
+            {range.countsReceipts
+              ? totals.inflow > 0
+                ? "принятые поставки"
+                : "поставок не было, газ уже был в резервуаре"
+              : "поставки в книге без даты, за этот срок не считаем"}
+          </em>
         </div>
         <div className="dash-kpi">
-          <span>Расход сегодня</span>
+          <span>{range.expenseTitle}</span>
           <strong>{totals.spentKnown ? liters(totals.spent) : "—"}</strong>
-          <em>на сколько уровень ниже первого замера сегодня</em>
+          <em>на сколько уровень ниже первого замера за срок</em>
         </div>
       </div>
 
@@ -309,14 +315,20 @@ function Overview({
           )}
         </section>
         <section className="dash-card">
-          <h3>Остаток в резервуаре · сегодня</h3>
+          <h3>{range.chartTitle}</h3>
           <p className="dash-muted">
-            Приход {liters(totals.inflow)}
-            {totals.inflow > 0 ? " — это поставки." : ": поставки не было."} Линия — газ, который уже был, по замерам
-            датчика.
+            {range.countsReceipts ? (
+              <>
+                Приход {liters(totals.inflow)}
+                {totals.inflow > 0 ? " — это поставки." : ": поставки не было."}{" "}
+              </>
+            ) : null}
+            Линия — газ, который уже был, по замерам датчика.
           </p>
-          {levelChart.labels.length === 0 ? (
-            <p className="dash-muted">Замера датчика ещё нет.</p>
+          {historyLoading && levelChart.labels.length === 0 ? (
+            <p className="dash-muted">Загрузка замеров…</p>
+          ) : levelChart.labels.length === 0 ? (
+            <p className="dash-muted">Замера датчика за этот срок ещё нет.</p>
           ) : levelChart.labels.length === 1 ? (
             <BarChart
               labels={levelChart.labels}
@@ -394,7 +406,7 @@ function Overview({
             >
               <option value="attention">Сначала без связи и мало газа</option>
               <option value="fill_asc">По остатку газа (сначала мало)</option>
-              <option value="change_desc">По расходу за сегодня</option>
+              <option value="change_desc">По расходу за выбранный срок</option>
               <option value="name_asc">По алфавиту (А–Я)</option>
             </select>
             {viewMode !== "regions" ? (
@@ -465,6 +477,7 @@ function Overview({
               <StationListRow
                 key={row.station.id}
                 {...row}
+                spentCaption={range.spentCaption}
                 onOpen={() => onOpenStation(row.station.id)}
                 onMap={onOpenMapStation ? () => onOpenMapStation(row.station.id) : undefined}
                 onAdmin={onOpenAdminStation ? () => onOpenAdminStation(row.station.id) : undefined}
@@ -503,7 +516,7 @@ function Overview({
                     </strong>
                   </div>
                   <div>
-                    <span>Расход сегодня</span>
+                    <span>{range.spentCaption}</span>
                     <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
                   </div>
                   <div>
@@ -544,7 +557,7 @@ function Overview({
                         <FillCell fill={row.fill} gas={row.gas} cap={row.cap} live={row.hasTanks ? row.live : null} />
                         <div className="st-row-num">
                           <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
-                          <span>расход сегодня</span>
+                          <span>{range.spentCaption}</span>
                         </div>
                         <div className="st-row-num">
                           <strong>{row.live?.tanks.length ?? 0}</strong>
@@ -648,6 +661,7 @@ function StationListRow({
   live,
   hasTanks,
   spent,
+  spentCaption,
   onOpen,
   onMap,
   onAdmin,
@@ -660,6 +674,7 @@ function StationListRow({
   live: LiveLevel | null;
   hasTanks: boolean;
   spent: number | null;
+  spentCaption: string;
   onOpen: () => void;
   onMap?: () => void;
   onAdmin?: () => void;
@@ -676,7 +691,7 @@ function StationListRow({
         <FillCell fill={fill} gas={gas} cap={cap} live={hasTanks ? live : null} />
         <div className="st-row-num">
           <strong>{spent == null ? "—" : liters(spent)}</strong>
-          <span>расход сегодня</span>
+          <span>{spentCaption}</span>
         </div>
         <div className="st-row-num">
           <strong>{live?.tanks.length ?? 0}</strong>

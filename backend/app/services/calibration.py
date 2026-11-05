@@ -36,8 +36,18 @@ def round_percent(percent: float) -> int:
     return int(Decimal(str(percent)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-# Если % нет — мелкий сдвиг вольт считаем шумом (не новой строкой журнала).
-LEVEL_NOISE_VOLTS = 0.02
+# Шум датчика 0,01 В. Новая строка в базе — только после сдвига на 0,02 В от последнего записанного замера.
+LEVEL_STEP_VOLTS = 0.02
+
+
+def _millivolts(volts: float) -> int:
+    return int((Decimal(str(volts)) * 1000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def level_volts_changed(previous: float, current: float, step: float = LEVEL_STEP_VOLTS) -> bool:
+    """True, когда напряжение ушло от последнего записанного замера не меньше чем на step."""
+
+    return abs(_millivolts(current) - _millivolts(previous)) >= _millivolts(step)
 
 
 def same_published_level(
@@ -45,14 +55,13 @@ def same_published_level(
     volts: float | None,
     previous_percent: float | None,
     percent: float | None,
-    tolerance: float = LEVEL_NOISE_VOLTS,
 ) -> bool:
-    """Та же опубликованная ступень: сначала целый %, иначе мелкий сдвиг вольт."""
+    """Та же ступень журнала: сдвиг меньше 0,02 В — шум, не новая строка."""
 
+    if volts is not None and previous_volts is not None:
+        return not level_volts_changed(previous_volts, volts)
     if percent is not None and previous_percent is not None:
         return round_percent(percent) == round_percent(previous_percent)
-    if volts is not None and previous_volts is not None:
-        return abs(volts - previous_volts) <= tolerance + 1e-9
     return False
 
 

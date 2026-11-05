@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useCatalog } from "../catalog";
 import { dateTime, liters, stationRegion } from "../format";
-import { isLowFill, SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels, useSensorDay } from "../liveLevels";
-import { hoursToday } from "../sensorDay";
-import { LineChart } from "./Charts";
+import { isLowFill, SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels, useSensorDay, useViewPeriod } from "../liveLevels";
+import { chartOf } from "../sensorDay";
+import { BarChart, LineChart } from "./Charts";
+import PeriodSwitch from "./PeriodSwitch";
 import TankDeviceRows from "./TankDeviceRows";
 
 type DetailTab = "overview" | "tanks" | "pumps" | "history";
@@ -23,6 +24,7 @@ export default function StationDetailPage({
 }) {
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
+  const { range, historyLoading } = useViewPeriod();
   const day = useSensorDay([stationId]);
   const [tab, setTab] = useState<DetailTab>("overview");
   const stations = catalog.stations.filter((row) => row.is_active);
@@ -46,8 +48,7 @@ export default function StationDetailPage({
   const fillPct = hasTanks && live?.fill != null ? Math.max(0, Math.min(100, live.fill)) : 0;
   const prev = index > 0 ? stations[index - 1] : stations[stations.length - 1];
   const next = index >= 0 && index < stations.length - 1 ? stations[index + 1] : stations[0];
-  const levelHours = hoursToday().filter((hour) => series?.hourlyLevel[hour] != null);
-  const levelValues = levelHours.map((hour) => series?.hourlyLevel[hour] ?? 0);
+  const levelChart = chartOf(series?.series ?? [], series?.labels ?? range.labels);
   const hasDay = series?.opening != null;
 
   return (
@@ -79,6 +80,7 @@ export default function StationDetailPage({
           </div>
         ) : null}
         <div className="st-detail-actions">
+          <PeriodSwitch />
           {onOpenMap ? (
             <button type="button" className="btn secondary small" onClick={() => onOpenMap(station.id)}>
               Показать на карте
@@ -125,23 +127,36 @@ export default function StationDetailPage({
       {tab === "overview" ? (
         <div className="st-grid">
           <section className="dash-card">
-            <h3>Остаток датчика сегодня</h3>
+            <h3>{range.chartTitle}</h3>
             <p className="dash-muted">
-              Приход {liters(series?.inflow ?? 0)}
-              {(series?.inflow ?? 0) > 0 ? " — поставка." : ": поставки не было."} На линии газ, который уже был в
-              резервуаре.
+              {range.countsReceipts ? (
+                <>
+                  Приход {liters(series?.inflow ?? 0)}
+                  {(series?.inflow ?? 0) > 0 ? " — поставка." : ": поставки не было."}{" "}
+                </>
+              ) : (
+                "Поставки в книге без даты, за этот срок не считаем. "
+              )}
+              На линии газ, который уже был в резервуаре.
               {hasDay && series ? ` Расход ${liters(series.outflow)}.` : ""}
             </p>
-            {levelHours.length > 1 ? (
+            {historyLoading && levelChart.labels.length === 0 ? (
+              <p className="dash-muted">Загрузка замеров…</p>
+            ) : levelChart.labels.length === 1 ? (
+              <BarChart
+                labels={levelChart.labels}
+                series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
+              />
+            ) : levelChart.labels.length > 1 ? (
               <LineChart
-                labels={levelHours.map((hour) => String(hour).padStart(2, "0"))}
-                series={[{ name: "Остаток", color: "var(--sea)", values: levelValues }]}
+                labels={levelChart.labels}
+                series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
               />
             ) : (
               <p className="dash-muted">
-                {hasTanks && live?.remainder != null
-                  ? `Сейчас в резервуаре ${liters(live.remainder)}. Смен уровня за сегодня не было.`
-                  : "Замера датчика ещё нет."}
+                {range.includesNow && hasTanks && live?.remainder != null
+                  ? `Сейчас в резервуаре ${liters(live.remainder)}. Смен уровня за этот срок не было.`
+                  : "Замера датчика за этот срок ещё нет."}
               </p>
             )}
           </section>

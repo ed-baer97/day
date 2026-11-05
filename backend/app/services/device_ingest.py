@@ -28,7 +28,7 @@ from app.schemas.ingest import (
     TankIngestState,
 )
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, round_percent, volts_to_percent
+from app.services.calibration import LevelCalibration, level_volts_changed, round_percent, volts_to_percent
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
 _MAX_SEEN = 10_000
@@ -270,13 +270,21 @@ def update_tank_device(
     return device
 
 
+def _assert_device_scope(
+    device: TankDevice,
+    station_id: UUID | None,
+    tank_id: UUID | None,
+) -> None:
+    if station_id is not None and station_id != device.station_id:
+        raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
+    if tank_id is not None and tank_id != device.tank_id:
+        raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+
+
 def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
     device = tank_by_token(token)
     if device is not None:
-        if body.station_id is not None and body.station_id != device.station_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
-        if body.tank_id is not None and body.tank_id != device.tank_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(
@@ -289,10 +297,7 @@ def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
 def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
     device = tank_by_token(token)
     if device is not None:
-        if body.station_id is not None and body.station_id != device.station_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
-        if body.tank_id is not None and body.tank_id != device.tank_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(
             update={
                 "station_id": device.station_id,
@@ -313,10 +318,7 @@ def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
 def bind_dispense(body: DispenseIngest, token: str | None) -> DispenseIngest:
     device = tank_by_token(token)
     if device is not None:
-        if body.station_id != device.station_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
-        if body.tank_id is not None and body.tank_id != device.tank_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
     return body
 
@@ -324,10 +326,7 @@ def bind_dispense(body: DispenseIngest, token: str | None) -> DispenseIngest:
 def bind_receipt(body: ReceiptIngest, token: str | None) -> ReceiptIngest:
     device = tank_by_token(token)
     if device is not None:
-        if body.station_id != device.station_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другой заправке")
-        if body.tank_id != device.tank_id:
-            raise HTTPException(status_code=403, detail="токен принадлежит другому резервуару")
+        _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
     return body
 
@@ -462,15 +461,6 @@ def _sensor_percent(book: TankBook, volts: float) -> int:
     return round_percent(volts_to_percent(volts, book.calibration))
 
 
-def _stored_percent(book: TankBook) -> int | None:
-    if book.calibration is None or book.actual_remainder_liters is None:
-        return None
-    capacity = book.calibration.capacity_liters
-    if capacity <= 0:
-        return None
-    return round_percent(book.actual_remainder_liters / capacity * 100)
-
-
 def _liters_from_level(body: LevelIngest, book: TankBook) -> float:
     if body.actual_remainder_liters is not None:
         if body.volts is not None:
@@ -503,13 +493,13 @@ def accept_level(body: LevelIngest) -> IngestAck:
         if (
             body.volts is not None
             and body.actual_remainder_liters is None
+            and book.last_volts is not None
             and book.calibration is not None
-            and (stored := _stored_percent(book)) is not None
-            and _sensor_percent(book, body.volts) == stored
+            and not level_volts_changed(book.last_volts, body.volts)
         ):
-            book.last_volts = body.volts
+            percent = _sensor_percent(book, book.last_volts)
+            book.actual_remainder_liters = percent / 100 * book.calibration.capacity_liters
             book.last_measured_at = body.recorded_at
-            book.actual_remainder_liters = stored / 100 * book.calibration.capacity_liters
             _recompute(book)
             ack = _ack(book, message="level unchanged")
         else:

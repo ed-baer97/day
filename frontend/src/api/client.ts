@@ -248,10 +248,11 @@ export const api = {
     sendJson<TankDevice>("PUT", `/stations/${stationId}/devices/${tankId}/shelly`, { host }),
   disconnectShelly: (stationId: string, tankId: string) =>
     sendJson<TankDevice>("DELETE", `/stations/${stationId}/devices/${tankId}/shelly`),
-  tankLevels: (stationId: string, tankId: string, since?: string) => {
+  tankLevels: (stationId: string, tankId: string, since?: string, limit = 2000) => {
+    const cap = Math.max(1, Math.min(limit, 5000));
     const query = since
-      ? `?since=${encodeURIComponent(since)}&changes_only=true&limit=2000`
-      : "?changes_only=true&limit=200";
+      ? `?since=${encodeURIComponent(since)}&changes_only=true&limit=${cap}`
+      : `?changes_only=true&limit=${Math.min(cap, 200)}`;
     return getJson<LevelReading[]>(`/stations/${stationId}/devices/${tankId}/levels${query}`);
   },
   calibrateTank: (

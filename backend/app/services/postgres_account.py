@@ -19,7 +19,7 @@ from app.database import SessionLocal
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
 from app.schemas.ingest import CalibrationIn, IngestAck, LevelIngest, TankIngestState
 from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, round_percent, volts_to_percent
+from app.services.calibration import LevelCalibration, level_volts_changed, round_percent, volts_to_percent
 from app.services.catalog import StationCard
 from app.services.device_ingest import TankDevice
 from app.services.passwords import hash_password, verify_password
@@ -351,22 +351,26 @@ def accept_level(body: LevelIngest) -> IngestAck:
             return _ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
         calibration = _calibration(row) if body.volts is not None and body.actual_remainder_liters is None else None
+        if (
+            body.volts is not None
+            and body.actual_remainder_liters is None
+            and row.last_volts is not None
+            and calibration is not None
+            and not level_volts_changed(row.last_volts, body.volts)
+        ):
+            percent = round_percent(volts_to_percent(row.last_volts, calibration))
+            row.actual_remainder_liters = percent / 100 * row.capacity_liters
+            row.last_measured_at = body.recorded_at
+            _recompute(row)
+            db.commit()
+            db.refresh(row)
+            return _ack(row, message="level unchanged")
+
         percent = (
             round_percent(volts_to_percent(body.volts, calibration))
             if calibration is not None and body.volts is not None
             else None
         )
-        stored = None
-        if row.actual_remainder_liters is not None and row.capacity_liters > 0:
-            stored = round_percent(row.actual_remainder_liters / row.capacity_liters * 100)
-        if percent is not None and stored is not None and percent == stored and body.volts is not None:
-            row.last_volts = body.volts
-            row.last_measured_at = body.recorded_at
-            row.actual_remainder_liters = percent / 100 * row.capacity_liters
-            _recompute(row)
-            db.commit()
-            db.refresh(row)
-            return _ack(row, message="level unchanged")
 
         if body.volts is not None:
             row.last_volts = body.volts

@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.auth import Principal, require_admin, require_principal, require_station_access
 from app.config import get_settings
@@ -35,6 +35,7 @@ from app.services.device_ingest import (
     get_tank_device,
     list_tank_devices,
     register_tank,
+    tank_remainder,
     update_tank_device,
 )
 from app.services.shelly_link import connect_shelly, disconnect_shelly, shelly_view
@@ -66,6 +67,25 @@ def _device_out(device: TankDevice, *, hide_token: bool = False) -> TankDeviceOu
         ingest_url=settings.ingest_level_url,
         shelly=shelly_view(device.tank_id),
     )
+
+
+def _station_tanks_out(station_id: UUID) -> list[TankOut]:
+    tanks: list[TankOut] = []
+    for device in list_tank_devices(station_id):
+        remainder, measured = tank_remainder(device.tank_id)
+        tanks.append(
+            TankOut(
+                id=device.tank_id,
+                code=device.code,
+                capacity_liters=device.capacity_liters,
+                has_electronic_sensor=True,
+                actual_remainder_liters=remainder,
+                calculated_remainder_liters=remainder,
+                level_source="electronic",
+                last_measured_at=measured,
+            )
+        )
+    return tanks
 
 
 @router.get("", response_model=list[StationOut])
@@ -127,23 +147,7 @@ def get_station_card(
 ) -> StationDetailOut:
     require_station_access(station_id, principal)
     station = get_station(station_id)
-    from app.services.device_ingest import tank_remainder
-
-    tanks = []
-    for device in list_tank_devices(station_id):
-        remainder, measured = tank_remainder(device.tank_id)
-        tanks.append(
-            TankOut(
-                id=device.tank_id,
-                code=device.code,
-                capacity_liters=device.capacity_liters,
-                has_electronic_sensor=True,
-                actual_remainder_liters=remainder,
-                calculated_remainder_liters=remainder,
-                level_source="electronic",
-                last_measured_at=measured,
-            )
-        )
+    tanks = _station_tanks_out(station_id)
     return StationDetailOut(
         **_station_out(station).model_dump(),
         tanks=tanks,
@@ -159,26 +163,8 @@ def list_tanks(
     station_id: UUID,
     principal: Principal = Depends(require_principal),
 ) -> list[TankOut]:
-    require_station_access(station_id, principal)
-    get_station(station_id)
-    from app.services.device_ingest import tank_remainder
-
-    tanks: list[TankOut] = []
-    for device in list_tank_devices(station_id):
-        remainder, measured = tank_remainder(device.tank_id)
-        tanks.append(
-            TankOut(
-                id=device.tank_id,
-                code=device.code,
-                capacity_liters=device.capacity_liters,
-                has_electronic_sensor=True,
-                actual_remainder_liters=remainder,
-                calculated_remainder_liters=remainder,
-                level_source="electronic",
-                last_measured_at=measured,
-            )
-        )
-    return tanks
+    _require_station(station_id, principal)
+    return _station_tanks_out(station_id)
 
 
 def _require_station(station_id: UUID, principal: Principal) -> None:

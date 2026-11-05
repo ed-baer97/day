@@ -1,12 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type LevelReading, type TankDevice } from "../api/client";
 import { dateTime, liters, signedLiters } from "../format";
-
-function startOfTodayIso() {
-  const stamp = new Date();
-  stamp.setHours(0, 0, 0, 0);
-  return stamp.toISOString();
-}
+import { useViewPeriod } from "../liveLevels";
+import PeriodSwitch from "./PeriodSwitch";
 
 function percentLabel(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) return "—";
@@ -14,6 +10,7 @@ function percentLabel(value: number | null | undefined) {
 }
 
 export default function LevelChangesToday({ stationId }: { stationId: string }) {
+  const { range } = useViewPeriod();
   const [devices, setDevices] = useState<TankDevice[]>([]);
   const [tankId, setTankId] = useState<string>("");
   const [rows, setRows] = useState<LevelReading[]>([]);
@@ -39,6 +36,10 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
     };
   }, [stationId]);
 
+  const sinceMs = range.start.getTime();
+  const untilMs = range.end.getTime();
+  const followLive = range.includesNow;
+
   useEffect(() => {
     if (!tankId) {
       setRows([]);
@@ -50,9 +51,9 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
       setLoading(true);
       setError(null);
       try {
-        const next = await api.tankLevels(stationId, tankId, startOfTodayIso());
+        const next = await api.tankLevels(stationId, tankId, new Date(sinceMs).toISOString(), 5000);
         if (!live) return;
-        setRows(next);
+        setRows(next.filter((row) => new Date(row.recorded_at).getTime() < untilMs));
       } catch (err) {
         if (!live) return;
         setRows([]);
@@ -62,17 +63,22 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
       }
     }
     void load();
+    if (!followLive) {
+      return () => {
+        live = false;
+      };
+    }
     const timer = window.setInterval(() => void load(), 15000);
     return () => {
       live = false;
       window.clearInterval(timer);
     };
-  }, [stationId, tankId]);
+  }, [stationId, tankId, sinceMs, untilMs, followLive]);
 
   if (devices.length === 0) {
     return (
       <section className="admin-level-log">
-        <h3 className="admin-sub">Изменения остатка сегодня</h3>
+        <h3 className="admin-sub">{range.journalTitle}</h3>
         <p className="dash-muted">Резервуаров пока нет — журнал появится после добавления датчика.</p>
       </section>
     );
@@ -81,7 +87,10 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
   return (
     <section className="admin-level-log">
       <div className="admin-level-log-head">
-        <h3 className="admin-sub">Изменения остатка сегодня</h3>
+        <div>
+          <h3 className="admin-sub">{range.journalTitle}</h3>
+          <PeriodSwitch />
+        </div>
         {devices.length > 1 ? (
           <select
             className="st-select"
@@ -100,13 +109,12 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
         )}
       </div>
       <p className="dash-muted">
-        Публикуются смены целого процента с полуночи по местному времени. Повторные пакеты Shelly на той же
-        ступени в журнал не попадают.
+        В журнал попадает сдвиг от последнего записанного замера на 0,02 В и больше. Шум 0,01 В в базу не пишется.
       </p>
       {error ? <p className="tank-error">{error}</p> : null}
       {loading && rows.length === 0 ? <p className="dash-muted">Загрузка…</p> : null}
       {!loading && rows.length === 0 && !error ? (
-        <p className="dash-muted">За сегодня смен остатка ещё не было.</p>
+        <p className="dash-muted">{range.emptyJournal}</p>
       ) : null}
       {rows.length > 0 ? (
         <div className="dash-table-wrap">

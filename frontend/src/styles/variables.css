@@ -640,6 +640,11 @@ select {
 }
 .dash-hero {
   margin-bottom: 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 .dash-hero h2 {
   margin: 0;
@@ -676,6 +681,36 @@ select {
   font-style: normal;
   font-size: 12px;
   color: var(--muted);
+}
+.period-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.period-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.period-date {
+  background: var(--input);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.period-nav .btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.admin-level-log-head .period-switch,
+.st-detail-actions .period-switch {
+  align-items: flex-start;
+  margin-top: 8px;
 }
 .dash-section {
   margin-bottom: 28px;

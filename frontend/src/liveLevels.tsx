@@ -1,8 +1,9 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, type PublicStation, type PublicTank } from "./api/client";
 import { useAuth } from "./auth";
 import { useCatalog } from "./catalog";
-import { emptySensorDay, loadStationDay, withLiveRemainder, type SensorDay } from "./sensorDay";
+import { periodFromKey, periodKey, resolveRange, todayPeriod, type TimeRange, type ViewPeriod } from "./period";
+import { emptySensorDay, loadStationSpan, withLiveRemainder, type SensorDay } from "./sensorDay";
 
 export const LOW_FILL_PERCENT = 25;
 
@@ -84,7 +85,11 @@ type LevelsApi = {
   updatedAt: Date | null;
   loading: boolean;
   error: string | null;
+  historyLoading: boolean;
   dayById: Map<string, SensorDay>;
+  period: ViewPeriod;
+  setPeriod: (period: ViewPeriod) => void;
+  range: TimeRange;
 };
 
 const LevelsContext = createContext<LevelsApi | null>(null);
@@ -97,50 +102,96 @@ export function LevelsProvider({ children }: { children: ReactNode }) {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [rawDay, setRawDay] = useState<Map<string, SensorDay>>(new Map());
+  const [period, setPeriodState] = useState<ViewPeriod>(() => todayPeriod());
+  const [now, setNow] = useState(() => new Date());
   const stationKey = session ? catalog.stations.map((row) => row.id).sort().join("|") : "";
+  const selectedKey = periodKey(period);
+  const range = useMemo(() => resolveRange(periodFromKey(selectedKey, now), now), [selectedKey, now]);
+
+  const setPeriod = useCallback((next: ViewPeriod) => {
+    const today = todayPeriod();
+    if (next.preset === "today") {
+      setPeriodState(today);
+      return;
+    }
+    setPeriodState({
+      preset: next.preset,
+      day: next.day > today.day ? today.day : next.day,
+    });
+  }, []);
 
   useEffect(() => {
-    const ids = stationKey ? stationKey.split("|") : [];
     let live = true;
-
     async function load() {
-      const [levelsResult, dayResult] = await Promise.all([
-        api.publicLevels().then(
-          (rows) => ({ ok: true as const, rows }),
-          () => ({ ok: false as const, rows: null })
-        ),
-        ids.length === 0
-          ? Promise.resolve(null)
-          : Promise.all(
-              ids.map(async (id) => {
-                try {
-                  return [id, await loadStationDay(id)] as const;
-                } catch {
-                  return [id, emptySensorDay()] as const;
-                }
-              })
-            ),
-      ]);
-      if (!live) return;
-      if (levelsResult.ok && levelsResult.rows) {
-        setStations(levelsResult.rows);
+      try {
+        const rows = await api.publicLevels();
+        if (!live) return;
+        setStations(rows);
         setUpdatedAt(new Date());
+        setNow(new Date());
         setError(null);
-      } else {
+      } catch {
+        if (!live) return;
         setError("Не удалось обновить уровни");
+      } finally {
+        if (live) setLoading(false);
       }
-      setRawDay(dayResult ? new Map(dayResult) : new Map());
-      setLoading(false);
     }
-
     void load();
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => {
       live = false;
       window.clearInterval(timer);
     };
-  }, [stationKey]);
+  }, []);
+
+  useEffect(() => {
+    const ids = stationKey ? stationKey.split("|") : [];
+    const span = resolveRange(periodFromKey(selectedKey), new Date());
+    let live = true;
+    let first = true;
+
+    async function load() {
+      if (first) {
+        setRawDay(new Map());
+        setHistoryLoading(ids.length > 0);
+        first = false;
+      }
+      if (ids.length === 0) {
+        if (!live) return;
+        setRawDay(new Map());
+        setHistoryLoading(false);
+        return;
+      }
+      const pairs = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            return [id, await loadStationSpan(id, span)] as const;
+          } catch {
+            return [id, emptySensorDay(span)] as const;
+          }
+        })
+      );
+      if (!live) return;
+      setNow(new Date());
+      setRawDay(new Map(pairs));
+      setHistoryLoading(false);
+    }
+
+    void load();
+    if (!span.includesNow) {
+      return () => {
+        live = false;
+      };
+    }
+    const timer = window.setInterval(() => void load(), POLL_MS);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [stationKey, selectedKey]);
 
   const byCode = useMemo(() => {
     const map = new Map<string, LiveLevel>();
@@ -153,21 +204,21 @@ export function LevelsProvider({ children }: { children: ReactNode }) {
     const next = new Map<string, SensorDay>();
     for (const [id, day] of rawDay) {
       const live = byCode.get(codeById.get(id) ?? "");
-      next.set(id, withLiveRemainder(day, live?.remainder ?? null));
+      next.set(id, withLiveRemainder(day, live?.remainder ?? null, now));
     }
-    if (!session) return next;
+    if (!session || !range.includesNow) return next;
     for (const station of catalog.stations) {
       if (next.has(station.id)) continue;
       const live = byCode.get(station.code);
       if (live?.remainder == null) continue;
-      next.set(station.id, withLiveRemainder(emptySensorDay(), live.remainder));
+      next.set(station.id, withLiveRemainder(emptySensorDay(range), live.remainder, now));
     }
     return next;
-  }, [rawDay, byCode, catalog.stations, session]);
+  }, [rawDay, byCode, catalog.stations, session, now, range]);
 
   const value = useMemo(
-    () => ({ byCode, stations, updatedAt, loading, error, dayById }),
-    [byCode, stations, updatedAt, loading, error, dayById]
+    () => ({ byCode, stations, updatedAt, loading, error, historyLoading, dayById, period, setPeriod, range }),
+    [byCode, stations, updatedAt, loading, error, historyLoading, dayById, period, setPeriod, range]
   );
 
   return <LevelsContext.Provider value={value}>{children}</LevelsContext.Provider>;
@@ -182,6 +233,11 @@ function useLevels(): LevelsApi {
 export function usePublicLevels() {
   const { byCode, stations, updatedAt, loading, error } = useLevels();
   return { byCode, stations, updatedAt, loading, error };
+}
+
+export function useViewPeriod() {
+  const { period, setPeriod, range, historyLoading } = useLevels();
+  return { period, setPeriod, range, historyLoading };
 }
 
 export function useSensorDay(stationIds: string[]) {
