@@ -351,6 +351,9 @@ def accept_level(body: LevelIngest) -> IngestAck:
             return _ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
         calibration = _calibration(row) if body.volts is not None and body.actual_remainder_liters is None else None
+        # «На связи» — по времени приёма на сервере, не по часам Shelly.
+        heard_at = datetime.now(timezone.utc)
+
         if (
             body.volts is not None
             and body.actual_remainder_liters is None
@@ -360,7 +363,7 @@ def accept_level(body: LevelIngest) -> IngestAck:
         ):
             percent = round_percent(volts_to_percent(row.last_volts, calibration))
             row.actual_remainder_liters = percent / 100 * row.capacity_liters
-            row.last_measured_at = body.recorded_at
+            row.last_measured_at = heard_at
             _recompute(row)
             db.commit()
             db.refresh(row)
@@ -388,7 +391,7 @@ def accept_level(body: LevelIngest) -> IngestAck:
         ):
             row.opening_liters = liters
         row.actual_remainder_liters = liters
-        row.last_measured_at = body.recorded_at
+        row.last_measured_at = heard_at
         row.level_source = LevelSource.electronic
         _recompute(row)
         entity_id = uuid4()

@@ -14,7 +14,7 @@ from __future__ import annotations
 import secrets
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -490,6 +490,7 @@ def accept_level(body: LevelIngest) -> IngestAck:
         book = _book(body.station_id, body.tank_id)
         if key in _seen:
             return _ack(book, message="duplicate", duplicate=True, entity_id=book.level_ids.get(key))
+        heard_at = datetime.now(timezone.utc)
         if (
             body.volts is not None
             and body.actual_remainder_liters is None
@@ -499,7 +500,7 @@ def accept_level(body: LevelIngest) -> IngestAck:
         ):
             percent = _sensor_percent(book, book.last_volts)
             book.actual_remainder_liters = percent / 100 * book.calibration.capacity_liters
-            book.last_measured_at = body.recorded_at
+            book.last_measured_at = heard_at
             _recompute(book)
             ack = _ack(book, message="level unchanged")
         else:
@@ -509,7 +510,7 @@ def accept_level(body: LevelIngest) -> IngestAck:
             ):
                 book.opening_liters = liters
             book.actual_remainder_liters = liters
-            book.last_measured_at = body.recorded_at
+            book.last_measured_at = heard_at
             _recompute(book)
             entity_id = uuid4()
             _remember_seen(key)
