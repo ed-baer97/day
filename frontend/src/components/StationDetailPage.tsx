@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { isAdmin } from "../access";
+import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
 import { dateTime, liters, stationRegion } from "../format";
 import { isLowFill, SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels, useSensorDay, useViewPeriod } from "../liveLevels";
@@ -22,6 +24,8 @@ export default function StationDetailPage({
   onOpenAdmin?: (id: string) => void;
   onOpenMap?: (id: string) => void;
 }) {
+  const { session } = useAuth();
+  const canManage = isAdmin(session);
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
   const { range, historyLoading } = useViewPeriod();
@@ -201,7 +205,11 @@ export default function StationDetailPage({
           <section className="dash-section">
             <h3>Резервуары</h3>
             {!hasTanks || !live ? (
-              <p className="empty">К этой АГЗС ещё не подключён резервуар. Добавьте его ниже и привяжите датчик.</p>
+              <p className="empty">
+                {canManage
+                  ? "К этой АГЗС ещё не подключён резервуар. Добавьте его ниже и привяжите датчик."
+                  : "К этой АГЗС ещё не подключён резервуар."}
+              </p>
             ) : (
               live.tanks.map((tank) => {
                 const width = tank.fill_percent == null ? 0 : Math.max(0, Math.min(100, tank.fill_percent));
