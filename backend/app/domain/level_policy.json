@@ -1,0 +1,13 @@
+{
+  "dial_min_percent": 5,
+  "dial_max_percent": 95,
+  "level_step_volts": 0.02,
+  "volt_quantum": 0.1,
+  "percent_quantum": 1,
+  "liter_noise": 0.5,
+  "low_fill_percent": 25,
+  "poll_seconds": 15,
+  "sensor_stale_seconds": 60,
+  "role_admin": "admin",
+  "role_station": "station"
+}

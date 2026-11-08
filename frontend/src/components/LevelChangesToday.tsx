@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type LevelReading, type TankDevice } from "../api/client";
 import { dateTime, liters, signedLiters } from "../format";
 import { useViewPeriod } from "../liveLevels";
+import { POLL_MS } from "../policy";
 import PeriodSwitch from "./PeriodSwitch";
 
 function percentLabel(value: number | null | undefined) {
@@ -68,7 +69,7 @@ export default function LevelChangesToday({ stationId }: { stationId: string }) 
         live = false;
       };
     }
-    const timer = window.setInterval(() => void load(), 15000);
+    const timer = window.setInterval(() => void load(), POLL_MS);
     return () => {
       live = false;
       window.clearInterval(timer);

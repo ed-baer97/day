@@ -10,11 +10,12 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
+    "resolveJsonModule": true,
     "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src", "../backend/app/domain/level_policy.json"]
 }

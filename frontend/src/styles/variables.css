@@ -20,7 +20,7 @@
   --topbar: rgba(11, 16, 14, 0.92);
   --side: linear-gradient(180deg, #101915 0%, #0b100e 100%);
   --input: #0e1512;
-  --modal: #121a16;
+  --modal: var(--bg-2);
   --modal-scrim: rgba(6, 10, 8, 0.72);
   --btn-fg: #06221f;
   --hover-fill: rgba(255, 255, 255, 0.03);
@@ -34,13 +34,13 @@
   --skel-b: #1c2a24;
   --popup: #141c18;
   --truck-label-bg: rgba(11, 16, 14, 0.88);
-  --truck-label-fg: #eef3ea;
+  --truck-label-fg: var(--ink);
   --mark-deep: #0b4a46;
-  --map-route: #2ec4b6;
-  --map-trail: #e0a45a;
-  --ok: #2ec4b6;
-  --warn: #e0a45a;
-  --danger: #e07a5f;
+  --map-route: var(--sea);
+  --map-trail: var(--dust);
+  --ok: var(--sea);
+  --warn: var(--dust);
+  --danger: var(--coral);
 }
 
 html[data-theme="light"] {
@@ -59,27 +59,27 @@ html[data-theme="light"] {
   --topbar: rgba(238, 243, 234, 0.92);
   --side: linear-gradient(180deg, #f7faf6 0%, #eef3ea 100%);
   --input: #ffffff;
-  --modal: #ffffff;
+  --modal: var(--bg-2);
   --modal-scrim: rgba(20, 32, 26, 0.45);
   --btn-fg: #f4fffd;
   --hover-fill: rgba(20, 32, 26, 0.05);
   --role-fill: rgba(20, 32, 26, 0.03);
   --badge-done: rgba(20, 32, 26, 0.08);
   --toast-ok-bg: #d7f3ee;
-  --toast-ok-fg: #0e5c57;
+  --toast-ok-fg: var(--sea-2);
   --toast-err-bg: #f8ddd6;
   --toast-err-fg: #8a2f1e;
   --skel-a: #e4ebe4;
   --skel-b: #f7faf6;
-  --popup: #ffffff;
-  --truck-label-bg: rgba(255, 255, 255, 0.92);
-  --truck-label-fg: #14201a;
-  --mark-deep: #0e5c57;
-  --map-route: #147f78;
-  --map-trail: #c4842e;
-  --ok: #147f78;
-  --warn: #c4842e;
-  --danger: #c45a42;
+  --popup: var(--bg-2);
+  --truck-label-bg: var(--panel);
+  --truck-label-fg: var(--ink);
+  --mark-deep: var(--sea-2);
+  --map-route: var(--sea);
+  --map-trail: var(--dust);
+  --ok: var(--sea);
+  --warn: var(--dust);
+  --danger: var(--coral);
 }
 
 * {

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { isAdmin } from "./access";
 import { api, type CatalogStation, type CatalogTruck, type StationDraft, type TruckDraft } from "./api/client";
 import { useAuth } from "./auth";
 
@@ -36,9 +37,11 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   const removedStationIds = useRef<Set<string>>(new Set());
   const removedTruckIds = useRef<Set<string>>(new Set());
 
+  const admin = isAdmin(session);
   const reload = useCallback(async () => {
     try {
-      const [apiStations, apiTrucks] = await Promise.all([api.stations(), api.trucks()]);
+      const apiStations = await api.stations();
+      const apiTrucks = admin ? await api.trucks() : [];
       setStations(apiStations.filter((row) => !removedStationIds.current.has(row.id)));
       setTrucks(apiTrucks.filter((row) => !removedTruckIds.current.has(row.id)));
       setError(null);
@@ -49,7 +52,7 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     } finally {
       setReady(true);
     }
-  }, []);
+  }, [admin]);
 
   useEffect(() => {
     if (!session) {

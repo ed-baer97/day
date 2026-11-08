@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.auth import issue_token, reset_auth_state
 from app.config import get_settings
+from app.domain.access import ROLE_ADMIN, ROLE_STATION
 from app.main import create_app
 from app.services.catalog import reset_catalog
 from app.services.device_ingest import reset_device_ingest
@@ -48,7 +49,7 @@ def test_station_token_sees_own_devices_only(monkeypatch):
     station_token = issue_token(
         "aktau12",
         "test-secret",
-        role="station",
+        role=ROLE_STATION,
         station_id=__import__("uuid").UUID(STATION),
     )
     own = client.get(f"/api/v1/stations/{STATION}/devices", headers={"Authorization": f"Bearer {station_token}"})
@@ -66,6 +67,34 @@ def test_station_token_sees_own_devices_only(monkeypatch):
     assert {row["id"] for row in listed.json()} == {STATION}
 
 
+def test_station_cannot_change_catalog(monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("AUTH_SECRET", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "lpg-admin")
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    station_token = issue_token("aktau12", "test-secret", role=ROLE_STATION, station_id=__import__("uuid").UUID(STATION))
+    headers = {"Authorization": f"Bearer {station_token}"}
+
+    created = client.post(
+        f"/api/v1/stations/{STATION}/devices",
+        json={"code": "R-9", "capacity_liters": 1000},
+        headers=headers,
+    )
+    assert created.status_code == 403
+    assert client.get("/api/v1/trucks", headers=headers).status_code == 403
+    assert client.get("/api/v1/map/overview", headers=headers).status_code == 403
+    patched = client.patch(
+        f"/api/v1/stations/{STATION}",
+        json={"name": "чужое имя"},
+        headers=headers,
+    )
+    assert patched.status_code == 403
+    assert client.get("/api/v1/public/levels").status_code == 200
+    assert client.get("/api/v1/stations").status_code == 401
+
+
 def test_login_response_includes_role(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
     monkeypatch.setenv("AUTH_SECRET", "test-secret")
@@ -74,5 +103,5 @@ def test_login_response_includes_role(monkeypatch):
     ok = client.post("/api/v1/auth/login", json={"username": "admin", "password": "lpg-admin"})
     assert ok.status_code == 200
     body = ok.json()
-    assert body["role"] == "admin"
+    assert body["role"] == ROLE_ADMIN
     assert body["station_id"] is None

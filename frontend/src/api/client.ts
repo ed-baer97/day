@@ -347,4 +347,5 @@ export const api = {
   stationSnapshots: (stationId: string) =>
     getJson<BalanceSnapshot[]>(`/balance/stations/${stationId}/snapshots`),
   publicLevels: () => getJson<PublicStation[]>("/public/levels"),
+  me: () => getJson<{ username: string; role: string; station_id: string | null }>("/auth/me"),
 };

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { roleOf } from "./access";
 import { api } from "./api/client";
 import { onSessionExpired, readSession, writeSession, type AdminSession } from "./session";
 
@@ -26,6 +27,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => onSessionExpired(() => setSession(null)), []);
+
+  useEffect(() => {
+    const current = readSession();
+    if (!current) return;
+    let live = true;
+    api
+      .me()
+      .then((me) => {
+        if (!live) return;
+        const next: AdminSession = {
+          token: current.token,
+          username: me.username,
+          role: roleOf(me.role),
+          station_id: me.station_id,
+        };
+        writeSession(next);
+        setSession(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const value = useMemo(() => ({ session, login, logout }), [session, login, logout]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import __version__
 from app.auth import require_admin, require_principal
 from app.config import get_settings
 from app.routers import auth, balance, batches, events, ingest, map as map_router, public, stations, trucks
@@ -74,7 +73,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health", response_model=HealthOut, tags=["health"])
     def health() -> HealthOut:
-        return HealthOut(status="ok", service=settings.app_name, version=__version__)
+        return HealthOut(status="ok", service=settings.app_name, version=settings.app_version)
 
     return app
 

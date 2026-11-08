@@ -49,7 +49,8 @@ def test_public_level_is_fill_only():
     assert tank["remainder_liters"] == 1500
     assert tank["capacity_liters"] == 10000
     assert tank["measured_at"] is not None
-    assert tank["online"] is False
+    # Связь считается по времени приёма на сервере, не по часам в пакете.
+    assert tank["online"] is True
 
 
 def test_tank_without_reading_stays_empty():

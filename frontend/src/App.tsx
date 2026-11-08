@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isAdmin } from "./access";
 import { useAuth } from "./auth";
 import { useCatalog } from "./catalog";
 import AdminPage from "./components/AdminPage";
@@ -18,6 +19,7 @@ type Selection = { kind: "truck"; id: string } | { kind: "station"; id: string }
 export default function App() {
   const { theme, toggle } = useTheme();
   const { session, logout } = useAuth();
+  const admin = isAdmin(session);
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
   const [page, setPage] = useState<Page>("landing");
@@ -126,6 +128,9 @@ export default function App() {
     return <Landing onEnter={() => setPage("dashboard")} />;
   }
 
+  const screen = !admin && (page === "admin" || page === "supply") ? "dashboard" : page;
+  const showTrucks = admin && mapHudTab === "trucks";
+
   return (
     <div className="app">
       <header className="topbar">
@@ -139,7 +144,7 @@ export default function App() {
         <nav className="nav-pages" aria-label="Разделы">
           <button
             type="button"
-            className={`nav-page${page === "dashboard" ? " active" : ""}`}
+            className={`nav-page${screen === "dashboard" ? " active" : ""}`}
             onClick={() => {
               setDashStationId(null);
               setPage("dashboard");
@@ -147,15 +152,19 @@ export default function App() {
           >
             Дашборд ({stations.length})
           </button>
-          <button type="button" className={`nav-page${page === "map" ? " active" : ""}`} onClick={() => setPage("map")}>
+          <button type="button" className={`nav-page${screen === "map" ? " active" : ""}`} onClick={() => setPage("map")}>
             Карта
           </button>
-          <button type="button" className={`nav-page${page === "supply" ? " active" : ""}`} onClick={() => setPage("supply")}>
-            Поставки
-          </button>
-          <button type="button" className={`nav-page${page === "admin" ? " active" : ""}`} onClick={() => setPage("admin")}>
-            Администратор
-          </button>
+          {admin ? (
+            <button type="button" className={`nav-page${screen === "supply" ? " active" : ""}`} onClick={() => setPage("supply")}>
+              Поставки
+            </button>
+          ) : null}
+          {admin ? (
+            <button type="button" className={`nav-page${screen === "admin" ? " active" : ""}`} onClick={() => setPage("admin")}>
+              Администратор
+            </button>
+          ) : null}
         </nav>
         <div className="quick-jumper" ref={quickRef}>
           <button type="button" className="quick-jumper-btn" onClick={() => setQuickOpen((value) => !value)}>
@@ -218,7 +227,7 @@ export default function App() {
         </div>
       </header>
 
-      {page === "map" ? (
+      {screen === "map" ? (
         <main className="page land">
           <div className="map-stage">
             <MapView points={mapPoints} selectedId={selection?.id} onSelect={onSelect} />
@@ -240,15 +249,17 @@ export default function App() {
                     >
                       АГЗС ({filteredMapStations.length})
                     </button>
-                    <button
-                      type="button"
-                      className={`tab${mapHudTab === "trucks" ? " active" : ""}`}
-                      onClick={() => setMapHudTab("trucks")}
-                    >
-                      Газовозы ({catalog.trucks.length})
-                    </button>
+                    {admin ? (
+                      <button
+                        type="button"
+                        className={`tab${mapHudTab === "trucks" ? " active" : ""}`}
+                        onClick={() => setMapHudTab("trucks")}
+                      >
+                        Газовозы ({catalog.trucks.length})
+                      </button>
+                    ) : null}
                   </div>
-                  {mapHudTab === "stations" ? (
+                  {!showTrucks ? (
                     <div className="map-nav-filters">
                       <input
                         type="search"
@@ -282,7 +293,7 @@ export default function App() {
             </div>
             {mapHudOpen ? (
               <div className="map-nav-body">
-                {mapHudTab === "stations" ? (
+                {!showTrucks ? (
                   <ul className="object-list">
                     {filteredMapStations.map((row) => {
                       const live = byCode.get(row.code);
@@ -350,7 +361,7 @@ export default function App() {
             </div>
           ) : null}
         </main>
-      ) : page === "supply" ? (
+      ) : screen === "supply" ? (
         <main className="page dash-page" ref={dashRef}>
           <div className="dash">
             <header className="dash-hero">
@@ -366,7 +377,7 @@ export default function App() {
             </section>
           </div>
         </main>
-      ) : page === "admin" ? (
+      ) : screen === "admin" ? (
         <main className="page dash-page" ref={dashRef}>
           <AdminPage
             initialStationId={adminStationId}
@@ -379,7 +390,7 @@ export default function App() {
           <Dashboard
             stationId={dashStationId}
             onOpenStation={setDashStationId}
-            onOpenAdminStation={openAdminStation}
+            onOpenAdminStation={admin ? openAdminStation : undefined}
             onOpenMapStation={openStationOnMap}
           />
         </main>

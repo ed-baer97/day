@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { type CatalogStation, type CatalogTruck, type StationDraft, type TruckDraft } from "../api/client";
+import { isAdmin } from "../access";
 import { useAuth } from "../auth";
 import { messageOf, useCatalog } from "../catalog";
 import { liters, REGIONS, stationRegion } from "../format";
@@ -47,6 +48,7 @@ export default function AdminPage({
   const { byCode } = usePublicLevels();
   const { session } = useAuth();
   const toast = useToast();
+  const admin = isAdmin(session);
 
   const [tab, setTab] = useState<AdminTab>("stations");
   const [stationId, setStationId] = useState<string | "new" | null>(initialStationId ?? null);
@@ -139,6 +141,14 @@ export default function AdminPage({
           : tab === "reconcile"
             ? "Сверка и инциденты"
             : "Безопасность и доступ";
+
+  if (!admin) {
+    return (
+      <div className="dash">
+        <p className="empty">Раздел только для администратора.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="dash admin">

@@ -1,9 +1,11 @@
+import { roleOf, type AppRole } from "./access";
+
 const KEY = "lpg.admin.session";
 
 export type AdminSession = {
   token: string;
   username: string;
-  role?: "admin" | "station";
+  role?: AppRole;
   station_id?: string | null;
 };
 
@@ -16,7 +18,7 @@ export function readSession(): AdminSession | null {
     return {
       token: parsed.token,
       username: parsed.username,
-      role: parsed.role === "station" ? "station" : "admin",
+      role: roleOf(parsed.role),
       station_id: parsed.station_id ?? null,
     };
   } catch {

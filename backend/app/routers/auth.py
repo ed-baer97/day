@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
+from app.domain.access import ROLE_ADMIN, ROLE_STATION
 from app.auth import (
     check_login_rate_limit,
     clear_login_failures,
@@ -30,9 +31,9 @@ def login(body: LoginIn, request: Request) -> SessionOut:
     if credentials_match(body.username, body.password):
         clear_login_failures(key)
         return SessionOut(
-            token=issue_token(body.username, settings.auth_secret, role="admin"),
+            token=issue_token(body.username, settings.auth_secret, role=ROLE_ADMIN),
             username=settings.admin_username,
-            role="admin",
+            role=ROLE_ADMIN,
             station_id=None,
         )
     if use_postgres():
@@ -45,11 +46,11 @@ def login(body: LoginIn, request: Request) -> SessionOut:
                 token=issue_token(
                     user.username,
                     settings.auth_secret,
-                    role="station",
+                    role=ROLE_STATION,
                     station_id=user.station_id,
                 ),
                 username=user.username,
-                role="station",
+                role=ROLE_STATION,
                 station_id=user.station_id,
             )
     record_login_failure(key)

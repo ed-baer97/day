@@ -20,7 +20,6 @@ from app.schemas.station import (
     TankOut,
 )
 from app.services.account_mode import use_postgres
-from app.services.calibration import round_percent, same_published_level
 from app.services.catalog import (
     StationCard,
     create_station,
@@ -38,6 +37,7 @@ from app.services.device_ingest import (
     tank_remainder,
     update_tank_device,
 )
+from app.services.level_journal import published_levels
 from app.services.shelly_link import connect_shelly, disconnect_shelly, shelly_view
 
 router = APIRouter(prefix="/stations", tags=["stations"])
@@ -55,15 +55,15 @@ def _station_out(station: StationCard) -> StationOut:
     )
 
 
-def _device_out(device: TankDevice, *, hide_token: bool = False) -> TankDeviceOut:
+def _device_out(device: TankDevice) -> TankDeviceOut:
     settings = get_settings()
     return TankDeviceOut(
         id=device.tank_id,
         station_id=device.station_id,
         code=device.code,
         capacity_liters=device.capacity_liters,
-        ingest_token="" if hide_token else device.token,
-        level_path="/api/v1/ingest/level",
+        ingest_token=device.token,
+        level_path=settings.ingest_level_path,
         ingest_url=settings.ingest_level_url,
         shelly=shelly_view(device.tank_id),
     )
@@ -178,17 +178,16 @@ def list_station_devices(
     principal: Principal = Depends(require_principal),
 ) -> list[TankDeviceOut]:
     _require_station(station_id, principal)
-    hide = not principal.is_admin and principal.station_id != station_id
-    return [_device_out(device, hide_token=hide) for device in list_tank_devices(station_id)]
+    return [_device_out(device) for device in list_tank_devices(station_id)]
 
 
 @router.post("/{station_id}/devices", response_model=TankDeviceOut, status_code=201)
 def create_station_device(
     station_id: UUID,
     body: TankDeviceCreate,
-    principal: Principal = Depends(require_principal),
+    _admin: str = Depends(require_admin),
 ) -> TankDeviceOut:
-    _require_station(station_id, principal)
+    get_station(station_id)
     return _device_out(register_tank(station_id, body.code, body.capacity_liters))
 
 
@@ -197,9 +196,9 @@ def put_station_shelly(
     station_id: UUID,
     tank_id: UUID,
     body: ShellyBind,
-    principal: Principal = Depends(require_principal),
+    _admin: str = Depends(require_admin),
 ) -> TankDeviceOut:
-    _require_station(station_id, principal)
+    get_station(station_id)
     connect_shelly(station_id, tank_id, body.host)
     return _device_out(get_tank_device(station_id, tank_id))
 
@@ -208,9 +207,9 @@ def put_station_shelly(
 def delete_station_shelly(
     station_id: UUID,
     tank_id: UUID,
-    principal: Principal = Depends(require_principal),
+    _admin: str = Depends(require_admin),
 ) -> TankDeviceOut:
-    _require_station(station_id, principal)
+    get_station(station_id)
     disconnect_shelly(station_id, tank_id)
     return _device_out(get_tank_device(station_id, tank_id))
 
@@ -220,9 +219,9 @@ def patch_station_device(
     station_id: UUID,
     tank_id: UUID,
     body: TankDeviceUpdate,
-    principal: Principal = Depends(require_principal),
+    _admin: str = Depends(require_admin),
 ) -> TankDeviceOut:
-    _require_station(station_id, principal)
+    get_station(station_id)
     return _device_out(
         update_tank_device(
             station_id,
@@ -237,9 +236,9 @@ def patch_station_device(
 def remove_station_device(
     station_id: UUID,
     tank_id: UUID,
-    principal: Principal = Depends(require_principal),
+    _admin: str = Depends(require_admin),
 ) -> Response:
-    _require_station(station_id, principal)
+    get_station(station_id)
     delete_tank_device(station_id, tank_id)
     return Response(status_code=204)
 
@@ -269,35 +268,18 @@ def list_device_levels(
         limit=capped,
         newest_first=False,
     )
-    out: list[LevelReadingOut] = []
-    previous: float | None = None
-    previous_volts: float | None = None
-    previous_step: float | None = None
-    for row in rows:
-        volts = None if row.volts is None else float(row.volts)
-        step = None if row.fill_percent is None else float(row.fill_percent)
-        liters = float(row.remainder_liters)
-        delta = None if previous is None else liters - previous
-        if changes_only and previous is not None and same_published_level(previous_volts, volts, previous_step, step):
-            continue
-        if changes_only and previous is not None and volts is None and step is None and abs(delta) < 0.5:
-            continue
-        out.append(
-            LevelReadingOut(
-                id=row.id,
-                tank_id=row.tank_id,
-                volts=volts,
-                remainder_liters=liters,
-                fill_percent=None if step is None else float(round_percent(step)),
-                recorded_at=row.recorded_at.isoformat(),
-                delta_liters=delta,
-            )
+    return [
+        LevelReadingOut(
+            id=row.id,
+            tank_id=row.tank_id,
+            volts=row.volts,
+            remainder_liters=row.remainder_liters,
+            fill_percent=row.fill_percent,
+            recorded_at=row.recorded_at.isoformat(),
+            delta_liters=row.delta_liters,
         )
-        previous = liters
-        previous_volts = volts
-        previous_step = step
-    out.reverse()
-    return out
+        for row in published_levels(rows, changes_only=changes_only)
+    ]
 
 
 @router.post("/{station_id}/users", response_model=StationUserCreated, status_code=201)

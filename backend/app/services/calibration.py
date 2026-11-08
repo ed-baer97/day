@@ -10,9 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
-
-DIAL_MIN_PERCENT = 5.0
-DIAL_MAX_PERCENT = 95.0
+from app.domain.policy import (
+    DIAL_MAX_PERCENT,
+    DIAL_MIN_PERCENT,
+    LEVEL_STEP_VOLTS,
+    PERCENT_QUANTUM,
+    VOLT_QUANTUM,
+)
 
 
 @dataclass(frozen=True)
@@ -25,19 +29,23 @@ class LevelCalibration:
 
 
 def round_volts(volts: float) -> float:
-    """Шаг 0,1 В: 3,19 → 3,2, 3,14 → 3,1."""
+    """Шаг volt_quantum из level_policy.json: 3,19 → 3,2 при шаге 0,1."""
 
-    return float(Decimal(str(volts)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+    return float(Decimal(str(volts)).quantize(VOLT_QUANTUM, rounding=ROUND_HALF_UP))
 
 
 def round_percent(percent: float) -> int:
-    """Шаг 1 %: 65,4 → 65, 65,5 → 66. Мельче — погрешность, не изменение."""
+    """Шаг percent_quantum из level_policy.json. Мельче — погрешность, не изменение."""
 
-    return int(Decimal(str(percent)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return int(Decimal(str(percent)).quantize(PERCENT_QUANTUM, rounding=ROUND_HALF_UP))
 
 
-# Шум датчика 0,01 В. Новая строка в базе — только после сдвига на 0,02 В от последнего записанного замера.
-LEVEL_STEP_VOLTS = 0.02
+def remainder_fill_percent(remainder: float | None, capacity: float) -> float | None:
+    """Процент витрины тем же округлением, что и журнал."""
+
+    if remainder is None or capacity <= 0:
+        return None
+    return float(round_percent(remainder / capacity * 100))
 
 
 def _millivolts(volts: float) -> int:

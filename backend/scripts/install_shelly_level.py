@@ -13,10 +13,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+_BACKEND = Path(__file__).resolve().parents[1]
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+from app.domain.policy import POLL_SECONDS  # noqa: E402
 
 SCRIPT_PATH = Path(__file__).with_name("shelly_level.js")
 SCRIPT_NAME = "level"
@@ -33,11 +40,16 @@ def js_quote(value: str) -> str:
     )
 
 
-def render_script(source: str, url: str, token: str) -> str:
-    if "%%SERVER_URL%%" not in source or "%%DEVICE_TOKEN%%" not in source:
-        raise ValueError("в скрипте нет полей адреса и ключа")
-    rendered = source.replace("%%SERVER_URL%%", js_quote(url)).replace("%%DEVICE_TOKEN%%", js_quote(token))
-    if "%%SERVER_URL%%" in rendered or "%%DEVICE_TOKEN%%" in rendered:
+def render_script(source: str, url: str, token: str, interval_ms: int | None = None) -> str:
+    if "%%SERVER_URL%%" not in source or "%%DEVICE_TOKEN%%" not in source or "%%INTERVAL_MS%%" not in source:
+        raise ValueError("в скрипте нет полей адреса, ключа и периода")
+    period = int(POLL_SECONDS * 1000) if interval_ms is None else int(interval_ms)
+    rendered = (
+        source.replace("%%SERVER_URL%%", js_quote(url))
+        .replace("%%DEVICE_TOKEN%%", js_quote(token))
+        .replace("%%INTERVAL_MS%%", str(period))
+    )
+    if "%%SERVER_URL%%" in rendered or "%%DEVICE_TOKEN%%" in rendered or "%%INTERVAL_MS%%" in rendered:
         raise ValueError("подстановка не завершилась")
     return rendered
 

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { isAdmin } from "../access";
 import { api, type ShellyLink, type TankDevice } from "../api/client";
+import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
 import { liters } from "../format";
 import { tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
@@ -36,6 +38,8 @@ function ingestUrl(path: string) {
 }
 
 export default function TankDeviceRows({ stationId }: { stationId: string }) {
+  const { session } = useAuth();
+  const canManage = isAdmin(session);
   const { byCode } = usePublicLevels();
   const toast = useToast();
   const [rows, setRows] = useState<Row[]>([]);
@@ -318,8 +322,9 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
   return (
     <div className="tank-rows">
       <p className="dash-muted">
-        Управление ёмкостями АГЗС: настройка объёма, подключение датчиков Shelly (с защитой от SSRF),
-        калибровка вольтметра и ручной ввод фактического уровня или слива газовоза.
+        {canManage
+          ? "Управление ёмкостями АГЗС: настройка объёма, подключение датчиков Shelly, калибровка и ручной ввод остатка."
+          : "Ключ резервуара и адрес приёма. Карточку и датчик меняет администратор."}
       </p>
       {loading ? <p className="dash-muted">Загрузка…</p> : null}
       {rows.map((row) => {
@@ -342,6 +347,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
                 Код резервуара
                 <input
                   value={row.code}
+                  readOnly={!canManage}
                   onChange={(event) =>
                     setRows((current) =>
                       current.map((item) =>
@@ -356,6 +362,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
                 <input
                   inputMode="decimal"
                   value={row.capacity}
+                  readOnly={!canManage}
                   onChange={(event) =>
                     setRows((current) =>
                       current.map((item) =>
@@ -365,6 +372,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
                   }
                 />
               </label>
+              {canManage ? (
               <div className="tank-row-btns">
                 <button
                   type="button"
@@ -390,8 +398,11 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
                   Удалить
                 </button>
               </div>
+              ) : null}
             </div>
 
+            {canManage ? (
+            <>
             <form
               className="shelly-line"
               onSubmit={(event) => {
@@ -541,6 +552,10 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
                 </div>
               </div>
             )}
+            </>
+            ) : row.shellyHost ? (
+              <p className="dash-muted">Shelly: {row.shellyHost}</p>
+            ) : null}
 
             <div className="tank-api">
               <span>API датчика</span>
@@ -553,6 +568,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
           </div>
         );
       })}
+      {canManage ? (
       <div className="tank-block">
         <div className="tank-row">
           <label>
@@ -582,6 +598,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
           </button>
         </div>
       </div>
+      ) : null}
       {error ? <p className="tank-error">{error}</p> : null}
     </div>
   );

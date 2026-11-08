@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.domain.access import ROLE_ADMIN
+
 
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
@@ -13,7 +15,7 @@ class LoginIn(BaseModel):
 class SessionOut(BaseModel):
     token: str
     username: str
-    role: str = "admin"
+    role: str = ROLE_ADMIN
     station_id: UUID | None = None
 
 

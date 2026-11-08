@@ -4,7 +4,7 @@
 
 let SERVER_URL = "%%SERVER_URL%%";
 let DEVICE_TOKEN = "%%DEVICE_TOKEN%%";
-let INTERVAL_MS = 15000;
+let INTERVAL_MS = %%INTERVAL_MS%%;
 
 function isoFromUnix(unix) {
   return new Date(unix * 1000).toISOString();

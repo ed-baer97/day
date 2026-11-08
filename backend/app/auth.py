@@ -16,6 +16,7 @@ from uuid import UUID
 from fastapi import Header, HTTPException
 
 from app.config import get_settings
+from app.domain.access import ROLE_ADMIN, ROLE_STATION, ROLES, is_admin_role, may_manage_catalog, may_read_station
 
 _lock = threading.Lock()
 _revoked_tokens: set[str] = set()
@@ -34,7 +35,7 @@ class Principal:
 
     @property
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        return is_admin_role(self.role)
 
 
 def reset_auth_state() -> None:
@@ -88,7 +89,7 @@ def issue_token(
     username: str,
     secret: str,
     *,
-    role: str = "admin",
+    role: str = ROLE_ADMIN,
     station_id: UUID | None = None,
     ttl_seconds: int = 12 * 3600,
 ) -> str:
@@ -121,18 +122,18 @@ def read_principal(token: str, secret: str) -> Principal | None:
         if len(parts) == 2:
             # Самый старый формат: expires:username
             expires_raw, username = parts
-            role = "admin"
+            role = ROLE_ADMIN
             station_raw = ""
         elif len(parts) == 3:
             # expires:nonce:username
             expires_raw, _nonce, username = parts
-            role = "admin"
+            role = ROLE_ADMIN
             station_raw = ""
         elif len(parts) >= 5:
             # expires:nonce:username:role:station_id
             expires_raw = parts[0]
             username = parts[2]
-            role = parts[3] or "admin"
+            role = parts[3] or ROLE_ADMIN
             station_raw = parts[4]
         else:
             return None
@@ -147,9 +148,9 @@ def read_principal(token: str, secret: str) -> Principal | None:
             station_id = UUID(station_raw)
         except ValueError:
             return None
-    if role not in ("admin", "station"):
+    if role not in ROLES:
         return None
-    if role == "station" and station_id is None:
+    if role == ROLE_STATION and station_id is None:
         return None
     return Principal(username=username, role=role, station_id=station_id)
 
@@ -175,7 +176,7 @@ def is_admin_authorization(authorization: str | None) -> bool:
 def current_principal(authorization: str | None) -> Principal | None:
     settings = get_settings()
     if settings.auth_disabled:
-        return Principal(username=settings.admin_username, role="admin")
+        return Principal(username=settings.admin_username, role=ROLE_ADMIN)
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
     return read_principal(authorization.split(" ", 1)[1].strip(), settings.auth_secret)
@@ -183,7 +184,7 @@ def current_principal(authorization: str | None) -> Principal | None:
 
 def require_admin(authorization: Annotated[str | None, Header()] = None) -> str:
     principal = require_principal(authorization)
-    if not principal.is_admin:
+    if not may_manage_catalog(principal.role):
         raise HTTPException(status_code=403, detail="Нужны права администратора")
     return principal.username
 
@@ -191,7 +192,7 @@ def require_admin(authorization: Annotated[str | None, Header()] = None) -> str:
 def require_principal(authorization: Annotated[str | None, Header()] = None) -> Principal:
     settings = get_settings()
     if settings.auth_disabled:
-        return Principal(username=settings.admin_username, role="admin")
+        return Principal(username=settings.admin_username, role=ROLE_ADMIN)
     principal = current_principal(authorization)
     if principal is None:
         raise HTTPException(status_code=401, detail="Нужен вход")
@@ -199,7 +200,6 @@ def require_principal(authorization: Annotated[str | None, Header()] = None) -> 
 
 
 def require_station_access(station_id: UUID, principal: Principal) -> None:
-    if principal.is_admin:
+    if may_read_station(principal.role, principal.station_id, station_id):
         return
-    if principal.station_id != station_id:
-        raise HTTPException(status_code=403, detail="чужая заправка")
+    raise HTTPException(status_code=403, detail="чужая заправка")

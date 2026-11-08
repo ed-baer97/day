@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from app.domain.policy import POLL_SECONDS
+
 _PATH = Path(__file__).resolve().parents[1] / "scripts" / "install_shelly_level.py"
 _SPEC = importlib.util.spec_from_file_location("install_shelly_level", _PATH)
 assert _SPEC is not None and _SPEC.loader is not None
@@ -24,8 +26,10 @@ def test_script_posts_voltage_with_token():
     assert 'let DEVICE_TOKEN = "tank-token";' in rendered
     assert "voltmeter:100" in rendered
     assert "X-Device-Token" in rendered
+    assert f"let INTERVAL_MS = {int(POLL_SECONDS * 1000)};" in rendered
     assert "%%SERVER_URL%%" not in rendered
     assert "%%DEVICE_TOKEN%%" not in rendered
+    assert "%%INTERVAL_MS%%" not in rendered
 
 
 def test_quotes_in_token_are_escaped():

@@ -3,9 +3,10 @@ import { api, type PublicStation, type PublicTank } from "./api/client";
 import { useAuth } from "./auth";
 import { useCatalog } from "./catalog";
 import { periodFromKey, periodKey, resolveRange, todayPeriod, type TimeRange, type ViewPeriod } from "./period";
+import { LOW_FILL_PERCENT, POLL_MS } from "./policy";
 import { emptySensorDay, loadStationSpan, withLiveRemainder, type SensorDay } from "./sensorDay";
 
-export const LOW_FILL_PERCENT = 25;
+export { LOW_FILL_PERCENT };
 
 export function isLowFill(fill: number | null | undefined): boolean {
   return fill != null && fill < LOW_FILL_PERCENT;
@@ -93,8 +94,6 @@ type LevelsApi = {
 };
 
 const LevelsContext = createContext<LevelsApi | null>(null);
-const POLL_MS = 15000;
-
 export function LevelsProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   const catalog = useCatalog();
