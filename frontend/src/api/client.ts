@@ -129,6 +129,41 @@ export interface CatalogStation {
   is_active: boolean;
 }
 
+export interface CabinetPump {
+  pump_id: string;
+  name: string;
+  delivered_ml: number;
+  amount_kzt: number;
+  sales: number;
+}
+
+export interface CabinetSale {
+  sale_id: string;
+  number: string;
+  pump_name: string;
+  delivered_ml: number;
+  amount_kzt: number;
+  price_kzt_per_liter: number;
+  finished_at: string;
+}
+
+export interface CabinetFace {
+  station_id: string;
+  price_kzt_per_liter: number;
+  delivered_ml: number;
+  amount_kzt: number;
+  sales: number;
+  pumps: CabinetPump[];
+  recent: CabinetSale[];
+}
+
+export interface StationUser {
+  id: string;
+  station_id: string;
+  username: string;
+  kind?: string;
+}
+
 export interface CatalogTruck {
   id: string;
   plate_number: string;
@@ -225,6 +260,17 @@ export const api = {
   },
   mapOverview: () => getJson<MapOverview>("/map/overview"),
   stations: () => getJson<CatalogStation[]>("/stations"),
+  stationUsers: (stationId: string) => getJson<StationUser[]>("/stations/" + stationId + "/users"),
+  cabinet: (stationId: string) => getJson<CabinetFace>(`/stations/${stationId}/console/cabinet`),
+  consoleAdmins: (stationId: string) => getJson<StationUser[]>(`/stations/${stationId}/console/admins`),
+  createConsoleAdmin: (stationId: string, body: { username: string; password: string }) =>
+    sendJson<StationUser & { password: string }>("POST", `/stations/${stationId}/console/admins`, body),
+  setCabinetPrice: (stationId: string, priceKztPerLiter: number) =>
+    sendJson<CabinetFace>("PUT", `/stations/${stationId}/console/cabinet/price`, {
+      price_kzt_per_liter: priceKztPerLiter,
+    }),
+  createStationUser: (stationId: string, body: { username: string; password: string }) =>
+    sendJson<StationUser & { password: string }>("POST", `/stations/${stationId}/users`, body),
   createStation: (body: StationDraft) => sendJson<CatalogStation>("POST", "/stations", body),
   updateStation: (id: string, body: Partial<StationDraft>) =>
     sendJson<CatalogStation>("PATCH", `/stations/${id}`, body),

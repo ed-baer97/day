@@ -40,19 +40,27 @@ def login(body: LoginIn, request: Request) -> SessionOut:
         from app.services import postgres_account
 
         user = postgres_account.authenticate_station_user(body.username, body.password)
-        if user is not None:
-            clear_login_failures(key)
-            return SessionOut(
-                token=issue_token(
-                    user.username,
-                    settings.auth_secret,
-                    role=ROLE_STATION,
-                    station_id=user.station_id,
-                ),
-                username=user.username,
-                role=ROLE_STATION,
-                station_id=user.station_id,
-            )
+    else:
+        from app.services.station_accounts import authenticate_owner
+
+        user = authenticate_owner(body.username, body.password)
+    if user is not None:
+        clear_login_failures(key)
+        ids = list(user.stations()) if hasattr(user, "stations") else [user.station_id]
+        kind = getattr(user, "kind", None)
+        if kind == "console":
+            role = "console"
+        elif kind == "owner":
+            role = "owner"
+        else:
+            role = ROLE_STATION
+        return SessionOut(
+            token=issue_token(user.username, settings.auth_secret, role=role, station_ids=ids),
+            username=user.username,
+            role=role,
+            station_id=ids[0] if len(ids) == 1 else None,
+            station_ids=ids,
+        )
     record_login_failure(key)
     raise HTTPException(status_code=401, detail="Неверный логин или пароль")
 
@@ -73,4 +81,5 @@ def me(principal=Depends(require_principal)) -> dict:
         "username": principal.username,
         "role": principal.role,
         "station_id": None if principal.station_id is None else str(principal.station_id),
+        "station_ids": [str(item) for item in principal.stations()],
     }

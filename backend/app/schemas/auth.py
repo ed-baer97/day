@@ -17,17 +17,22 @@ class SessionOut(BaseModel):
     username: str
     role: str = ROLE_ADMIN
     station_id: UUID | None = None
+    station_ids: list[UUID] = []
 
 
 class StationUserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(default="", max_length=128)
 
 
-class StationUserCreated(BaseModel):
+class StationUserOut(BaseModel):
     id: UUID
     station_id: UUID
     username: str
+    kind: str = "owner"
+
+
+class StationUserCreated(StationUserOut):
     password: str
 
 

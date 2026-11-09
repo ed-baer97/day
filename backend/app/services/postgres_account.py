@@ -439,10 +439,24 @@ def list_level_readings(
         return list(db.scalars(query.order_by(order).limit(limit)).all())
 
 
+def list_station_users(station_id: UUID) -> list[StationUser]:
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise HTTPException(status_code=404, detail="Station not found")
+        rows = list(db.scalars(select(StationUser).where(StationUser.station_id == station_id)).all())
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+
 def create_station_user(station_id: UUID, username: str, password: str) -> StationUser:
+    from app.config import get_settings
+
     cleaned = username.strip().lower()
     if not cleaned:
-        raise HTTPException(status_code=422, detail="укажите логин")
+        raise HTTPException(status_code=422, detail="укажите логин владельца")
+    if cleaned == get_settings().admin_username.strip().lower():
+        raise HTTPException(status_code=409, detail="этот логин занят администратором платформы")
     with session() as db:
         if db.get(Station, station_id) is None:
             raise HTTPException(status_code=404, detail="Station not found")

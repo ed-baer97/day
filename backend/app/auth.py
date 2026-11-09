@@ -16,7 +16,7 @@ from uuid import UUID
 from fastapi import Header, HTTPException
 
 from app.config import get_settings
-from app.domain.access import ROLE_ADMIN, ROLE_STATION, ROLES, is_admin_role, may_manage_catalog, may_read_station
+from app.domain.access import ROLE_ADMIN, ROLES, is_admin_role, may_manage_catalog
 
 _lock = threading.Lock()
 _revoked_tokens: set[str] = set()
@@ -32,10 +32,18 @@ class Principal:
     username: str
     role: str
     station_id: UUID | None = None
+    station_ids: tuple[UUID, ...] = ()
 
     @property
     def is_admin(self) -> bool:
         return is_admin_role(self.role)
+
+    def stations(self) -> tuple[UUID, ...]:
+        if self.station_ids:
+            return self.station_ids
+        if self.station_id is not None:
+            return (self.station_id,)
+        return ()
 
 
 def reset_auth_state() -> None:
@@ -91,11 +99,13 @@ def issue_token(
     *,
     role: str = ROLE_ADMIN,
     station_id: UUID | None = None,
+    station_ids: list[UUID] | tuple[UUID, ...] | None = None,
     ttl_seconds: int = 12 * 3600,
 ) -> str:
     expires = int(time.time()) + ttl_seconds
     nonce = secrets.token_hex(8)
-    station = "" if station_id is None else str(station_id)
+    ids = list(station_ids) if station_ids is not None else ([] if station_id is None else [station_id])
+    station = ",".join(str(item) for item in ids)
     payload = f"{expires}:{nonce}:{username}:{role}:{station}".encode()
     signature = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     blob = base64.urlsafe_b64encode(payload).decode().rstrip("=")
@@ -142,17 +152,23 @@ def read_principal(token: str, secret: str) -> Principal | None:
         return None
     if time.time() >= expires or not username:
         return None
-    station_id = None
+    station_ids: list[UUID] = []
     if station_raw:
         try:
-            station_id = UUID(station_raw)
+            station_ids = [UUID(part) for part in station_raw.split(",") if part]
         except ValueError:
             return None
-    if role not in ROLES:
+    if role not in (ROLES | {"owner", "console"}):
         return None
-    if role == ROLE_STATION and station_id is None:
+    if role != ROLE_ADMIN and not station_ids:
         return None
-    return Principal(username=username, role=role, station_id=station_id)
+    station_id = station_ids[0] if len(station_ids) == 1 else None
+    return Principal(
+        username=username,
+        role=role,
+        station_id=station_id,
+        station_ids=tuple(station_ids),
+    )
 
 
 def read_token(token: str, secret: str) -> str | None:
@@ -200,6 +216,12 @@ def require_principal(authorization: Annotated[str | None, Header()] = None) -> 
 
 
 def require_station_access(station_id: UUID, principal: Principal) -> None:
-    if may_read_station(principal.role, principal.station_id, station_id):
+    if principal.is_admin or station_id in principal.stations():
         return
     raise HTTPException(status_code=403, detail="чужая заправка")
+
+
+def require_station_owner(station_id: UUID, principal: Principal) -> None:
+    require_station_access(station_id, principal)
+    if principal.role not in ("owner", "station"):
+        raise HTTPException(status_code=403, detail="это делает владелец заправки")

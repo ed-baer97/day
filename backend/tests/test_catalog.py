@@ -20,7 +20,7 @@ def test_stations_start_from_the_map_list():
     listed = client.get("/api/v1/stations")
     assert listed.status_code == 200
     codes = {row["code"] for row in listed.json()}
-    assert codes == {"AGZS-AKT-12"}
+    assert codes == {"AGZS-AKT-12", "AGZS-TEST"}
 
 
 def test_create_and_edit_station():

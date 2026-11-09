@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.auth import Principal, require_admin, require_principal, require_station_access
 from app.config import get_settings
-from app.schemas.auth import LevelReadingOut, StationUserCreate, StationUserCreated
+from app.schemas.auth import LevelReadingOut, StationUserCreate, StationUserCreated, StationUserOut
 from app.schemas.station import (
     StationCreate,
     StationDetailOut,
@@ -92,7 +92,8 @@ def _station_tanks_out(station_id: UUID) -> list[TankOut]:
 def list_station_cards(principal: Principal = Depends(require_principal)) -> list[StationOut]:
     rows = list_stations()
     if not principal.is_admin:
-        rows = [row for row in rows if row.id == principal.station_id]
+        allowed = set(principal.stations())
+        rows = [row for row in rows if row.id in allowed]
     return [_station_out(station) for station in rows]
 
 
@@ -282,6 +283,26 @@ def list_device_levels(
     ]
 
 
+@router.get("/{station_id}/users", response_model=list[StationUserOut])
+def list_station_logins(
+    station_id: UUID,
+    _admin: str = Depends(require_admin),
+) -> list[StationUserOut]:
+    get_station(station_id)
+    if use_postgres():
+        from app.services import postgres_account
+
+        rows = postgres_account.list_station_users(station_id)
+    else:
+        from app.services.station_accounts import list_owners
+
+        rows = list_owners(station_id)
+    return [
+        StationUserOut(id=row.id, station_id=station_id, username=row.username, kind=getattr(row, "kind", "owner"))
+        for row in rows
+    ]
+
+
 @router.post("/{station_id}/users", response_model=StationUserCreated, status_code=201)
 def create_station_login(
     station_id: UUID,
@@ -289,16 +310,18 @@ def create_station_login(
     _admin: str = Depends(require_admin),
 ) -> StationUserCreated:
     get_station(station_id)
-    if not use_postgres():
-        from fastapi import HTTPException
+    if use_postgres():
+        from app.services import postgres_account
 
-        raise HTTPException(status_code=501, detail="вход станции доступен при ACCOUNT_STORE=postgres")
-    from app.services import postgres_account
+        user = postgres_account.create_station_user(station_id, body.username, body.password)
+    else:
+        from app.services.station_accounts import grant_owner
 
-    user = postgres_account.create_station_user(station_id, body.username, body.password)
+        user = grant_owner(station_id, body.username, body.password)
     return StationUserCreated(
         id=user.id,
-        station_id=user.station_id,
+        station_id=station_id,
         username=user.username,
+        kind=getattr(user, "kind", "owner"),
         password=body.password,
     )

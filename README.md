@@ -8,6 +8,7 @@
 ```
 backend/            FastAPI, учёт, ingest, миграции Alembic
 frontend/           React + MapLibre (визуальный язык LogHub)
+station-app/        пульт колонок, PySide6, команда agzs-station --ui
 docker-compose.yml  локальные PostgreSQL и API
 deploy/             площадка: web (nginx), api, Postgres
 ```
@@ -47,6 +48,23 @@ npm run dev
 UI: `http://localhost:5173` (прокси `/api` → `:8000`).  
 Витрина раз в 15 секунд читает `GET /api/v1/public/levels`.  
 Тема — по [LogHub](https://github.com/ed-baer97/LogHub) (Caspian/forest).
+
+### Пульт колонок
+
+Окно кассира — PySide6. Оно не встроено в сайт: смена, доза, пуск и стоп уходят на `http://127.0.0.1:5173/api/v1`. Сайт на 5173 проксирует запись на локальный API `8000`, в тестовую АГЗС `AGZS-TEST`. В существующую заправку эти данные не пишутся. На сервер пока не выкладываем.
+
+```powershell
+cd station-app
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[ui]"
+$env:AGZS_ENV = "emulator"
+$env:AGZS_PUMP_DRIVER = "emulator"
+agzs-station --ui
+```
+
+Те же две переменные можно записать в `station-app/.env`. Вход в окне — логин владельца тестовой АГЗС, не логин платформы. Без `--ui` процесс только печатает, что касса готова.
 
 ### Тесты
 

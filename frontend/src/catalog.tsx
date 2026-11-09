@@ -40,8 +40,9 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   const admin = isAdmin(session);
   const reload = useCallback(async () => {
     try {
-      const apiStations = await api.stations();
-      const apiTrucks = admin ? await api.trucks() : [];
+      const [apiStations, apiTrucks] = admin
+        ? await Promise.all([api.stations(), api.trucks()])
+        : [await api.stations(), [] as CatalogTruck[]];
       setStations(apiStations.filter((row) => !removedStationIds.current.has(row.id)));
       setTrucks(apiTrucks.filter((row) => !removedTruckIds.current.has(row.id)));
       setError(null);

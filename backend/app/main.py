@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import require_admin, require_principal
 from app.config import get_settings
-from app.routers import auth, balance, batches, events, ingest, map as map_router, public, stations, trucks
+from app.routers import auth, balance, batches, console, events, ingest, map as map_router, public, stations, trucks
 from app.schemas.common import HealthOut
 from app.services.boot import import_state_if_empty, run_migrations
 from app.services.memory_state import restore
@@ -25,6 +25,9 @@ async def lifespan(_app: FastAPI):
             import_state_if_empty()
         else:
             restore()
+            from app.services.catalog import ensure_console_station
+
+            ensure_console_station()
         shelly_poller.start()
     try:
         yield
@@ -62,6 +65,7 @@ def create_app() -> FastAPI:
     admin_guard = [Depends(require_admin)]
     # Станции: admin или пользователь своей АГЗС (проверка внутри роутера).
     app.include_router(stations.router, prefix=prefix, dependencies=[Depends(require_principal)])
+    app.include_router(console.router, prefix=prefix, dependencies=[Depends(require_principal)])
     app.include_router(trucks.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(batches.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(balance.router, prefix=prefix, dependencies=admin_guard)
