@@ -155,6 +155,8 @@ export interface CabinetFace {
   sales: number;
   pumps: CabinetPump[];
   recent: CabinetSale[];
+  history?: CabinetSale[];
+  history_capped?: boolean;
 }
 
 export interface StationUser {
@@ -393,5 +395,6 @@ export const api = {
   stationSnapshots: (stationId: string) =>
     getJson<BalanceSnapshot[]>(`/balance/stations/${stationId}/snapshots`),
   publicLevels: () => getJson<PublicStation[]>("/public/levels"),
-  me: () => getJson<{ username: string; role: string; station_id: string | null }>("/auth/me"),
+  me: () =>
+    getJson<{ username: string; role: string; station_id: string | null; station_ids?: string[] }>("/auth/me"),
 };

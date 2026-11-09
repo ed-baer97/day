@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { isAdmin } from "../access";
+import type { CabinetFace, CabinetSale } from "../api/client";
 import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
-import { dateTime, liters, stationRegion } from "../format";
+import { dateTime, liters, stationRegion, tenge } from "../format";
 import { isLowFill, SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels, useSensorDay, useViewPeriod } from "../liveLevels";
+import type { TimeRange } from "../period";
 import { chartOf } from "../sensorDay";
 import { BarChart, LineChart } from "./Charts";
 import ConsoleAdminsCard from "./ConsoleAdminsCard";
@@ -11,7 +13,20 @@ import PeriodSwitch from "./PeriodSwitch";
 import StationCabinet from "./StationCabinet";
 import TankDeviceRows from "./TankDeviceRows";
 
-type DetailTab = "overview" | "tanks" | "pumps" | "history";
+type DetailTab = "tanks" | "pumps" | "history";
+
+function doseLiters(ml: number): string {
+  return `${(ml / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 3 })} л`;
+}
+
+function salesInRange(sales: CabinetSale[], range: TimeRange): CabinetSale[] {
+  const start = range.start.getTime();
+  const end = range.end.getTime();
+  return sales.filter((sale) => {
+    const time = new Date(sale.finished_at).getTime();
+    return time >= start && time < end;
+  });
+}
 
 export default function StationDetailPage({
   stationId,
@@ -33,10 +48,38 @@ export default function StationDetailPage({
   const { byCode } = usePublicLevels();
   const { range, historyLoading } = useViewPeriod();
   const day = useSensorDay([stationId]);
-  const [tab, setTab] = useState<DetailTab>("overview");
+  const [tab, setTab] = useState<DetailTab>("tanks");
+  const [face, setFace] = useState<CabinetFace | null>(null);
   const stations = catalog.stations.filter((row) => row.is_active);
   const index = stations.findIndex((row) => row.id === stationId);
   const station = index >= 0 ? stations[index] : catalog.stations.find((row) => row.id === stationId);
+
+  const ledger = useMemo(() => {
+    if (!face) return [];
+    return face.history && face.history.length > 0 ? face.history : face.recent;
+  }, [face]);
+  const periodSales = useMemo(() => salesInRange(ledger, range), [ledger, range]);
+  const consoleMl = periodSales.reduce((sum, sale) => sum + sale.delivered_ml, 0);
+  const consoleKzt = periodSales.reduce((sum, sale) => sum + sale.amount_kzt, 0);
+  const pumpChart = useMemo(() => {
+    const pumps = face?.pumps ?? [];
+    return {
+      labels: pumps.map((pump) => pump.name),
+      values: pumps.map(
+        (pump) =>
+          periodSales.filter((sale) => sale.pump_name === pump.name).reduce((sum, sale) => sum + sale.delivered_ml, 0) /
+          1000
+      ),
+    };
+  }, [face, periodSales]);
+  const saleChart = useMemo(() => {
+    const values = range.labels.map(() => 0);
+    for (const sale of periodSales) {
+      const index = range.indexAt(new Date(sale.finished_at).getTime());
+      if (index >= 0) values[index] += sale.delivered_ml / 1000;
+    }
+    return values;
+  }, [periodSales, range]);
 
   if (!station) {
     return (
@@ -57,6 +100,10 @@ export default function StationDetailPage({
   const next = index >= 0 && index < stations.length - 1 ? stations[index + 1] : stations[0];
   const levelChart = chartOf(series?.series ?? [], series?.labels ?? range.labels);
   const hasDay = series?.opening != null;
+  const online = !!live && live.tanks.some((tank) => tank.online === true && tank.remainder_liters != null);
+  const pumpHasVolume = pumpChart.values.some((value) => value > 0);
+  const saleHasVolume = saleChart.some((value) => value > 0);
+  const periodNote = face?.history_capped ? " В расчёт вошли последние 500 отпусков." : "";
 
   return (
     <div className="dash">
@@ -113,20 +160,181 @@ export default function StationDetailPage({
         </div>
         <div className="st-row-badges">
           {hasTanks && live ? <SensorStatus level={live} /> : <span className="badge warn">датчик не подключён</span>}
-          <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
-          {hasDay && series ? <span className="badge">расход {liters(series.outflow)}</span> : null}
         </div>
       </header>
 
-      <StationCabinet stationId={station.id} canSetPrice={canSetPrice} />
+      <div className="dash-kpis">
+        <div className="dash-kpi">
+          <span>Газ в резервуаре</span>
+          <strong>{hasTanks && live?.remainder != null ? liters(live.remainder) : "—"}</strong>
+          <em>{hasTanks ? `из ${liters(live?.capacity ?? 0)}` : "резервуара в кабинете нет"}</em>
+        </div>
+        <div className="dash-kpi">
+          <span>Заполнение</span>
+          <strong>{!hasTanks || live?.fill == null ? "—" : `${Math.round(fillPct)}%`}</strong>
+          <em>
+            {!hasTanks || live?.fill == null ? "замера нет" : isLowFill(live.fill) ? "мало газа" : "доля ёмкости"}
+          </em>
+        </div>
+        <div className="dash-kpi">
+          <span>{range.inflowTitle}</span>
+          <strong>{range.countsReceipts ? liters(series?.inflow ?? 0) : "—"}</strong>
+          <em>
+            {range.countsReceipts
+              ? (series?.inflow ?? 0) > 0
+                ? "принятые поставки"
+                : "поставок не было"
+              : "поставки в книге без даты, за этот срок не считаем"}
+          </em>
+        </div>
+        <div className="dash-kpi">
+          <span>{range.expenseTitle}</span>
+          <strong>{hasDay && series ? liters(series.outflow) : "—"}</strong>
+          <em>на сколько уровень ниже первого замера за срок</em>
+        </div>
+        <div className="dash-kpi">
+          <span>Отпуск колонок</span>
+          <strong>{face ? doseLiters(consoleMl) : "—"}</strong>
+          <em>за выбранный срок</em>
+        </div>
+        <div className="dash-kpi">
+          <span>Выручка колонок</span>
+          <strong>{face ? tenge(consoleKzt) : "—"}</strong>
+          <em>за выбранный срок</em>
+        </div>
+        <div className="dash-kpi">
+          <span>Отпусков</span>
+          <strong>{face ? periodSales.length : "—"}</strong>
+          <em>законченные дозы пульта</em>
+        </div>
+        <div className="dash-kpi">
+          <span>Датчик</span>
+          <strong>{!hasTanks ? "нет" : online ? "на связи" : live?.remainder == null ? "нет замера" : "нет связи"}</strong>
+          <em>
+            {!hasTanks
+              ? "резервуар не подключён"
+              : online
+                ? "замер свежий"
+                : live?.remainder == null
+                  ? "количество газа ещё не пришло"
+                  : "замер устарел"}
+          </em>
+        </div>
+      </div>
+
+      <div className="dash-charts">
+        <section className="dash-card">
+          <h3>{range.chartTitle}</h3>
+          <p className="dash-muted">
+            {range.countsReceipts ? (
+              <>
+                Приход {liters(series?.inflow ?? 0)}
+                {(series?.inflow ?? 0) > 0 ? " — поставка." : ": поставки не было."}{" "}
+              </>
+            ) : (
+              "Поставки в книге без даты, за этот срок не считаем. "
+            )}
+            На линии газ, который уже был в резервуаре.
+            {hasDay && series ? ` Расход ${liters(series.outflow)}.` : ""}
+          </p>
+          {historyLoading && levelChart.labels.length === 0 ? (
+            <p className="dash-muted">Загрузка замеров…</p>
+          ) : levelChart.labels.length === 1 ? (
+            <BarChart
+              labels={levelChart.labels}
+              series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
+            />
+          ) : levelChart.labels.length > 1 ? (
+            <LineChart
+              labels={levelChart.labels}
+              series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
+            />
+          ) : (
+            <p className="dash-muted">
+              {range.includesNow && hasTanks && live?.remainder != null
+                ? `Сейчас в резервуаре ${liters(live.remainder)}. Смен уровня за этот срок не было.`
+                : "Замера датчика за этот срок ещё нет."}
+            </p>
+          )}
+        </section>
+        <section className="dash-card">
+          <h3>Цифровой уровень резервуара</h3>
+          <div className="gauge">
+            <div className="gauge-bar">
+              <i
+                style={{
+                  height: `${fillPct}%`,
+                  background: isLowFill(hasTanks ? live?.fill : null)
+                    ? "var(--coral)"
+                    : "linear-gradient(0deg, var(--sea-2, var(--sea)), var(--sea))",
+                }}
+              />
+            </div>
+            <div className="gauge-meta">
+              <strong>{hasTanks && live?.fill == null ? "—" : `${Math.round(fillPct)}%`}</strong>
+              <span>
+                {!hasTanks || live?.remainder == null
+                  ? "замера ещё нет"
+                  : `${liters(live.remainder)} из ${liters(live.capacity)}`}
+              </span>
+              {hasTanks && live
+                ? live.tanks.map((item) => (
+                    <span key={item.code}>
+                      резервуар {item.code} · <span className={`badge ${tankSensorBadge(item)}`}>{tankSensorLabel(item)}</span>
+                      {" · "}
+                      {item.remainder_liters == null
+                        ? "замера нет"
+                        : `${liters(item.remainder_liters)} из ${liters(item.capacity_liters)}`}
+                    </span>
+                  ))
+                : null}
+              <span className="dash-muted">{hasTanks && live?.measuredAt ? dateTime(live.measuredAt) : "замера нет"}</span>
+            </div>
+          </div>
+        </section>
+        <section className="dash-card">
+          <h3>Колонки за срок</h3>
+          <p className="dash-muted">
+            Литры, которые пульт отпустил за выбранный срок.{periodNote}
+          </p>
+          {!face ? (
+            <p className="dash-muted">Жду ответ пульта…</p>
+          ) : pumpChart.labels.length === 0 ? (
+            <p className="dash-muted">Колонок на этой АГЗС нет.</p>
+          ) : pumpHasVolume ? (
+            <BarChart
+              labels={pumpChart.labels}
+              series={[{ name: "Отпуск", color: "var(--dust)", values: pumpChart.values }]}
+            />
+          ) : (
+            <p className="dash-muted">За этот срок колонки ничего не отпустили.</p>
+          )}
+        </section>
+        <section className="dash-card">
+          <h3>Отпуски по времени</h3>
+          <p className="dash-muted">
+            Те же литры, разложенные по {range.preset === "week" || range.preset === "month" ? "дням" : "часам"} срока.
+            {periodNote}
+          </p>
+          {!face ? (
+            <p className="dash-muted">Жду ответ пульта…</p>
+          ) : saleHasVolume ? (
+            <BarChart
+              labels={range.labels}
+              series={[{ name: "Отпуск", color: "var(--coral)", values: saleChart }]}
+            />
+          ) : (
+            <p className="dash-muted">За этот срок отпусков нет.</p>
+          )}
+        </section>
+      </div>
+
+      <StationCabinet stationId={station.id} canSetPrice={canSetPrice} onFace={setFace} />
       {session?.role === "console" ? null : (
         <ConsoleAdminsCard stationId={station.id} canCreate={canSetPrice} />
       )}
 
       <div className="admin-tabs" role="tablist" style={{ marginBottom: 20 }}>
-        <button type="button" role="tab" aria-selected={tab === "overview"} className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
-          Сводка и уровень
-        </button>
         <button type="button" role="tab" aria-selected={tab === "tanks"} className={tab === "tanks" ? "active" : ""} onClick={() => setTab("tanks")}>
           Резервуары и датчики ({live?.tanks.length ?? 0})
         </button>
@@ -137,78 +345,6 @@ export default function StationDetailPage({
           Поставки и инциденты
         </button>
       </div>
-
-      {tab === "overview" ? (
-        <div className="st-grid">
-          <section className="dash-card">
-            <h3>{range.chartTitle}</h3>
-            <p className="dash-muted">
-              {range.countsReceipts ? (
-                <>
-                  Приход {liters(series?.inflow ?? 0)}
-                  {(series?.inflow ?? 0) > 0 ? " — поставка." : ": поставки не было."}{" "}
-                </>
-              ) : (
-                "Поставки в книге без даты, за этот срок не считаем. "
-              )}
-              На линии газ, который уже был в резервуаре.
-              {hasDay && series ? ` Расход ${liters(series.outflow)}.` : ""}
-            </p>
-            {historyLoading && levelChart.labels.length === 0 ? (
-              <p className="dash-muted">Загрузка замеров…</p>
-            ) : levelChart.labels.length === 1 ? (
-              <BarChart
-                labels={levelChart.labels}
-                series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
-              />
-            ) : levelChart.labels.length > 1 ? (
-              <LineChart
-                labels={levelChart.labels}
-                series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
-              />
-            ) : (
-              <p className="dash-muted">
-                {range.includesNow && hasTanks && live?.remainder != null
-                  ? `Сейчас в резервуаре ${liters(live.remainder)}. Смен уровня за этот срок не было.`
-                  : "Замера датчика за этот срок ещё нет."}
-              </p>
-            )}
-          </section>
-          <section className="dash-card">
-            <h3>Цифровой уровень резервуара</h3>
-            <div className="gauge">
-              <div className="gauge-bar">
-                <i
-                  style={{
-                    height: `${fillPct}%`,
-                    background: isLowFill(hasTanks ? live?.fill : null) ? "var(--coral)" : "linear-gradient(0deg, var(--sea-2, var(--sea)), var(--sea))",
-                  }}
-                />
-              </div>
-              <div className="gauge-meta">
-                <strong>{hasTanks && live?.fill == null ? "—" : `${Math.round(fillPct)}%`}</strong>
-                <span>
-                  {!hasTanks || live?.remainder == null
-                    ? "замера ещё нет"
-                    : `${liters(live.remainder)} из ${liters(live.capacity)}`}
-                </span>
-                {hasTanks && live
-                  ? live.tanks.map((item) => (
-                      <span key={item.code}>
-                        резервуар {item.code} · <span className={`badge ${tankSensorBadge(item)}`}>{tankSensorLabel(item)}</span>
-                        {" · "}
-                        {item.remainder_liters == null
-                          ? "замера нет"
-                          : `${liters(item.remainder_liters)} из ${liters(item.capacity_liters)}`}
-                      </span>
-                    ))
-                  : null}
-                <span className="dash-muted">{hasTanks && live?.measuredAt ? dateTime(live.measuredAt) : "замера нет"}</span>
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
 
       {tab === "tanks" ? (
         <>
@@ -255,7 +391,7 @@ export default function StationDetailPage({
       {tab === "pumps" ? (
         <section className="dash-card">
           <h3>Колонки и КГД</h3>
-          <p className="dash-muted">Колонки, кассы и сверка с КГД не подключены. Цифр по ним нет.</p>
+          <p className="dash-muted">Сверка с КГД не подключена. Отпуски колонок уже в сводке и в таблице выше.</p>
         </section>
       ) : null}
 

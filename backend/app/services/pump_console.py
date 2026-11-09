@@ -391,8 +391,22 @@ class Desk:
                     "sales": len(rows),
                 }
             )
-        recent = sorted(finished, key=lambda sale: sale.finished_at or sale.started_at, reverse=True)[:20]
+        ordered = sorted(finished, key=lambda sale: sale.finished_at or sale.started_at, reverse=True)
+        recent = ordered[:20]
+        history = ordered[:500]
         price = self.pumps[0].price_kzt_per_liter if self.pumps else _PRICE_KZT
+
+        def sale_row(sale: _Sale) -> dict:
+            return {
+                "sale_id": str(sale.id),
+                "number": sale.number,
+                "pump_name": names.get(sale.pump_id, ""),
+                "delivered_ml": sale.delivered_ml,
+                "amount_kzt": sale.actual_kzt,
+                "price_kzt_per_liter": sale.price_kzt_per_liter,
+                "finished_at": (sale.finished_at or sale.started_at).isoformat(),
+            }
+
         return {
             "station_id": self.station_id,
             "price_kzt_per_liter": price,
@@ -400,18 +414,9 @@ class Desk:
             "amount_kzt": sum(row["amount_kzt"] for row in pumps),
             "sales": sum(row["sales"] for row in pumps),
             "pumps": pumps,
-            "recent": [
-                {
-                    "sale_id": str(sale.id),
-                    "number": sale.number,
-                    "pump_name": names.get(sale.pump_id, ""),
-                    "delivered_ml": sale.delivered_ml,
-                    "amount_kzt": sale.actual_kzt,
-                    "price_kzt_per_liter": sale.price_kzt_per_liter,
-                    "finished_at": (sale.finished_at or sale.started_at).isoformat(),
-                }
-                for sale in recent
-            ],
+            "recent": [sale_row(sale) for sale in recent],
+            "history": [sale_row(sale) for sale in history],
+            "history_capped": len(ordered) > 500,
         }
 
     def acknowledge(self, incident_id: UUID) -> dict:

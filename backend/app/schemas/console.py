@@ -92,6 +92,8 @@ class CabinetFace(BaseModel):
     sales: int
     pumps: list[CabinetPump]
     recent: list[CabinetSale]
+    history: list[CabinetSale] = Field(default_factory=list)
+    history_capped: bool = False
 
 
 class IncidentRow(BaseModel):
