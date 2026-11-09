@@ -48,6 +48,7 @@ export interface TankDevice {
   capacity_liters: number;
   ingest_token: string;
   level_path: string;
+  ingest_url?: string;
   shelly: ShellyLink | null;
 }
 
@@ -393,5 +394,5 @@ export const api = {
   stationSnapshots: (stationId: string) =>
     getJson<BalanceSnapshot[]>(`/balance/stations/${stationId}/snapshots`),
   publicLevels: () => getJson<PublicStation[]>("/public/levels"),
-  me: () => getJson<{ username: string; role: string; station_id: string | null }>("/auth/me"),
+  me: () => getJson<{ username: string; role: string; station_id: string | null; station_ids?: string[] }>("/auth/me"),
 };

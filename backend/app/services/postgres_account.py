@@ -17,16 +17,18 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
-from app.schemas.ingest import CalibrationIn, IngestAck, LevelIngest, TankIngestState
+from app.schemas.ingest import CalibrationIn, DispenseIngest, IngestAck, LevelIngest, ReceiptIngest, TankIngestState
 from app.services.balance import calculate_remainder, classify_discrepancy
 from app.services.calibration import LevelCalibration, level_volts_changed, round_percent, volts_to_percent
 from app.services.catalog import StationCard
 from app.services.device_ingest import TankDevice
 from app.services.passwords import hash_password, verify_password
+from app.services.station_accounts import StationOwner
 
 logger = logging.getLogger(__name__)
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
+_pg_seen_events: set[str] = set()
 
 
 def session() -> Session:
@@ -390,6 +392,12 @@ def accept_level(body: LevelIngest) -> IngestAck:
             row.opening_liters < 0 and row.receipts_liters == 0 and row.dispense_liters == 0
         ):
             row.opening_liters = liters
+            if row.pending_receipt_liters:
+                row.receipts_liters += row.pending_receipt_liters
+                row.pending_receipt_liters = 0.0
+            if row.pending_dispense_liters:
+                row.dispense_liters += row.pending_dispense_liters
+                row.pending_dispense_liters = 0.0
         row.actual_remainder_liters = liters
         row.last_measured_at = heard_at
         row.level_source = LevelSource.electronic
@@ -419,6 +427,54 @@ def accept_level(body: LevelIngest) -> IngestAck:
         return _ack(row, message="level accepted", entity_id=entity_id)
 
 
+def accept_dispense(body: DispenseIngest) -> IngestAck:
+    key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
+    with session() as db:
+        if body.tank_id is None:
+            if key in _pg_seen_events:
+                return IngestAck(accepted=True, message="duplicate", duplicate=True)
+            _pg_seen_events.add(key)
+            return IngestAck(accepted=True, message="dispense accepted", entity_id=uuid4())
+        row = db.get(Tank, body.tank_id)
+        if row is None or row.station_id != body.station_id:
+            raise HTTPException(status_code=404, detail="резервуар не найден")
+        if key in _pg_seen_events:
+            return _ack(row, message="duplicate", duplicate=True)
+        _pg_seen_events.add(key)
+        if row.opening_liters is None:
+            row.pending_dispense_liters += body.volume_liters
+        else:
+            row.dispense_liters += body.volume_liters
+            _recompute(row)
+        db.commit()
+        db.refresh(row)
+        return _ack(row, message="dispense accepted", entity_id=uuid4())
+
+
+def accept_receipt(body: ReceiptIngest) -> IngestAck:
+    if body.station_id is None or body.tank_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="укажите резервуар токеном или полями station_id и tank_id",
+        )
+    key = body.source_event_id or f"receipt:{body.tank_id}:{body.recorded_at.isoformat()}"
+    with session() as db:
+        row = db.get(Tank, body.tank_id)
+        if row is None or row.station_id != body.station_id:
+            raise HTTPException(status_code=404, detail="резервуар не найден")
+        if key in _pg_seen_events:
+            return _ack(row, message="duplicate", duplicate=True)
+        _pg_seen_events.add(key)
+        if row.opening_liters is None:
+            row.pending_receipt_liters += body.volume_liters
+        else:
+            row.receipts_liters += body.volume_liters
+            _recompute(row)
+        db.commit()
+        db.refresh(row)
+        return _ack(row, message="receipt accepted", entity_id=uuid4())
+
+
 def list_level_readings(
     station_id: UUID,
     tank_id: UUID,
@@ -439,17 +495,50 @@ def list_level_readings(
         return list(db.scalars(query.order_by(order).limit(limit)).all())
 
 
-def list_station_users(station_id: UUID) -> list[StationUser]:
+def _to_station_owner(rows: list[StationUser]) -> StationOwner:
+    first = rows[0]
+    kind = getattr(first, "kind", None) or "owner"
+    return StationOwner(
+        id=first.id,
+        station_id=first.station_id,
+        username=first.username,
+        password_hash=first.password_hash,
+        kind=kind,
+        station_ids=[row.station_id for row in rows],
+    )
+
+
+def list_station_users(station_id: UUID) -> list[StationOwner]:
     with session() as db:
         if db.get(Station, station_id) is None:
             raise HTTPException(status_code=404, detail="Station not found")
-        rows = list(db.scalars(select(StationUser).where(StationUser.station_id == station_id)).all())
-        for row in rows:
-            db.expunge(row)
-        return rows
+        rows = list(
+            db.scalars(
+                select(StationUser).where(
+                    StationUser.station_id == station_id,
+                    StationUser.kind == "owner",
+                )
+            ).all()
+        )
+        return [_to_station_owner([row]) for row in rows]
 
 
-def create_station_user(station_id: UUID, username: str, password: str) -> StationUser:
+def list_console_users(station_id: UUID) -> list[StationOwner]:
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise HTTPException(status_code=404, detail="Station not found")
+        rows = list(
+            db.scalars(
+                select(StationUser).where(
+                    StationUser.station_id == station_id,
+                    StationUser.kind == "console",
+                )
+            ).all()
+        )
+        return [_to_station_owner([row]) for row in rows]
+
+
+def create_station_user(station_id: UUID, username: str, password: str) -> StationOwner:
     from app.config import get_settings
 
     cleaned = username.strip().lower()
@@ -460,6 +549,52 @@ def create_station_user(station_id: UUID, username: str, password: str) -> Stati
     with session() as db:
         if db.get(Station, station_id) is None:
             raise HTTPException(status_code=404, detail="Station not found")
+        existing = list(db.scalars(select(StationUser).where(StationUser.username == cleaned)).all())
+        if existing:
+            if any(getattr(row, "kind", "owner") != "owner" for row in existing):
+                raise HTTPException(status_code=409, detail="этот логин принадлежит администратору пульта")
+            already = next((row for row in existing if row.station_id == station_id), None)
+            if already is None:
+                row = StationUser(
+                    id=uuid4(),
+                    station_id=station_id,
+                    username=cleaned,
+                    password_hash=existing[0].password_hash,
+                    kind="owner",
+                )
+                db.add(row)
+                db.commit()
+                db.refresh(row)
+                existing.append(row)
+            return _to_station_owner(existing)
+        if len(password) < 6:
+            raise HTTPException(status_code=422, detail="пароль владельца не короче 6 символов")
+        row = StationUser(
+            id=uuid4(),
+            station_id=station_id,
+            username=cleaned,
+            password_hash=hash_password(password),
+            kind="owner",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return _to_station_owner([row])
+
+
+def create_console_user(station_id: UUID, username: str, password: str) -> StationOwner:
+    from app.config import get_settings
+
+    cleaned = username.strip().lower()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="укажите логин")
+    if cleaned == get_settings().admin_username.strip().lower():
+        raise HTTPException(status_code=409, detail="этот логин занят администратором платформы")
+    if len(password) < 6:
+        raise HTTPException(status_code=422, detail="пароль администратора пульта не короче 6 символов")
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise HTTPException(status_code=404, detail="Station not found")
         if db.scalar(select(StationUser).where(StationUser.username == cleaned)):
             raise HTTPException(status_code=409, detail="логин уже занят")
         row = StationUser(
@@ -467,21 +602,21 @@ def create_station_user(station_id: UUID, username: str, password: str) -> Stati
             station_id=station_id,
             username=cleaned,
             password_hash=hash_password(password),
+            kind="console",
         )
         db.add(row)
         db.commit()
         db.refresh(row)
-        return row
+        return _to_station_owner([row])
 
 
-def authenticate_station_user(username: str, password: str) -> StationUser | None:
+def authenticate_station_user(username: str, password: str) -> StationOwner | None:
     cleaned = username.strip().lower()
     with session() as db:
-        row = db.scalar(select(StationUser).where(StationUser.username == cleaned))
-        if row is None or not verify_password(password, row.password_hash):
+        rows = list(db.scalars(select(StationUser).where(StationUser.username == cleaned)).all())
+        if not rows or not verify_password(password, rows[0].password_hash):
             return None
-        db.expunge(row)
-        return row
+        return _to_station_owner(rows)
 
 
 def import_memory_snapshot(data: dict) -> None:

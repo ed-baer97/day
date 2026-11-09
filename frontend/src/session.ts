@@ -5,7 +5,7 @@ const KEY = "lpg.admin.session";
 export type AdminSession = {
   token: string;
   username: string;
-  role?: AppRole | "owner" | "console";
+  role?: AppRole;
   station_id?: string | null;
   station_ids?: string[];
 };
@@ -16,8 +16,7 @@ export function readSession(): AdminSession | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AdminSession>;
     if (!parsed.token || !parsed.username) return null;
-    const role =
-      parsed.role === "owner" || parsed.role === "console" ? parsed.role : (roleOf(parsed.role) ?? "admin");
+    const role = roleOf(parsed.role) ?? "admin";
     const stationIds = Array.isArray(parsed.station_ids)
       ? parsed.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
       : [];

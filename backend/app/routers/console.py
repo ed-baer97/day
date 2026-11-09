@@ -105,10 +105,14 @@ def list_console_admins(station_id: UUID, principal: Principal = Depends(require
     from app.services.station_accounts import list_console_admins as list_memory
 
     if use_postgres():
-        return []
+        from app.services import postgres_account
+
+        rows = postgres_account.list_console_users(station_id)
+    else:
+        rows = list_memory(station_id)
     return [
         StationUserOut(id=row.id, station_id=station_id, username=row.username, kind="console")
-        for row in list_memory(station_id)
+        for row in rows
     ]
 
 
@@ -124,11 +128,14 @@ def create_console_admin(
     from app.services.station_accounts import create_console_admin as create_memory
 
     get_station(station_id)
-    if use_postgres():
-        raise HTTPException(status_code=501, detail="администраторы пульта в этой базе ещё не заведены")
     if len(body.password) < 6:
         raise HTTPException(status_code=422, detail="пароль администратора пульта не короче 6 символов")
-    user = create_memory(station_id, body.username, body.password)
+    if use_postgres():
+        from app.services import postgres_account
+
+        user = postgres_account.create_console_user(station_id, body.username, body.password)
+    else:
+        user = create_memory(station_id, body.username, body.password)
     return StationUserCreated(
         id=user.id,
         station_id=station_id,

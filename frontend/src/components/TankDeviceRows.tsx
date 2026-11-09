@@ -610,7 +610,7 @@ function toRow(device: TankDevice, fallbackRemainder?: number): Row {
     code: device.code,
     capacity: String(device.capacity_liters),
     token: device.ingest_token,
-    path: device.level_path,
+    path: device.ingest_url || device.level_path,
     shellyHost: device.shelly?.host ?? "",
     shelly: device.shelly,
     zeroVolts: "0.5",

@@ -523,6 +523,12 @@ def accept_level(body: LevelIngest) -> IngestAck:
 
 
 def accept_dispense(body: DispenseIngest) -> IngestAck:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.accept_dispense(body)
     key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
     with _lock:
         if key in _seen:
@@ -546,6 +552,12 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.accept_receipt(body)
     key = body.source_event_id or f"receipt:{body.tank_id}:{body.recorded_at.isoformat()}"
     with _lock:
         book = _book(body.station_id, body.tank_id)

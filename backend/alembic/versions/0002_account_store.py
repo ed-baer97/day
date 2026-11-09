@@ -47,8 +47,9 @@ def upgrade() -> None:
         sa.Column("station_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("stations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("username", sa.String(64), nullable=False),
         sa.Column("password_hash", sa.String(255), nullable=False),
+        sa.Column("kind", sa.String(16), server_default="owner", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("username", name="uq_station_users_username"),
+        sa.UniqueConstraint("station_id", "username", name="uq_station_users_station_username"),
     )
 
 

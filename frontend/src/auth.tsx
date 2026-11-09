@@ -36,11 +36,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .me()
       .then((me) => {
         if (!live) return;
+        const stationIds = Array.isArray(me.station_ids)
+          ? me.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+          : me.station_id
+            ? [me.station_id]
+            : current.station_ids ?? [];
         const next: AdminSession = {
           token: current.token,
           username: me.username,
-          role: roleOf(me.role),
-          station_id: me.station_id,
+          role: roleOf(me.role) ?? current.role,
+          station_id: me.station_id ?? (stationIds.length === 1 ? stationIds[0] : null),
+          station_ids: stationIds,
         };
         writeSession(next);
         setSession(next);
