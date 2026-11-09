@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { roleOf } from "./access";
 import { api } from "./api/client";
-import { onSessionExpired, readSession, writeSession, type AdminSession } from "./session";
+import { onSessionExpired, readSession, roleFromServer, writeSession, type AdminSession } from "./session";
 
 type AuthApi = {
   session: AdminSession | null;
@@ -36,11 +35,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .me()
       .then((me) => {
         if (!live) return;
+        const stationIds = Array.isArray(me.station_ids)
+          ? me.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+          : [];
         const next: AdminSession = {
           token: current.token,
           username: me.username,
-          role: roleOf(me.role),
-          station_id: me.station_id,
+          role: roleFromServer(me.role),
+          station_id: me.station_id ?? (stationIds.length === 1 ? stationIds[0] : null),
+          station_ids: stationIds.length > 0 ? stationIds : me.station_id ? [me.station_id] : [],
         };
         writeSession(next);
         setSession(next);

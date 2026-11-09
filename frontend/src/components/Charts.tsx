@@ -15,7 +15,17 @@ export function fmtShort(v: number) {
   const a = Math.abs(v);
   if (a >= 10_000) return `${Math.round(v / 1000)}k`;
   if (a >= 1000) return `${(v / 1000).toFixed(1)}k`;
-  return `${Math.round(v)}`;
+  if (a >= 10) return `${Math.round(v)}`;
+  if (a >= 1) return v.toFixed(1);
+  return v.toFixed(2);
+}
+
+function tipLiters(v: number) {
+  const text =
+    Math.abs(v) >= 100
+      ? Math.round(v).toLocaleString("ru-RU")
+      : v.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  return `${text} л`;
 }
 
 function Legend({ series }: { series: ChartSeries[] }) {
@@ -139,7 +149,7 @@ export function BarChart({
                 style={{ fill: s.color }}
               >
                 <title>
-                  {labels[i]} · {s.name}: {Math.round(v).toLocaleString("ru-RU")} л
+                  {labels[i]} · {s.name}: {tipLiters(v)}
                 </title>
               </rect>
             );

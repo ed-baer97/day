@@ -20,9 +20,11 @@ function errorText(error: unknown): string {
 export default function StationCabinet({
   stationId,
   canSetPrice = false,
+  onFace,
 }: {
   stationId: string | null;
   canSetPrice?: boolean;
+  onFace?: (face: CabinetFace | null) => void;
 }) {
   const [face, setFace] = useState<CabinetFace | null>(null);
   const [price, setPrice] = useState("");
@@ -43,11 +45,19 @@ export default function StationCabinet({
   }, [priceDirty, stationId]);
 
   useEffect(() => {
+    setFace(null);
+  }, [stationId]);
+
+  useEffect(() => {
     void load();
     if (!stationId) return;
     const timer = window.setInterval(() => void load(), 5000);
     return () => window.clearInterval(timer);
   }, [load, stationId]);
+
+  useEffect(() => {
+    onFace?.(face);
+  }, [face, onFace]);
 
   async function onPrice(event: FormEvent) {
     event.preventDefault();
@@ -79,7 +89,8 @@ export default function StationCabinet({
       <p className="dash-muted">
         {canSetPrice
           ? "Цену газа задаёт владелец, отдельно для этой заправки. Пульт считает по ней новые отпуски и присылает расход и стоимость."
-          : "Расход и стоимость приходят с колонок. Цену газа задаёт владелец заправки."}
+          : "Расход и стоимость приходят с колонок. Цену газа задаёт владелец заправки."}{" "}
+        Сводка выше режется выбранным сроком. Здесь — всё, что пульт уже отпустил.
       </p>
       {canSetPrice ? (
       <form className="admin-form cabinet-price" onSubmit={(event) => void onPrice(event)}>
@@ -109,9 +120,9 @@ export default function StationCabinet({
       {face ? (
         <>
           <p className="cabinet-totals">
-            <span>Расход <strong>{doseLiters(face.delivered_ml)}</strong></span>
-            <span>Стоимость <strong>{tenge(face.amount_kzt)}</strong></span>
-            <span>Отпусков <strong>{face.sales}</strong></span>
+            <span>Всего расход <strong>{doseLiters(face.delivered_ml)}</strong></span>
+            <span>Всего стоимость <strong>{tenge(face.amount_kzt)}</strong></span>
+            <span>Всего отпусков <strong>{face.sales}</strong></span>
           </p>
           <div className="dash-table-wrap">
             <table className="dash-table">

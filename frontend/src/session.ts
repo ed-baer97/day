@@ -10,14 +10,18 @@ export type AdminSession = {
   station_ids?: string[];
 };
 
+export function roleFromServer(value: unknown): NonNullable<AdminSession["role"]> {
+  if (value === "owner" || value === "console") return value;
+  return roleOf(value) ?? "admin";
+}
+
 export function readSession(): AdminSession | null {
   try {
     const raw = sessionStorage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AdminSession>;
     if (!parsed.token || !parsed.username) return null;
-    const role =
-      parsed.role === "owner" || parsed.role === "console" ? parsed.role : (roleOf(parsed.role) ?? "admin");
+    const role = roleFromServer(parsed.role);
     const stationIds = Array.isArray(parsed.station_ids)
       ? parsed.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
       : [];

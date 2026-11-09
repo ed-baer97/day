@@ -413,7 +413,6 @@ export default function App() {
             onOpenStation={setDashStationId}
             onOpenAdminStation={admin ? openAdminStation : undefined}
             onOpenMapStation={isStationSide ? undefined : openStationOnMap}
-            showOverviewCharts={isOwner}
           />
         </main>
       )}

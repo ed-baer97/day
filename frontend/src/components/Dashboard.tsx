@@ -18,33 +18,21 @@ export default function Dashboard({
   onOpenStation,
   onOpenAdminStation,
   onOpenMapStation,
-  showOverviewCharts = false,
 }: {
   stationId: string | null;
   onOpenStation: (id: string | null) => void;
   onOpenAdminStation?: (id: string) => void;
   onOpenMapStation?: (id: string) => void;
-  showOverviewCharts?: boolean;
 }) {
   if (stationId) {
     return (
-      <>
-        {showOverviewCharts ? (
-          <Overview
-            onOpenStation={onOpenStation}
-            onOpenAdminStation={onOpenAdminStation}
-            onOpenMapStation={onOpenMapStation}
-            chartsOnly
-          />
-        ) : null}
-        <StationDetailPage
-          stationId={stationId}
-          onBack={() => onOpenStation(null)}
-          onSelectStation={(id) => onOpenStation(id)}
-          onOpenAdmin={onOpenAdminStation}
-          onOpenMap={onOpenMapStation}
-        />
-      </>
+      <StationDetailPage
+        stationId={stationId}
+        onBack={() => onOpenStation(null)}
+        onSelectStation={(id) => onOpenStation(id)}
+        onOpenAdmin={onOpenAdminStation}
+        onOpenMap={onOpenMapStation}
+      />
     );
   }
   return (
@@ -60,12 +48,10 @@ function Overview({
   onOpenStation,
   onOpenAdminStation,
   onOpenMapStation,
-  chartsOnly = false,
 }: {
   onOpenStation: (id: string) => void;
   onOpenAdminStation?: (id: string) => void;
   onOpenMapStation?: (id: string) => void;
-  chartsOnly?: boolean;
 }) {
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
@@ -357,7 +343,6 @@ function Overview({
         </section>
       </div>
 
-      {chartsOnly ? null : (
       <section className="dash-section">
         <div className="st-nav-toolbar">
           <div className="st-nav-top">
@@ -633,7 +618,6 @@ function Overview({
           </div>
         ) : null}
       </section>
-      )}
     </div>
   );
 }
