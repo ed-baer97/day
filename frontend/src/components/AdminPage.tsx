@@ -5,6 +5,7 @@ import { messageOf, useCatalog } from "../catalog";
 import { liters, REGIONS, stationRegion } from "../format";
 import { isLowFill, LOW_FILL_PERCENT, SensorStatus, usePublicLevels } from "../liveLevels";
 import LevelChangesToday from "./LevelChangesToday";
+import StationOwnerCard from "./StationOwnerCard";
 import TankDeviceRows from "./TankDeviceRows";
 import { useToast } from "./Toast";
 
@@ -414,6 +415,7 @@ export default function AdminPage({
                     <TankDeviceRows stationId={station.id} />
                     <LevelChangesToday stationId={station.id} />
                   </section>
+                  <StationOwnerCard stationId={station.id} />
                 </>
               ) : (
                 <p className="admin-empty">Эта АГЗС больше не в списке.</p>

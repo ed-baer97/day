@@ -1,10 +1,13 @@
 import { useState } from "react";
+import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
 import { dateTime, liters, stationRegion } from "../format";
 import { isLowFill, SensorStatus, tankSensorBadge, tankSensorLabel, usePublicLevels, useSensorDay, useViewPeriod } from "../liveLevels";
 import { chartOf } from "../sensorDay";
 import { BarChart, LineChart } from "./Charts";
+import ConsoleAdminsCard from "./ConsoleAdminsCard";
 import PeriodSwitch from "./PeriodSwitch";
+import StationCabinet from "./StationCabinet";
 import TankDeviceRows from "./TankDeviceRows";
 
 type DetailTab = "overview" | "tanks" | "pumps" | "history";
@@ -22,7 +25,9 @@ export default function StationDetailPage({
   onOpenAdmin?: (id: string) => void;
   onOpenMap?: (id: string) => void;
 }) {
+  const { session } = useAuth();
   const catalog = useCatalog();
+  const canSetPrice = session?.role === "owner" || session?.role === "station";
   const { byCode } = usePublicLevels();
   const { range, historyLoading } = useViewPeriod();
   const day = useSensorDay([stationId]);
@@ -54,9 +59,11 @@ export default function StationDetailPage({
   return (
     <div className="dash">
       <div className="st-detail-nav">
-        <button type="button" className="btn secondary small" onClick={onBack}>
-          ← Все АГЗС ({stations.length})
-        </button>
+        {stations.length > 1 ? (
+          <button type="button" className="btn secondary small" onClick={onBack}>
+            ← Все АГЗС ({stations.length})
+          </button>
+        ) : null}
         {onSelectStation && stations.length > 1 ? (
           <div className="st-Detail-switcher">
             <button type="button" className="btn secondary small" onClick={() => onSelectStation(prev.id)}>
@@ -108,6 +115,11 @@ export default function StationDetailPage({
           {hasDay && series ? <span className="badge">расход {liters(series.outflow)}</span> : null}
         </div>
       </header>
+
+      <StationCabinet stationId={station.id} canSetPrice={canSetPrice} />
+      {session?.role === "console" ? null : (
+        <ConsoleAdminsCard stationId={station.id} canCreate={canSetPrice} />
+      )}
 
       <div className="admin-tabs" role="tablist" style={{ marginBottom: 20 }}>
         <button type="button" role="tab" aria-selected={tab === "overview"} className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>

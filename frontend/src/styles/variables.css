@@ -437,6 +437,22 @@ select {
   font-size: 14px;
   font-weight: 600;
 }
+.cabinet-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  margin: 12px 0;
+}
+.cabinet-price .btn {
+  margin-bottom: 1px;
+}
+.cabinet-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 0 12px;
+}
 .dash-charts {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

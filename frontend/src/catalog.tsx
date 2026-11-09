@@ -38,7 +38,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
 
   const reload = useCallback(async () => {
     try {
-      const [apiStations, apiTrucks] = await Promise.all([api.stations(), api.trucks()]);
+      const owner = session?.role === "owner" || session?.role === "station" || session?.role === "console";
+      const [apiStations, apiTrucks] = owner
+        ? [await api.stations(), [] as CatalogTruck[]]
+        : await Promise.all([api.stations(), api.trucks()]);
       setStations(apiStations.filter((row) => !removedStationIds.current.has(row.id)));
       setTrucks(apiTrucks.filter((row) => !removedTruckIds.current.has(row.id)));
       setError(null);
@@ -49,7 +52,7 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     } finally {
       setReady(true);
     }
-  }, []);
+  }, [session?.role]);
 
   useEffect(() => {
     if (!session) {

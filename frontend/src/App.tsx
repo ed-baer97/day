@@ -64,10 +64,21 @@ export default function App() {
     setQuickOpen(false);
   }
 
+  const isOwner = session?.role === "owner" || session?.role === "station";
+  const isConsole = session?.role === "console";
+  const isStationSide = isOwner || isConsole;
   const stations = useMemo(
     () => catalog.stations.filter((row) => row.is_active),
     [catalog.stations]
   );
+
+  useEffect(() => {
+    if (isStationSide && page !== "landing" && page !== "dashboard") setPage("dashboard");
+  }, [isStationSide, page]);
+
+  useEffect(() => {
+    if (isStationSide && stations.length === 1) setDashStationId(stations[0].id);
+  }, [isStationSide, stations]);
 
   const mapPoints = useMemo<MapPoint[]>(() => {
     const stationPoints = stations.map((row) => ({
@@ -133,7 +144,13 @@ export default function App() {
           <Logo size={32} className="mark" alt="Цифровой след LPG" />
           <div>
             <h1>Цифровой след LPG</h1>
-            <span>Диспетчерская · Мангыстау ({stations.length} АГЗС)</span>
+            <span>
+              {isOwner
+                ? `Владелец · ${stations.length === 1 ? stations[0]?.name ?? "своя заправка" : `${stations.length} АГЗС`}`
+                : isConsole
+                  ? `Пульт · ${stations[0]?.name ?? "своя заправка"}`
+                  : `Диспетчерская платформы · ${stations.length} АГЗС`}
+            </span>
           </div>
         </div>
         <nav className="nav-pages" aria-label="Разделы">
@@ -141,21 +158,25 @@ export default function App() {
             type="button"
             className={`nav-page${page === "dashboard" ? " active" : ""}`}
             onClick={() => {
-              setDashStationId(null);
+              setDashStationId(isStationSide && stations.length === 1 ? stations[0].id : null);
               setPage("dashboard");
             }}
           >
-            Дашборд ({stations.length})
+            {isStationSide ? (stations.length > 1 ? "Мои АГЗС" : "Моя АГЗС") : `Дашборд (${stations.length})`}
           </button>
-          <button type="button" className={`nav-page${page === "map" ? " active" : ""}`} onClick={() => setPage("map")}>
-            Карта
-          </button>
-          <button type="button" className={`nav-page${page === "supply" ? " active" : ""}`} onClick={() => setPage("supply")}>
-            Поставки
-          </button>
-          <button type="button" className={`nav-page${page === "admin" ? " active" : ""}`} onClick={() => setPage("admin")}>
-            Администратор
-          </button>
+          {isStationSide ? null : (
+            <>
+              <button type="button" className={`nav-page${page === "map" ? " active" : ""}`} onClick={() => setPage("map")}>
+                Карта
+              </button>
+              <button type="button" className={`nav-page${page === "supply" ? " active" : ""}`} onClick={() => setPage("supply")}>
+                Поставки
+              </button>
+              <button type="button" className={`nav-page${page === "admin" ? " active" : ""}`} onClick={() => setPage("admin")}>
+                Администратор
+              </button>
+            </>
+          )}
         </nav>
         <div className="quick-jumper" ref={quickRef}>
           <button type="button" className="quick-jumper-btn" onClick={() => setQuickOpen((value) => !value)}>
@@ -198,7 +219,9 @@ export default function App() {
           ) : null}
         </div>
         <div className="topbar-actions">
-          <span className="who">{session.username}</span>
+          <span className="who">
+            {isOwner ? `владелец ${session.username}` : isConsole ? `пульт ${session.username}` : `платформа ${session.username}`}
+          </span>
           <button type="button" className="btn secondary small" onClick={() => setPage("landing")}>
             Публичный сайт
           </button>
@@ -370,8 +393,8 @@ export default function App() {
         <main className="page dash-page" ref={dashRef}>
           <AdminPage
             initialStationId={adminStationId}
-            onOpenStationDashboard={openStationPage}
-            onOpenStationMap={openStationOnMap}
+            onOpenStationDashboard={isStationSide ? undefined : openStationPage}
+            onOpenStationMap={isStationSide ? undefined : openStationOnMap}
           />
         </main>
       ) : (
@@ -379,8 +402,9 @@ export default function App() {
           <Dashboard
             stationId={dashStationId}
             onOpenStation={setDashStationId}
-            onOpenAdminStation={openAdminStation}
-            onOpenMapStation={openStationOnMap}
+            onOpenAdminStation={isStationSide ? undefined : openAdminStation}
+            onOpenMapStation={isStationSide ? undefined : openStationOnMap}
+            showOverviewCharts={isOwner}
           />
         </main>
       )}

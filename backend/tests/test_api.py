@@ -17,9 +17,8 @@ def test_map_overview():
     r = client.get("/api/v1/map/overview")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["points"]) == 1
-    assert body["points"][0]["kind"] == "station"
-    assert body["points"][0]["meta"]["code"] == "AGZS-AKT-12"
+    stations = [point for point in body["points"] if point["kind"] == "station"]
+    assert {point["meta"]["code"] for point in stations} == {"AGZS-AKT-12", "AGZS-TEST"}
     assert body["active_trips"] == 0
     assert body["open_events"] == 0
 

@@ -34,7 +34,7 @@ def persist() -> None:
 
     if use_postgres():
         return
-    from app.services import catalog, device_ingest
+    from app.services import catalog, device_ingest, station_accounts
     from app.services import shelly_link
 
     with _file_lock:
@@ -43,6 +43,7 @@ def persist() -> None:
             "catalog": catalog.snapshot(),
             "devices": device_ingest.snapshot(),
             "shelly": shelly_link.snapshot_bindings(),
+            "owners": station_accounts.snapshot(),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -66,7 +67,7 @@ def restore() -> None:
     if not isinstance(data, dict) or data.get("version") != _VERSION:
         logger.error("файл состояния пропущен: %s", path)
         return
-    from app.services import catalog, device_ingest
+    from app.services import catalog, device_ingest, station_accounts
     from app.services import shelly_link
 
     with _file_lock:
@@ -74,3 +75,5 @@ def restore() -> None:
         device_ingest.restore_snapshot(data.get("devices") or {})
         if "shelly" in data and isinstance(data["shelly"], list):
             shelly_link.restore_bindings(data["shelly"])
+        if "owners" in data:
+            station_accounts.restore_snapshot(data["owners"])

@@ -3,8 +3,9 @@ const KEY = "lpg.admin.session";
 export type AdminSession = {
   token: string;
   username: string;
-  role?: "admin" | "station";
+  role?: "admin" | "owner" | "station" | "console";
   station_id?: string | null;
+  station_ids?: string[];
 };
 
 export function readSession(): AdminSession | null {
@@ -13,11 +14,17 @@ export function readSession(): AdminSession | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AdminSession>;
     if (!parsed.token || !parsed.username) return null;
+    const role =
+      parsed.role === "owner" || parsed.role === "station" || parsed.role === "console" ? parsed.role : "admin";
+    const stationIds = Array.isArray(parsed.station_ids)
+      ? parsed.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+      : [];
     return {
       token: parsed.token,
       username: parsed.username,
-      role: parsed.role === "station" ? "station" : "admin",
-      station_id: parsed.station_id ?? null,
+      role,
+      station_id: parsed.station_id ?? (stationIds.length === 1 ? stationIds[0] : null),
+      station_ids: stationIds.length > 0 ? stationIds : parsed.station_id ? [parsed.station_id] : [],
     };
   } catch {
     return null;

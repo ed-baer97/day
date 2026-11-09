@@ -1,6 +1,7 @@
 """Справочник заправок и газовозов.
 
-Карточки живут в памяти процесса. На старте — только живая АГЗС с датчиком.
+Карточки живут в памяти процесса. На старте — живая АГЗС с датчиком
+и отдельная тестовая АГЗС для пульта колонок.
 """
 
 from __future__ import annotations
@@ -44,9 +45,21 @@ class TruckCard:
     lon: float | None
 
 
+CONSOLE_STATION_ID = UUID("c2222222-2222-2222-2222-222222222201")
+CONSOLE_STATION_CODE = "AGZS-TEST"
+
+
 def _stations() -> list[StationCard]:
     rows = [
         ("a1111111-1111-1111-1111-111111111101", "AGZS-AKT-12", "АГЗС Актау · 12 мкр", "Актау, 12 микрорайон", 43.6479, 51.2480),
+        (
+            str(CONSOLE_STATION_ID),
+            CONSOLE_STATION_CODE,
+            "Тестовая АГЗС · Пульт",
+            "Стенд пульта колонок, без торговли",
+            43.6900,
+            51.1500,
+        ),
     ]
     return [
         StationCard(UUID(sid), code, name, address, lat, lon, True)
@@ -67,6 +80,41 @@ def reset_catalog() -> None:
     with _lock:
         _station_cards = _stations()
         _truck_cards = _trucks()
+
+
+def ensure_console_station() -> None:
+    """Тестовая АГЗС для пульта. На площадке Postgres её отсюда не создаём."""
+
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        return
+    with _lock:
+        present = any(
+            station.id == CONSOLE_STATION_ID or station.code == CONSOLE_STATION_CODE for station in _station_cards
+        )
+        if not present:
+            _station_cards.append(
+                StationCard(
+                    CONSOLE_STATION_ID,
+                    CONSOLE_STATION_CODE,
+                    "Тестовая АГЗС · Пульт",
+                    "Стенд пульта колонок, без торговли",
+                    43.6900,
+                    51.1500,
+                    True,
+                )
+            )
+    from app.services.device_ingest import list_tank_devices, register_tank
+
+    if not list_tank_devices(CONSOLE_STATION_ID):
+        register_tank(CONSOLE_STATION_ID, "R-TEST", 10000)
+    from app.services.station_accounts import create_console_admin, create_owner, list_console_admins, list_owners
+
+    if not list_owners(CONSOLE_STATION_ID):
+        create_owner(CONSOLE_STATION_ID, "owner", "owner-test")
+    if not list_console_admins(CONSOLE_STATION_ID):
+        create_console_admin(CONSOLE_STATION_ID, "console", "console-test")
 
 
 def _text(value: str | None) -> str | None:
