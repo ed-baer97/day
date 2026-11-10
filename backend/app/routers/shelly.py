@@ -7,8 +7,7 @@ from fastapi import APIRouter, Depends
 from app.auth import require_admin
 from app.routers.tanks import device_to_out
 from app.schemas.station import ShellyBind, TankDeviceOut
-from app.services.catalog import get_station
-from app.services.device_ingest import get_tank_device
+from app.services.account import get_station, get_tank_device
 from app.services.shelly_link import connect_shelly, disconnect_shelly
 
 router = APIRouter(prefix="/stations/{station_id}/devices/{tank_id}/shelly", tags=["shelly"])

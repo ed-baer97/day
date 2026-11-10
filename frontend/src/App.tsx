@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAdmin } from "./access";
 import { api, type BatchRecord } from "./api/client";
 import { useAuth } from "./auth";
@@ -11,6 +11,7 @@ import Topbar, { type AppScreen, type NetworkStats } from "./layout/Topbar";
 import { isLowFill, usePublicLevels } from "./liveLevels";
 import MapScreen, { type MapSelection } from "./pages/MapScreen";
 import SupplyPage from "./pages/SupplyPage";
+import { parseRoute, routePath, sameRoute, type AppRoute } from "./route";
 import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
 
@@ -21,12 +22,49 @@ export default function App() {
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
 
-  const [page, setPage] = useState<AppScreen>("landing");
-  const [selection, setSelection] = useState<MapSelection>(null);
-  const [dashStationId, setDashStationId] = useState<string | null>(null);
-  const [adminStationId, setAdminStationId] = useState<string | null>(null);
-  const [adminTruckId, setAdminTruckId] = useState<string | null>(null);
-  const [mapHudTab, setMapHudTab] = useState<"stations" | "trucks">("stations");
+  const [route, setRoute] = useState<AppRoute>(() => parseRoute(window.location.pathname));
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const go = useCallback((patch: Partial<AppRoute>, mode: "push" | "replace" = "push") => {
+    const next = { ...routeRef.current, ...patch };
+    const path = routePath(next);
+    if (sameRoute(next, routeRef.current) && path === window.location.pathname) return;
+    if (path !== window.location.pathname) {
+      const write = mode === "replace" ? window.history.replaceState : window.history.pushState;
+      write.call(window.history, null, "", path);
+    }
+    routeRef.current = next;
+    setRoute(next);
+  }, []);
+  const page = route.screen;
+  const setPage = (screen: AppScreen) => go({ screen });
+  const dashStationId = route.dashStationId;
+  const setDashStationId = (id: string | null) => go({ dashStationId: id, screen: "dashboard" });
+  const adminStationId = route.adminStationId;
+  const adminTruckId = route.adminTruckId;
+  const selection: MapSelection =
+    route.mapKind && route.mapId ? { kind: route.mapKind, id: route.mapId } : null;
+  const setSelection = (next: MapSelection) =>
+    go({
+      screen: "map",
+      mapKind: next?.kind ?? null,
+      mapId: next?.id ?? null,
+    });
+  const [mapHudTab, setMapHudTab] = useState<"stations" | "trucks">(
+    route.mapKind === "truck" ? "trucks" : "stations"
+  );
+
+  useEffect(() => {
+    const onPop = () => {
+      const next = parseRoute(window.location.pathname);
+      routeRef.current = next;
+      setRoute(next);
+      if (next.mapKind === "truck") setMapHudTab("trucks");
+      if (next.mapKind === "station") setMapHudTab("stations");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const [batches, setBatches] = useState<BatchRecord[]>([]);
   const dashRef = useRef<HTMLElement>(null);
 
@@ -49,32 +87,25 @@ export default function App() {
   }, [admin, page]);
 
   function openStationPage(id: string) {
-    setDashStationId(id);
-    setPage("dashboard");
+    go({ screen: "dashboard", dashStationId: id });
   }
 
   function openStationOnMap(id: string) {
-    setSelection({ kind: "station", id });
     setMapHudTab("stations");
-    setPage("map");
+    go({ screen: "map", mapKind: "station", mapId: id });
   }
 
   function openTruckOnMap(id: string) {
-    setSelection({ kind: "truck", id });
     setMapHudTab("trucks");
-    setPage("map");
+    go({ screen: "map", mapKind: "truck", mapId: id });
   }
 
   function openAdminStation(id: string) {
-    setAdminTruckId(null);
-    setAdminStationId(id);
-    setPage("admin");
+    go({ screen: "admin", adminTab: "stations", adminStationId: id, adminTruckId: null });
   }
 
   function openAdminTruck(id: string) {
-    setAdminStationId(null);
-    setAdminTruckId(id);
-    setPage("admin");
+    go({ screen: "admin", adminTab: "trucks", adminTruckId: id, adminStationId: null });
   }
 
   const isOwner = session?.role === "owner" || session?.role === "station";
@@ -85,12 +116,19 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (isStationSide && page !== "landing" && page !== "dashboard") setPage("dashboard");
-  }, [isStationSide, page]);
+    if (!session) return;
+    if (isStationSide && page !== "landing" && page !== "dashboard") {
+      go({ screen: "dashboard" }, "replace");
+    } else if (!admin && (page === "admin" || page === "supply")) {
+      go({ screen: "dashboard" }, "replace");
+    }
+  }, [admin, go, isStationSide, page, session]);
 
   useEffect(() => {
-    if (isStationSide && stations.length === 1) setDashStationId(stations[0].id);
-  }, [isStationSide, stations]);
+    if (isStationSide && stations.length === 1 && dashStationId !== stations[0].id) {
+      go({ dashStationId: stations[0].id }, "replace");
+    }
+  }, [dashStationId, go, isStationSide, stations]);
 
   const networkStats = useMemo<NetworkStats>(() => {
     let litersSum = 0;
@@ -162,10 +200,10 @@ export default function App() {
   }, [screen, dashStationId, adminStationId, selection, catalog.stations]);
 
   function goHomeDashboard() {
-    setDashStationId(isStationSide && stations.length === 1 ? stations[0].id : null);
-    setAdminStationId(null);
-    setAdminTruckId(null);
-    setPage("dashboard");
+    go({
+      screen: "dashboard",
+      dashStationId: isStationSide && stations.length === 1 ? stations[0].id : null,
+    });
   }
 
   if (page === "landing" || !session) {
@@ -193,9 +231,7 @@ export default function App() {
         onOpenStationOnMap={openStationOnMap}
         onOpenAdminStation={openAdminStation}
         onOpenAdminRoot={() => {
-          setAdminStationId(null);
-          setAdminTruckId(null);
-          setPage("admin");
+          go({ screen: "admin", adminTab: "stations", adminStationId: null, adminTruckId: null });
         }}
         onLogout={() => {
           logout();
@@ -213,10 +249,14 @@ export default function App() {
         mapSelectedId={selection?.id}
         onGoHomeDashboard={goHomeDashboard}
         onClearSectionSelection={() => {
-          if (screen === "dashboard") setDashStationId(null);
+          if (screen === "dashboard") go({ screen: "dashboard", dashStationId: null });
           if (screen === "admin") {
-            setAdminStationId(null);
-            setAdminTruckId(null);
+            go({
+              screen: "admin",
+              adminTab: route.adminTab,
+              adminStationId: null,
+              adminTruckId: null,
+            });
           }
         }}
         onOpenStationPage={openStationPage}
@@ -252,11 +292,7 @@ export default function App() {
               setMapHudTab("trucks");
               setPage("map");
             }}
-            onCreateNewTruck={() => {
-              setAdminStationId(null);
-              setAdminTruckId("new");
-              setPage("admin");
-            }}
+            onCreateNewTruck={() => openAdminTruck("new")}
             onOpenStationPage={openStationPage}
             onOpenStationOnMap={openStationOnMap}
             onOpenAdminStation={openAdminStation}
@@ -267,10 +303,22 @@ export default function App() {
       ) : screen === "admin" ? (
         <main className="page dash-page" ref={dashRef}>
           <AdminPage
-            initialStationId={adminStationId}
-            initialTruckId={adminTruckId}
+            initialTab={route.adminTab}
+            initialStationId={route.adminTab === "stations" ? adminStationId : null}
+            initialTruckId={route.adminTab === "trucks" ? adminTruckId : null}
             onOpenStationDashboard={isStationSide ? undefined : openStationPage}
             onOpenStationMap={isStationSide ? undefined : openStationOnMap}
+            onTrailChange={(trail) => {
+              go(
+                {
+                  screen: "admin",
+                  adminTab: trail.tab,
+                  adminStationId: trail.tab === "stations" ? trail.stationId : adminStationId,
+                  adminTruckId: trail.tab === "trucks" ? trail.truckId : adminTruckId,
+                },
+                "replace"
+              );
+            }}
           />
         </main>
       ) : (

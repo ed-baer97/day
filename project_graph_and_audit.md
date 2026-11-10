@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > Результаты автоматических проверок проекта (`d:\Проект\day`):
-> - **Backend (`pytest backend/tests`)**: `68 passed` (все 16 тестовых модулей пройдены успешно, включая тесты Bulk Ingest и кэша витрины).
+> - **Backend (`pytest backend/tests`)**: `76 passed` (17 тестовых модулей, включая порт учёта, пакетный откат PostgreSQL и GPS газовоза).
 > - **Station Edge (`pytest station-edge/tests`)**: `12 passed in 0.99s` (все 3 тестовых модуля протокола Искра 1.72, трекера `dispensed_ml` и высокоскоростного пакетного Outbox Sync пройдены успешно).
 > - **Backend + Station Edge (`python -m compileall backend station-edge`)**: `0 ошибок` синтаксиса/компиляции.
 > - **Frontend (`tsc --noEmit && vite build`)**: `PASSED` (66 модулей собрано, модульная архитектура CSS и компонентов).
@@ -21,69 +21,80 @@ flowchart TB
         FakeTopaz["scripts/fake_topaz.py\n(send_dispense)"]
         InstallShelly["scripts/install_shelly_level.py\n(install / render_script)"]
         StationEdge["station-edge/agzs_edge\n(УЗГС-01 + АСКА-02, Искра 1.72 код 4,\nSQLite WAL + OutboxSyncWorker)"]
+        TruckGps["Трекер газовоза"]
     end
 
     subgraph FrontendSPA["frontend (React 18 + TS + MapLibre)"]
-        AppTSX["src/App.tsx\n(App, Breadcrumbs, QuickJumper)"]
+        AppTSX["src/App.tsx\n(оболочка экранов)"]
+        RouteTS["src/route.ts\n(parseRoute, routePath, sameRoute)"]
         AuthTSX["src/auth.tsx\n(AuthProvider, useAuth)"]
         LiveLevels["src/liveLevels.tsx\n(LevelsProvider, usePublicLevels,\nuseSensorDay, useViewPeriod)"]
         CatalogTSX["src/catalog.tsx\n(CatalogProvider, useCatalog)"]
         ApiClient["src/api/client.ts\n(api.*, getJson, sendJson)"]
-        Pages["Страницы и панели:\nLanding (PublicStationModal) / Dashboard\nStationDetailPage\nAdminPage / MapView / MapPopup"]
+        Pages["layout/ + pages/:\nTopbar, BreadcrumbBar, MapScreen,\nSupplyPage, PublicStationModal,\nAdminStationsTab, AdminTrucksTab,\nAdminSuppliesTab, AdminReconcileTab"]
     end
 
     subgraph BackendAPI["backend (FastAPI /api/v1)"]
-        MainPy["app/main.py\n(create_app, _lifespan)"]
+        MainPy["app/main.py\n(create_app, lifespan)"]
         AuthPy["app/auth.py\n(require_principal, require_admin,\nrequire_station_access, require_station_owner)"]
         Routers["Роутеры app/routers/*:\nauth, public, stations, tanks, shelly,\nstation_owners, trucks, map,\nbatches, balance, events, ingest"]
-        Services["Сервисы app/services/*:\ndevice_ingest, catalog, shelly_link, shelly,\ncalibration, level_journal,\nbalance, batch_book, trail, event_log,\nstation_accounts, public_board, memory_state,\npostgres_account, boot"]
-        Domain["Домен app/domain/*:\ntank_book.py (книга резервуара)\npolicy.py (level_policy.json)\naccess.py (роли)"]
+        Account["app/services/account.py\nпорт учёта: backend()"]
+        Adapters["Адаптеры:\nmemory_account.py\npostgres_account.py\n(один commit на пакет)"]
+        Services["Прочие сервисы:\nshelly_link, shelly, calibration,\nlevel_journal, balance, batch_book,\ntrail, event_log, public_board, boot"]
+        Domain["Домен app/domain/*:\ntank_book.py (книга резервуара)\nerrors.py (CalibrationRequired)\npolicy.py, access.py"]
     end
 
     subgraph Storage["Хранилища данных"]
-        MemState["In-Memory + JSON snapshot\n(STATE_PATH / memory_state.py)"]
+        MemState["In-Memory + JSON snapshot\n(catalog.py, device_ingest.py,\nmemory_state.py)"]
         PostgresDB["PostgreSQL 16 + PostGIS\n(postgres_account.py / SQLAlchemy Models)"]
     end
 
     Shelly -->|"POST /api/v1/ingest/level\n(X-Device-Token)"| Routers
     FakeShelly <-->|"HTTP /rpc (JSON-RPC)"| Services
     FakeTopaz -->|"POST /api/v1/ingest/dispense"| Routers
-    StationEdge -->|"POST /api/v1/ingest/dispense\n(X-Device-Token, external_txn_id)"| Routers
+    StationEdge -->|"POST /api/v1/ingest/dispense\nи /dispenses/batch\n(X-Device-Token, external_txn_id)"| Routers
+    TruckGps -->|"POST /api/v1/ingest/gps\nпишет lat/lon газовоза"| Routers
     InstallShelly -->|"Script.PutCode / Start"| Shelly
 
+    AppTSX --> RouteTS
     AppTSX --> AuthTSX & LiveLevels & CatalogTSX & Pages
     Pages --> ApiClient -->|"REST /api/v1/*"| Routers
 
-    MainPy --> AuthPy --> Routers --> Services
+    MainPy --> AuthPy --> Routers
+    Routers --> Account
+    Routers --> Services
+    Account --> Adapters
+    Adapters --> Domain
     Services --> Domain
-    Services --> MemState
-    Services --> PostgresDB
+    Adapters --> MemState
+    Adapters --> PostgresDB
 ```
 
 ### 1.2. Граф зависимостей сервисного слоя Backend (`backend/app/services/*`)
 
 ```mermaid
 flowchart LR
-    boot["boot.py\n(boot_store, persist_state)"] --> account_mode["account_mode.py\n(use_postgres)"]
-    boot --> memory_state["memory_state.py\n(save, restore)"]
-    boot --> postgres_account["postgres_account.py"]
+    account_mode["account_mode.py\n(use_postgres)"] --> account["account.py\nbackend(), порт учёта"]
+    account --> memory_account["memory_account.py"]
+    account --> postgres_account["postgres_account.py\nодин commit на пакет"]
 
-    public_board["public_board.py\n(list_public_levels)"] --> catalog["catalog.py"]
-    public_board --> device_ingest["device_ingest.py"]
-    public_board --> calibration["calibration.py"]
+    memory_account --> catalog["catalog.py\nпамять станций и газовозов"]
+    memory_account --> device_ingest["device_ingest.py\nпамять резервуаров"]
+    memory_account --> station_accounts["station_accounts.py"]
 
-    shelly_link["shelly_link.py\n(poll_once, connect_shelly)"] --> shelly["shelly.py\n(HttpShellyRpc, read_snapshot)"]
-    shelly_link --> device_ingest
+    device_ingest --> tank_book["domain/tank_book.py"]
+    postgres_account --> tank_book
+    tank_book --> errors["domain/errors.py\nCalibrationRequired"]
 
-    device_ingest --> calibration
-    device_ingest --> balance["balance.py\n(calculate_remainder,\nclassify_discrepancy)"]
-    device_ingest --> balance_log["balance_log.py"]
-    device_ingest --> event_log["event_log.py"]
-    device_ingest --> batch_book["batch_book.py"]
-    device_ingest --> postgres_account
+    public_board["public_board.py"] --> account
+    shelly_link["shelly_link.py"] --> account
+    shelly_link --> shelly["shelly.py"]
 
-    station_accounts["station_accounts.py"] --> passwords["passwords.py"]
-    station_accounts --> postgres_account
+    boot["boot.py"] --> postgres_account
+    boot --> memory_state["memory_state.py"]
+    memory_state --> catalog
+    memory_state --> device_ingest
+    station_accounts --> passwords["passwords.py"]
 ```
 
 ---
@@ -181,6 +192,7 @@ d:\Проект\day\
 │   │   ├── domain/
 │   │   │   ├── __init__.py
 │   │   │   ├── access.py                 └── ROLE_ADMIN, ROLE_STATION, is_admin_role(), may_read_station()
+│   │   │   ├── errors.py                 └── CalibrationRequired
 │   │   │   ├── level_policy.json
 │   │   │   ├── policy.py                 └── _load_policy()
 │   │   │   └── tank_book.py              ├── recompute_tank_book(), build_ingest_ack(),
@@ -237,12 +249,24 @@ d:\Проект\day\
 │   │   │   ├── batches.py                └── get_batch_trail()
 │   │   │   ├── balance.py                ├── reconcile_balance(), list_snapshots()
 │   │   │   ├── events.py                 ├── list_events(), acknowledge_event()
-│   │   │   └── ingest.py                 ├── require_device(), calibrate(),
-│   │   │                                     ingest_level(), ingest_receipt(), ingest_dispense(),
-│   │   │                                     ingest_tank()
+│   │   │   └── ingest.py                 ├── require_device(), calibrate(), ingest_gps(),
+│   │   │                                     ingest_level(), ingest_levels_batch(),
+│   │   │                                     ingest_dispense(), ingest_dispenses_batch(),
+│   │   │                                     ingest_receipt(), ingest_tank()
 │   │   └── services/
 │   │       ├── __init__.py
 │   │       ├── account_mode.py           └── use_postgres()
+│   │       ├── account.py                ├── backend(), _levels(), list_stations(),
+│   │       │                             │   get_station(), create_station(), update_station(),
+│   │       │                             │   delete_station(), list_trucks(), get_truck(),
+│   │       │                             │   create_truck(), update_truck(), delete_truck(),
+│   │       │                             │   record_truck_position(), list_active_stations_with_tanks(),
+│   │       │                             │   list_tank_devices(), accept_level(), accept_levels_batch(),
+│   │       │                             │   accept_dispense(), accept_dispenses_batch(),
+│   │       │                             │   accept_receipt(), bind_level(), bind_dispense(),
+│   │       │                             │   list_station_users(), authenticate_station_user(),
+│   │       │                             └── list_level_readings()
+│   │       ├── memory_account.py         └── фасад памяти: те же имена, что у postgres_account
 │   │       ├── boot.py                   ├── boot_store(), persist_state()
 │   │       ├── calibration.py            ├── LevelCalibration (dataclass), round_volts(),
 │   │       │                             │   level_volts_changed(), round_percent(),
@@ -266,15 +290,18 @@ d:\Проект\day\
 │   │       │                             │   restore_snapshot(), reset_station_accounts()
 │   │       ├── catalog.py                ├── StationCard (dataclass), TruckCard (dataclass),
 │   │       │                             │   reset_catalog(), list_stations(), get_station(),
-│   │       │                             │   create_station(), update_station(), list_trucks(),
-│   │       │                             │   get_truck(), create_truck(), update_truck(),
-│   │       │                             │   snapshot(), restore_snapshot()
+│   │       │                             │   create_station(), update_station(), delete_station(),
+│   │       │                             │   list_trucks(), get_truck(), create_truck(),
+│   │       │                             │   update_truck(), delete_truck(),
+│   │       │                             │   record_truck_position(), snapshot(), restore_snapshot()
 │   │       ├── device_ingest.py          ├── TankDevice (dataclass), TankBook (dataclass),
 │   │       │                             │   reset_device_ingest(), register_tank(),
 │   │       │                             │   update_tank_device(), list_tank_devices(),
 │   │       │                             │   get_tank_device(), tank_by_token(), tank_remainder(),
 │   │       │                             │   has_calibration(), set_calibration(), accept_level(),
-│   │       │                             │   accept_receipt(), accept_dispense(), tank_state(),
+│   │       │                             │   accept_levels_batch(), accept_receipt(),
+│   │       │                             │   accept_dispense(), accept_dispenses_batch(),
+│   │       │                             │   bind_level(), bind_dispense(), tank_state(),
 │   │       │                             │   snapshot(), restore_snapshot()
 │   │       ├── shelly.py                 ├── ShellyError (Exception), ShellySnapshot (dataclass),
 │   │       │                             │   ShellyRpc (Protocol), HttpShellyRpc, parse_rpc_payload(),
@@ -285,16 +312,18 @@ d:\Проект\day\
 │   │       │                             │   poll_one(), snapshot_bindings(), restore_bindings()
 │   │       ├── public_board.py           ├── list_public_levels(), _is_online(), _utc()
 │   │       ├── memory_state.py           ├── persist(), restore()
-│   │       └── postgres_account.py       ├── session(), list_stations(), get_station(),
-│   │                                         create_station(), update_station(), register_tank(),
-│   │                                         update_tank_device(), list_tank_devices(),
-│   │                                         get_tank_device(), tank_by_token(), tank_remainder(),
-│   │                                         has_calibration(), set_calibration(), accept_level(),
-│   │                                         accept_dispense(), accept_receipt(), list_level_readings(),
-│   │                                         tank_state(), create_station_user(), list_station_users(),
-│   │                                         authenticate_station_user(), import_memory_snapshot()
+│   │       └── postgres_account.py       ├── session(), _insert_once(), _accept_level(),
+│   │                                         _accept_dispense(), accept_levels_batch(),
+│   │                                         accept_dispenses_batch() — один commit,
+│   │                                         record_truck_position(), list_stations(),
+│   │                                         register_tank(), accept_level(), accept_dispense(),
+│   │                                         accept_receipt(), list_level_readings(),
+│   │                                         create_station_user(), authenticate_station_user(),
+│   │                                         import_memory_snapshot()
 │   └── tests/
 │       ├── conftest.py                   └── _auth_open_for_tests()
+│       ├── test_account_port.py         └── 8 тестов (выбор адаптера, CalibrationRequired → 422,
+│       │                                     GPS координата и дубль, откат пакета PostgreSQL)
 │       ├── test_api.py                   └── 6 тестов (health, map, batch 404, reconcile, dispense, levels)
 │       ├── test_auth.py                  └── 5 тестов (login, expired/revoked token, rate limit, SSRF)
 │       ├── test_balance.py               └── 5 тестов (calculate_remainder, ok, shortage, surplus, band)
@@ -309,7 +338,8 @@ d:\Проект\day\
 │       ├── test_sensor_online.py         └── 2 теста (fresh online, stale offline)
 │       ├── test_shelly.py                └── 9 тестов (snapshot, RPC, auto-voltmeter, link, cal, offline)
 │       ├── test_shelly_script.py         └── 3 теста (render_script placeholders, escaping, validation)
-│       └── test_station_access.py        └── 5 тестов (RBAC station/owner/admin, multi-station)
+│       ├── test_station_access.py        └── 5 тестов (RBAC station/owner/admin, multi-station)
+│       └── test_tank_book.py             └── 3 теста (книга резервуара, шум вольт, сводка станции)
 │
 ├── station-edge/
 │   ├── README.md
@@ -389,8 +419,11 @@ d:\Проект\day\
         │                                 │   withLiveRemainder(), chartOf(), loadStationSpan()
         ├── period.ts                     ├── ViewPeriod, TimeRange, todayPeriod(), periodKey(),
         │                                 │   periodFromKey(), shiftPeriod(), resolveRange()
-        ├── format.ts                     ├── REGIONS, stationRegion(), fiscalBadge(), fiscalText(),
-        │                                 │   liters(), signedLiters(), balBadge(), balText(),
+        ├── route.ts                      ├── AppRoute, AdminRouteTab, emptyRoute(),
+        │                                 │   parseRoute(), routePath(), sameRoute()
+        ├── format.ts                     ├── REGIONS, stationRegion(), percentLabel(),
+        │                                 │   fiscalBadge(), fiscalText(), liters(), signedLiters(),
+        │                                 │   balBadge(), balText(),
         │                                 │   phaseLabel(), tenge(), timeHM(), shortStationName(),
         │                                 │   dateTime(), celsius(), vsBase(), columnLabel(),
         │                                 │   linkText(), sensorText(), supplyStatusText()
@@ -401,7 +434,7 @@ d:\Проект\day\
         │                                 │   LevelsProvider(), usePublicLevels(),
         │                                 │   useViewPeriod(), useSensorDay()
         ├── catalog.tsx                   ├── CatalogProvider(), useCatalog(), messageOf()
-        ├── App.tsx                       └── App() — корневой компонент приложения
+        ├── App.tsx                       └── App() — оболочка экранов, адрес через route.ts
         ├── styles/
         │   ├── variables.css             └── Корневая точка входа со ссылками @import
         │   ├── tokens.css                └── Цветовые переменные, шрифты, радиусы, тени, z-index
@@ -418,9 +451,14 @@ d:\Проект\day\
         │   ├── landing/
         │   │   └── PublicStationModal.tsx └── PublicStationModal() — модальное окно остатка газа АГЗС
         │   └── admin/
-        │       ├── types.ts              └── TRUCK_STATUS, statusLabel(), AdminTab, ADMIN_SECTIONS
+        │       ├── types.ts              └── TRUCK_STATUS, statusLabel(), EnrichedStation,
+        │       │                             AdminTab, ADMIN_SECTIONS
         │       ├── StationForm.tsx       └── StationForm() — карточка создания/редактирования АГЗС
         │       ├── TruckForm.tsx         └── TruckForm() — карточка создания/редактирования газовоза
+        │       ├── AdminStationsTab.tsx  └── AdminStationsTab() — список и карточка АГЗС
+        │       ├── AdminTrucksTab.tsx    └── AdminTrucksTab() — список и карточка газовоза
+        │       ├── AdminSuppliesTab.tsx  └── AdminSuppliesTab() — план подвоза и партии
+        │       ├── AdminReconcileTab.tsx └── AdminReconcileTab() — сверка и журнал событий
         │       └── AdminSecurityTab.tsx  └── AdminSecurityTab() — матрица доступа и контур безопасности
         ├── api/
         │   └── client.ts                 ├── ShellyLink, PublicTank, PublicStation, TankDevice,
@@ -430,13 +468,13 @@ d:\Проект\day\
         │                                 │   authHeader(), readError(), getJson(), sendJson(),
         │                                 └── api (объект всех HTTP-вызовов)
         └── components/
-            ├── AdminPage.tsx             ├── AdminPage() — центральная консоль управления
+            ├── AdminPage.tsx             ├── AdminPage() — оболочка вкладок, адрес /admin/...
             ├── Charts.tsx                ├── BarChart(), LineChart()
             ├── Dashboard.tsx             ├── Dashboard(), Overview()
             ├── StationListRow.tsx        ├── FillCell(), StationListRow()
             ├── Empty.tsx                 └── Empty()
-            ├── Landing.tsx               ├── Landing(), percentLabel(), jump()
-            ├── LevelChangesToday.tsx     ├── LevelChangesToday(), percentLabel()
+            ├── Landing.tsx               ├── Landing(), jump()
+            ├── LevelChangesToday.tsx     └── LevelChangesToday()
             ├── Logo.tsx                  └── Logo()
             ├── MapPopup.tsx              └── MapPopup()
             ├── MapView.tsx               └── MapView()
@@ -467,8 +505,8 @@ d:\Проект\day\
   - [`check_login_rate_limit()`](file:///d:/Проект/day/backend/app/auth.py#L171-L179), [`record_login_failure()`](file:///d:/Проект/day/backend/app/auth.py#L182-L186), [`clear_login_failures()`](file:///d:/Проект/day/backend/app/auth.py#L189-L191), [`reset_auth_state()`](file:///d:/Проект/day/backend/app/auth.py#L194-L197) — защита от перебора паролей (5 попыток за 60 с).
   - [`require_user()`](file:///d:/Проект/day/backend/app/auth.py#L200-L216), [`require_admin()`](file:///d:/Проект/day/backend/app/auth.py#L219-L224), [`require_station_access()`](file:///d:/Проект/day/backend/app/auth.py#L227-L239), [`require_station_owner()`](file:///d:/Проект/day/backend/app/auth.py#L242-L255) — FastAPI-зависимости контроля доступа.
 - [`backend/app/main.py`](file:///d:/Проект/day/backend/app/main.py)
-  - [`_lifespan()`](file:///d:/Проект/day/backend/app/main.py#L28-L39) — инициализация хранилища (`boot_store()`) и запуск фонового опроса Shelly (`run_shelly_loop`).
-  - [`create_app()`](file:///d:/Проект/day/backend/app/main.py#L42-L79) — фабрика FastAPI-приложения, регистрация CORS, `/health` и 10 роутеров.
+  - [`lifespan()`](file:///d:/Проект/day/backend/app/main.py) — миграции и импорт снимка при `ACCOUNT_STORE=postgres`, иначе восстановление файла состояния; вне тестов стартует опрос Shelly.
+  - [`create_app()`](file:///d:/Проект/day/backend/app/main.py) — фабрика FastAPI-приложения, CORS, заголовки безопасности и роутеры.
 
 #### Доменный слой (`backend/app/domain/`)
 - [`backend/app/domain/access.py`](file:///d:/Проект/day/backend/app/domain/access.py) — константы ролей `ROLE_ADMIN`, `ROLE_STATION` и функции контроля доступа.
@@ -495,13 +533,16 @@ d:\Проект\day\
 - [`batches.py`](file:///d:/Проект/day/backend/app/routers/batches.py) — цифровой след партий (`/api/v1/batches`).
 - [`balance.py`](file:///d:/Проект/day/backend/app/routers/balance.py) — сверка баланса (`/api/v1/balance`).
 - [`events.py`](file:///d:/Проект/day/backend/app/routers/events.py) — инциденты расхождений (`/api/v1/events`).
-- [`ingest.py`](file:///d:/Проект/day/backend/app/routers/ingest.py) — высоконагруженный приём телеметрии (`/api/v1/ingest/level`, `/dispense`, `/receipt`, `/calibration`).
+- [`ingest.py`](file:///d:/Проект/day/backend/app/routers/ingest.py) — приём телеметрии (`/api/v1/ingest/level`, `/levels/batch`, `/dispense`, `/dispenses/batch`, `/receipt`, `/calibration`, `/gps`). GPS пишет координаты газовоза через порт учёта.
 
 #### Сервисы (`backend/app/services/`)
+- [`account.py`](file:///d:/Проект/day/backend/app/services/account.py) — порт учёта. `backend()` выбирает адаптер. `_levels()` переводит `CalibrationRequired` в HTTP 422. `bind_*` всегда идут в `device_ingest`, а токен резолвится через `tank_by_token` порта.
+- [`memory_account.py`](file:///d:/Проект/day/backend/app/services/memory_account.py) — фасад памяти с теми же именами функций, что у PostgreSQL.
 - [`calibration.py`](file:///d:/Проект/day/backend/app/services/calibration.py) — пересчёт напряжения датчика Холла (В) в проценты и литры с учётом мёртвой зоны уровнемера 5–95% ([`LevelCalibration`](file:///d:/Проект/day/backend/app/services/calibration.py#L14-L28), [`volts_to_percent()`](file:///d:/Проект/day/backend/app/services/calibration.py#L64-L74), [`volts_to_liters()`](file:///d:/Проект/day/backend/app/services/calibration.py#L77-L79)).
-- [`device_ingest.py`](file:///d:/Проект/day/backend/app/services/device_ingest.py) — книга учёта резервуаров, дедупликация пакетов по `source_event_id` и `external_txn_id`, фильтрация шума по `same_published_level`, автоматическая сверка остатков при каждом новом замере уровня.
-- [`shelly.py`](file:///d:/Проект/day/backend/app/services/shelly.py) и [`shelly_link.py`](file:///d:/Проект/day/backend/app/services/shelly_link.py) — JSON-RPC 2.0 клиент для Shelly Plus Uni, автоподключение периферии `voltmeter:100`, защита от SSRF ([`normalize_host()`](file:///d:/Проект/day/backend/app/services/shelly_link.py#L58-L90)), фоновый цикл опроса.
-- [`postgres_account.py`](file:///d:/Проект/day/backend/app/services/postgres_account.py) и [`memory_state.py`](file:///d:/Проект/day/backend/app/services/memory_state.py) — два бэкенда хранения состояния (`ACCOUNT_STORE=postgres` и `ACCOUNT_STORE=memory` с сохранением в JSON).
+- [`device_ingest.py`](file:///d:/Проект/day/backend/app/services/device_ingest.py) — память книги резервуара: дедупликация по `source_event_id` и `external_txn_id`, фильтр шума, сверка остатка. Режим PostgreSQL здесь не выбирается.
+- [`catalog.py`](file:///d:/Проект/day/backend/app/services/catalog.py) — память станций и газовозов, в том числе `record_truck_position()`.
+- [`shelly.py`](file:///d:/Проект/day/backend/app/services/shelly.py) и [`shelly_link.py`](file:///d:/Проект/day/backend/app/services/shelly_link.py) — JSON-RPC 2.0 клиент для Shelly Plus Uni, автоподключение периферии `voltmeter:100`, защита от SSRF ([`normalize_host()`](file:///d:/Проект/day/backend/app/services/shelly_link.py#L58-L90)), фоновый цикл опроса. Замер уходит в `account.accept_level`.
+- [`postgres_account.py`](file:///d:/Проект/day/backend/app/services/postgres_account.py) — адаптер PostgreSQL. Пакет уровней и наливов коммитится один раз; ошибка посередине откатывает пакет. Дубль ключа не списывает объём повторно. [`memory_state.py`](file:///d:/Проект/day/backend/app/services/memory_state.py) пишет JSON-снимок только в режиме `memory`.
 
 ---
 
@@ -517,7 +558,7 @@ d:\Проект\day\
 ---
 
 ### 3.3. Frontend (`frontend/`)
-- [`frontend/src/App.tsx`](file:///d:/Проект/day/frontend/src/App.tsx) — корневой компонент [`App()`](file:///d:/Проект/day/frontend/src/App.tsx#L21-L725): верхняя панель навигации с оперативными индикаторами сети (`stats-chip`), быстрый поиск и переход к АГЗС по `Ctrl+K` с фильтрами и кнопками действий (`quick-jumper`), сквозная панель хлебных крошек (`breadcrumb-bar`) с мгновенным переключением режима просмотра выбранной станции (`Сводка и графики` ↔ `На карте` ↔ `Настройки в админке`), интерактивная карта с боковым навигатором, контур планирования поставок и газовозов (`supply`), дашборд и админ-панель.
+- [`frontend/src/App.tsx`](file:///d:/Проект/day/frontend/src/App.tsx) — оболочка экранов. Адрес разбирает [`frontend/src/route.ts`](file:///d:/Проект/day/frontend/src/route.ts). Шапка и крошки лежат в `layout/`, карта и поставки в `pages/`, вкладки админки в `pages/admin/`.
 - [`frontend/src/api/client.ts`](file:///d:/Проект/day/frontend/src/api/client.ts) — единый HTTP-клиент [`api`](file:///d:/Проект/day/frontend/src/api/client.ts#L228-L372) и функции [`getJson()`](file:///d:/Проект/day/frontend/src/api/client.ts#L204-L208), [`sendJson()`](file:///d:/Проект/day/frontend/src/api/client.ts#L210-L226), включая вызовы телеметрии резервуаров, Shelly, книжного баланса (`tankIngestState`), партий и сверки.
 - [`frontend/src/components/`](file:///d:/Проект/day/frontend/src/components/) — 14 React-компонентов:
   - [`Landing.tsx`](file:///d:/Проект/day/frontend/src/components/Landing.tsx) — публичная витрина с навигацией по разделам (`#summary`, `#regions`, `#levels`, `#project`), региональной сводкой запасов, фильтрацией, сортировкой, переключением вида (`Плитка` / `Таблица`) и модальным паспортом АГЗС ([`PublicStationModal`](file:///d:/Проект/day/frontend/src/components/Landing.tsx#L492-L621)).
@@ -530,7 +571,9 @@ d:\Проект\day\
 
 ## 4. Результаты ревью кода: исправленные ошибки и изменения
 
-### ✅ Все выявленные проблемы устранены
+Учёт станций, резервуаров и телеметрии идёт через `backend/app/services/account.py`. Режим `memory` или `postgres` выбирается в `backend()`. Роутеры не ветвятся по хранилищу. Пакетный приём в PostgreSQL делает один `commit` на пакет и откатывает его целиком, если строка посередине падает. `tank_book` бросает `CalibrationRequired`, а порт переводит её в HTTP 422. `POST /ingest/gps` пишет `lat`/`lon` газовоза. Экраны фронта открываются по адресу (`/dashboard/:id`, `/map/station/:id`, `/admin/stations/:id`).
+
+### Что изменилось в границах модулей
 
 #### 1. Полное удаление виртуального пульта управления колонками
 - **Что удалено**:
@@ -546,9 +589,9 @@ d:\Проект\day\
   - В [`api.me()`](file:///d:/Проект/day/frontend/src/api/client.ts#L371) и [`AuthProvider`](file:///d:/Проект/day/frontend/src/auth.tsx#L39-L51) добавлено сохранение `station_ids` и корректное восстановление `role` и `station_id` при перезагрузке страницы.
 
 #### 3. Исправлено: паритет режима `ACCOUNT_STORE=postgres` с режимом `memory`
-- **Где**: [`backend/app/services/device_ingest.py`](file:///d:/Проект/day/backend/app/services/device_ingest.py#L525-L558), [`backend/app/services/postgres_account.py`](file:///d:/Проект/day/backend/app/services/postgres_account.py#L423-L555), [`backend/app/models/station.py`](file:///d:/Проект/day/backend/app/models/station.py#L87-L98), [`backend/alembic/versions/0002_account_store.py`](file:///d:/Проект/day/backend/alembic/versions/0002_account_store.py#L44-L53).
+- **Где**: [`backend/app/services/account.py`](file:///d:/Проект/day/backend/app/services/account.py), [`backend/app/services/memory_account.py`](file:///d:/Проект/day/backend/app/services/memory_account.py), [`backend/app/services/postgres_account.py`](file:///d:/Проект/day/backend/app/services/postgres_account.py), [`backend/app/models/station.py`](file:///d:/Проект/day/backend/app/models/station.py), [`backend/alembic/versions/0002_account_store.py`](file:///d:/Проект/day/backend/alembic/versions/0002_account_store.py).
 - **Что сделано**:
-  - В [`device_ingest.accept_dispense()`](file:///d:/Проект/day/backend/app/services/device_ingest.py#L525-L529) и [`device_ingest.accept_receipt()`](file:///d:/Проект/day/backend/app/services/device_ingest.py#L552-L556) добавлено делегирование в [`postgres_account.accept_dispense()`](file:///d:/Проект/day/backend/app/services/postgres_account.py#L423-L442) и [`postgres_account.accept_receipt()`](file:///d:/Проект/day/backend/app/services/postgres_account.py#L445-L466) при `use_postgres()`.
+  - Роутеры вызывают порт [`account.py`](file:///d:/Проект/day/backend/app/services/account.py). `backend()` один раз выбирает [`memory_account`](file:///d:/Проект/day/backend/app/services/memory_account.py) или [`postgres_account`](file:///d:/Проект/day/backend/app/services/postgres_account.py). `catalog.py` и `device_ingest.py` остаются памятью и больше не ветвятся по `use_postgres()`.
   - В модель [`StationUser`](file:///d:/Проект/day/backend/app/models/station.py#L87-L98) добавлена поддержка привязки одного владельца к нескольким станциям (`station_ids`).
 
 #### 4. Выполнено: модернизация навигации и детализация информации на всех экранах сайта

@@ -13,8 +13,7 @@ from datetime import datetime
 from typing import Any, Sequence
 from uuid import UUID
 
-from fastapi import HTTPException
-
+from app.domain.errors import CalibrationRequired
 from app.schemas.ingest import IngestAck, LevelIngest, TankIngestState
 from app.schemas.station import TankOut
 from app.services.balance import calculate_remainder, classify_discrepancy
@@ -144,7 +143,7 @@ def apply_level_reading(
         )
     else:
         if calibration is None or body.volts is None:
-            raise HTTPException(status_code=422, detail=CALIBRATION_REQUIRED)
+            raise CalibrationRequired(CALIBRATION_REQUIRED)
         percent = round_percent(volts_to_percent(body.volts, calibration))
         target.last_volts = body.volts
         liters = percent / 100 * calibration.capacity_liters

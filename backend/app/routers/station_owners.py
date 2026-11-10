@@ -6,8 +6,7 @@ from fastapi import APIRouter, Depends
 
 from app.auth import require_admin
 from app.schemas.auth import StationUserCreate, StationUserCreated, StationUserOut
-from app.services.account_mode import use_postgres
-from app.services.catalog import get_station
+from app.services.account import create_station_user, get_station, list_station_users
 
 router = APIRouter(prefix="/stations/{station_id}/users", tags=["station-owners"])
 
@@ -18,14 +17,7 @@ def list_station_logins(
     _admin: str = Depends(require_admin),
 ) -> list[StationUserOut]:
     get_station(station_id)
-    if use_postgres():
-        from app.services import postgres_account
-
-        rows = postgres_account.list_station_users(station_id)
-    else:
-        from app.services.station_accounts import list_owners
-
-        rows = list_owners(station_id)
+    rows = list_station_users(station_id)
     return [
         StationUserOut(
             id=row.id,
@@ -44,14 +36,7 @@ def create_station_login(
     _admin: str = Depends(require_admin),
 ) -> StationUserCreated:
     get_station(station_id)
-    if use_postgres():
-        from app.services import postgres_account
-
-        user = postgres_account.create_station_user(station_id, body.username, body.password)
-    else:
-        from app.services.station_accounts import grant_owner
-
-        user = grant_owner(station_id, body.username, body.password)
+    user = create_station_user(station_id, body.username, body.password)
     return StationUserCreated(
         id=user.id,
         station_id=station_id,

@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
 from app.domain.tank_book import (
-    CALIBRATION_REQUIRED,
     apply_dispense_volume,
     apply_level_reading,
     apply_receipt_volume,
@@ -48,6 +47,9 @@ from app.services.passwords import hash_password, verify_password
 from app.services.station_accounts import StationOwner
 
 logger = logging.getLogger(__name__)
+
+_seen_gps: set[str] = set()
+_MAX_SEEN_GPS = 10_000
 
 
 def session() -> Session:
@@ -454,7 +456,11 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
             row.capacity_liters = body.capacity_liters
         db.commit()
         db.refresh(row)
-        return _state(row)
+        state = _state(row)
+    from app.services.device_ingest import _poll_linked_shelly
+
+    _poll_linked_shelly(body.tank_id)
+    return state
 
 
 def tank_remainder(tank_id: UUID) -> tuple[float | None, datetime | None]:
@@ -473,23 +479,38 @@ def tank_state(tank_id: UUID) -> TankIngestState:
         return _state(row)
 
 
-def accept_level(body: LevelIngest) -> IngestAck:
+def _insert_once(db: Session, row: object, existing):
+    """Вставляет строку в savepoint. Гонка уникального ключа не отменяет внешнюю транзакцию."""
+    nested = db.begin_nested()
+    try:
+        db.add(row)
+        db.flush()
+    except IntegrityError:
+        nested.rollback()
+        return db.scalar(existing)
+    nested.commit()
+    return None
+
+
+def _accept_level(db: Session, body: LevelIngest) -> IngestAck:
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(
             status_code=422,
             detail="укажите резервуар токеном или полями station_id и tank_id",
         )
     key = body.source_event_id or f"level:{body.tank_id}:{body.recorded_at.isoformat()}"
-    with session() as db:
-        row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
-        if row is None or row.station_id != body.station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
-        existing = db.scalar(select(LevelReading).where(LevelReading.source_event_id == key))
-        if existing is not None:
-            return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
+    row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
+    if row is None or row.station_id != body.station_id:
+        raise HTTPException(status_code=404, detail="резервуар не найден")
+    existing = db.scalar(select(LevelReading).where(LevelReading.source_event_id == key))
+    if existing is not None:
+        return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
-        calibration = _calibration(row)
-        heard_at = datetime.now(timezone.utc)
+    calibration = _calibration(row)
+    heard_at = datetime.now(timezone.utc)
+    entity_id = uuid4()
+    nested = db.begin_nested()
+    try:
         changed, liters, fill = apply_level_reading(
             row,
             body,
@@ -497,84 +518,78 @@ def accept_level(body: LevelIngest) -> IngestAck:
             capacity_liters=row.capacity_liters,
             heard_at=heard_at,
         )
-        if not changed:
-            db.commit()
-            db.refresh(row)
-            return build_ingest_ack(row, message="level unchanged")
-
-        row.level_source = LevelSource.electronic
-        entity_id = uuid4()
-        db.add(
-            LevelReading(
-                id=entity_id,
-                tank_id=row.id,
-                station_id=row.station_id,
-                volts=body.volts,
-                remainder_liters=liters,
-                fill_percent=fill,
-                recorded_at=body.recorded_at,
-                source_event_id=key,
+        if changed:
+            row.level_source = LevelSource.electronic
+            db.add(
+                LevelReading(
+                    id=entity_id,
+                    tank_id=row.id,
+                    station_id=row.station_id,
+                    volts=body.volts,
+                    remainder_liters=liters,
+                    fill_percent=fill,
+                    recorded_at=body.recorded_at,
+                    source_event_id=key,
+                )
             )
+            db.flush()
+    except IntegrityError:
+        nested.rollback()
+        db.refresh(row)
+        duplicate = db.scalar(select(LevelReading).where(LevelReading.source_event_id == key))
+        return build_ingest_ack(
+            row,
+            message="duplicate",
+            duplicate=True,
+            entity_id=None if duplicate is None else duplicate.id,
         )
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            row = db.get(Tank, body.tank_id)
-            existing = db.scalar(select(LevelReading).where(LevelReading.source_event_id == key))
-            assert row is not None
-            return build_ingest_ack(
-                row,
+    nested.commit()
+    if not changed:
+        return build_ingest_ack(row, message="level unchanged")
+    return build_ingest_ack(row, message="level accepted", entity_id=entity_id)
+
+
+def _accept_dispense(db: Session, body: DispenseIngest) -> IngestAck:
+    key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
+    existing = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
+    if body.tank_id is None:
+        if existing is not None:
+            return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=existing.id)
+        entity_id = uuid4()
+        duplicate = _insert_once(
+            db,
+            DispenseRecord(
+                id=entity_id,
+                station_id=body.station_id,
+                tank_id=None,
+                dispenser_id=body.dispenser_id,
+                volume_liters=body.volume_liters,
+                started_at=body.started_at,
+                finished_at=body.finished_at,
+                external_txn_id=key,
+                raw_payload=body.raw_payload,
+            ),
+            select(DispenseRecord).where(DispenseRecord.external_txn_id == key),
+        )
+        if duplicate is not None:
+            return IngestAck(
+                accepted=True,
                 message="duplicate",
                 duplicate=True,
-                entity_id=None if existing is None else existing.id,
+                entity_id=duplicate.id,
             )
-        db.refresh(row)
-        return build_ingest_ack(row, message="level accepted", entity_id=entity_id)
+        return IngestAck(accepted=True, message="dispense accepted", entity_id=entity_id)
 
+    row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
+    if row is None or row.station_id != body.station_id:
+        raise HTTPException(status_code=404, detail="резервуар не найден")
+    if existing is not None:
+        return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
 
-def accept_dispense(body: DispenseIngest) -> IngestAck:
-    key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
-    with session() as db:
-        existing = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
-        if body.tank_id is None:
-            if existing is not None:
-                return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=existing.id)
-            entity_id = uuid4()
-            db.add(
-                DispenseRecord(
-                    id=entity_id,
-                    station_id=body.station_id,
-                    tank_id=None,
-                    dispenser_id=body.dispenser_id,
-                    volume_liters=body.volume_liters,
-                    started_at=body.started_at,
-                    finished_at=body.finished_at,
-                    external_txn_id=key,
-                    raw_payload=body.raw_payload,
-                )
-            )
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                dup = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
-                return IngestAck(
-                    accepted=True,
-                    message="duplicate",
-                    duplicate=True,
-                    entity_id=None if dup is None else dup.id,
-                )
-            return IngestAck(accepted=True, message="dispense accepted", entity_id=entity_id)
-
-        row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
-        if row is None or row.station_id != body.station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
-        if existing is not None:
-            return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
-
+    entity_id = uuid4()
+    nested = db.begin_nested()
+    try:
         apply_dispense_volume(row, body.volume_liters)
-        entity_id = uuid4()
         db.add(
             DispenseRecord(
                 id=entity_id,
@@ -588,39 +603,70 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
                 raw_payload=body.raw_payload,
             )
         )
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            row = db.get(Tank, body.tank_id)
-            dup = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
-            assert row is not None
-            return build_ingest_ack(
-                row,
-                message="duplicate",
-                duplicate=True,
-                entity_id=None if dup is None else dup.id,
-            )
+        db.flush()
+    except IntegrityError:
+        nested.rollback()
         db.refresh(row)
-        return build_ingest_ack(row, message="dispense accepted", entity_id=entity_id)
+        duplicate = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
+        return build_ingest_ack(
+            row,
+            message="duplicate",
+            duplicate=True,
+            entity_id=None if duplicate is None else duplicate.id,
+        )
+    nested.commit()
+    return build_ingest_ack(row, message="dispense accepted", entity_id=entity_id)
+
+
+def _commit(db: Session, ack: IngestAck) -> IngestAck:
+    db.commit()
+    return ack
+
+
+def accept_level(body: LevelIngest) -> IngestAck:
+    with session() as db:
+        try:
+            return _commit(db, _accept_level(db, body))
+        except Exception:
+            db.rollback()
+            raise
+
+
+def accept_dispense(body: DispenseIngest) -> IngestAck:
+    with session() as db:
+        try:
+            return _commit(db, _accept_dispense(db, body))
+        except Exception:
+            db.rollback()
+            raise
+
+
+def _batch_counts(results: list[IngestAck], volumes: list[float] | None = None) -> tuple[int, int, float]:
+    accepted = 0
+    duplicates = 0
+    total = 0.0
+    for index, ack in enumerate(results):
+        if ack.duplicate:
+            duplicates += 1
+            continue
+        accepted += 1
+        if volumes is not None:
+            total += volumes[index]
+    return accepted, duplicates, total
 
 
 def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
-    """Пакетная вставка наливов в рамках одной транзакции (Hot-path оптимизация)."""
-    results: list[IngestAck] = []
-    accepted = 0
-    duplicates = 0
-    total_volume = 0.0
-
-    for item in items:
-        ack = accept_dispense(item)
-        results.append(ack)
-        if ack.duplicate:
-            duplicates += 1
-        else:
-            accepted += 1
-            total_volume += item.volume_liters
-
+    """Один commit на пакет. Ошибка посередине откатывает уже принятые строки пакета."""
+    with session() as db:
+        results: list[IngestAck] = []
+        try:
+            for item in items:
+                results.append(_accept_dispense(db, item))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    accepted, duplicates, total_volume = _batch_counts(results, [item.volume_liters for item in items])
     return DispenseBatchAck(
         accepted_count=accepted,
         duplicates_count=duplicates,
@@ -630,24 +676,23 @@ def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
 
 
 def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
-    """Пакетная вставка замеров уровней при восстановлении связи."""
-    results: list[IngestAck] = []
-    accepted = 0
-    duplicates = 0
-
-    for item in items:
-        ack = accept_level(item)
-        results.append(ack)
-        if ack.duplicate:
-            duplicates += 1
-        else:
-            accepted += 1
-
+    """Один commit на пакет замеров. Ошибка посередине откатывает весь пакет."""
+    with session() as db:
+        results: list[IngestAck] = []
+        try:
+            for item in items:
+                results.append(_accept_level(db, item))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    accepted, duplicates, _ = _batch_counts(results)
     return LevelBatchAck(
         accepted_count=accepted,
         duplicates_count=duplicates,
         results=results,
     )
+
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:
@@ -692,6 +737,31 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
             )
         db.refresh(row)
         return build_ingest_ack(row, message="receipt accepted", entity_id=entity_id)
+
+
+def record_truck_position(
+    truck_id: UUID,
+    *,
+    lat: float,
+    lon: float,
+    recorded_at: datetime,
+    source_event_id: str | None,
+) -> IngestAck:
+    """Пишет координату газовоза. Повтор того же ключа в этом процессе координату не двигает."""
+    key = source_event_id or f"gps:{truck_id}:{recorded_at.isoformat()}"
+    if key in _seen_gps:
+        return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=truck_id)
+    with session() as db:
+        row = db.get(Truck, truck_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Truck not found")
+        row.lat = lat
+        row.lon = lon
+        db.commit()
+    if len(_seen_gps) >= _MAX_SEEN_GPS:
+        _seen_gps.clear()
+    _seen_gps.add(key)
+    return IngestAck(accepted=True, message="gps accepted", entity_id=truck_id)
 
 
 def list_level_readings(

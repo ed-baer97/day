@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
+
+from app.schemas.ingest import IngestAck
 
 _lock = threading.Lock()
 
@@ -60,6 +63,8 @@ def _trucks() -> list[TruckCard]:
 
 _station_cards: list[StationCard] = _stations()
 _truck_cards: list[TruckCard] = _trucks()
+_seen_gps: set[str] = set()
+_MAX_SEEN_GPS = 10_000
 
 
 def reset_catalog() -> None:
@@ -67,6 +72,7 @@ def reset_catalog() -> None:
     with _lock:
         _station_cards = _stations()
         _truck_cards = _trucks()
+        _seen_gps.clear()
 
 
 def _text(value: str | None) -> str | None:
@@ -90,23 +96,11 @@ def _require_status(value: str) -> str:
 
 
 def list_stations() -> list[StationCard]:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.list_stations()
     with _lock:
         return list(_station_cards)
 
 
 def get_station(station_id: UUID) -> StationCard:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.get_station(station_id)
     with _lock:
         for station in _station_cards:
             if station.id == station_id:
@@ -123,19 +117,6 @@ def create_station(
     lon: float,
     is_active: bool,
 ) -> StationCard:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.create_station(
-            code=code,
-            name=name,
-            address=address,
-            lat=lat,
-            lon=lon,
-            is_active=is_active,
-        )
     cleaned_code = _require_code(code, "код заправки")
     cleaned_name = _require_code(name, "название заправки")
     with _lock:
@@ -166,21 +147,6 @@ def update_station(
     is_active: bool | None = None,
     address_set: bool = False,
 ) -> StationCard:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.update_station(
-            station_id,
-            code=code,
-            name=name,
-            address=address,
-            lat=lat,
-            lon=lon,
-            is_active=is_active,
-            address_set=address_set,
-        )
     with _lock:
         station = next((item for item in _station_cards if item.id == station_id), None)
         if station is None:
@@ -205,14 +171,8 @@ def update_station(
 
 
 def delete_station(station_id: UUID) -> None:
-    from app.services.account_mode import use_postgres
     from app.services.device_ingest import delete_station_devices
 
-    if use_postgres():
-        from app.services import postgres_account
-
-        postgres_account.delete_station(station_id)
-        return
     with _lock:
         index = next((i for i, item in enumerate(_station_cards) if item.id == station_id), None)
         if index is None:
@@ -223,23 +183,11 @@ def delete_station(station_id: UUID) -> None:
 
 
 def list_trucks() -> list[TruckCard]:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.list_trucks()
     with _lock:
         return list(_truck_cards)
 
 
 def get_truck(truck_id: UUID) -> TruckCard:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.get_truck(truck_id)
     with _lock:
         for truck in _truck_cards:
             if truck.id == truck_id:
@@ -256,19 +204,6 @@ def create_truck(
     lat: float | None,
     lon: float | None,
 ) -> TruckCard:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.create_truck(
-            plate_number=plate_number,
-            capacity_liters=capacity_liters,
-            carrier_name=carrier_name,
-            status=status,
-            lat=lat,
-            lon=lon,
-        )
     plate = _require_code(plate_number, "номер газовоза")
     status = _require_status(status)
     with _lock:
@@ -301,23 +236,6 @@ def update_truck(
     lat_set: bool = False,
     lon_set: bool = False,
 ) -> TruckCard:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.update_truck(
-            truck_id,
-            plate_number=plate_number,
-            capacity_liters=capacity_liters,
-            carrier_name=carrier_name,
-            status=status,
-            lat=lat,
-            lon=lon,
-            carrier_set=carrier_set,
-            lat_set=lat_set,
-            lon_set=lon_set,
-        )
     with _lock:
         truck = next((item for item in _truck_cards if item.id == truck_id), None)
         if truck is None:
@@ -342,19 +260,33 @@ def update_truck(
 
 
 def delete_truck(truck_id: UUID) -> None:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        postgres_account.delete_truck(truck_id)
-        return
     with _lock:
         index = next((i for i, item in enumerate(_truck_cards) if item.id == truck_id), None)
         if index is None:
             raise HTTPException(status_code=404, detail="Truck not found")
         _truck_cards.pop(index)
     _commit()
+
+
+def record_truck_position(
+    truck_id: UUID,
+    *,
+    lat: float,
+    lon: float,
+    recorded_at: datetime,
+    source_event_id: str | None,
+) -> IngestAck:
+    """Пишет координату газовоза. Повтор того же source_event_id координату не двигает."""
+    key = source_event_id or f"gps:{truck_id}:{recorded_at.isoformat()}"
+    with _lock:
+        if key in _seen_gps:
+            return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=truck_id)
+    update_truck(truck_id, lat=lat, lon=lon, lat_set=True, lon_set=True)
+    with _lock:
+        if len(_seen_gps) >= _MAX_SEEN_GPS:
+            _seen_gps.clear()
+        _seen_gps.add(key)
+    return IngestAck(accepted=True, message="gps accepted", entity_id=truck_id)
 
 
 def snapshot() -> dict:

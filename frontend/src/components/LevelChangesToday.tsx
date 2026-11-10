@@ -1,14 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, type LevelReading, type TankDevice } from "../api/client";
-import { dateTime, liters, signedLiters } from "../format";
+import { dateTime, liters, percentLabel, signedLiters } from "../format";
 import { useViewPeriod } from "../liveLevels";
 import { POLL_MS } from "../policy";
 import PeriodSwitch from "./PeriodSwitch";
-
-function percentLabel(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) return "—";
-  return `${Math.round(value)}%`;
-}
 
 export default function LevelChangesToday({ stationId }: { stationId: string }) {
   const { range } = useViewPeriod();

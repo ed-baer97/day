@@ -17,7 +17,7 @@ from app.auth import (
 )
 from app.config import get_settings
 from app.schemas.auth import LoginIn, SessionOut
-from app.services.account_mode import use_postgres
+from app.services.account import authenticate_station_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -36,14 +36,7 @@ def login(body: LoginIn, request: Request) -> SessionOut:
             role=ROLE_ADMIN,
             station_id=None,
         )
-    if use_postgres():
-        from app.services import postgres_account
-
-        user = postgres_account.authenticate_station_user(body.username, body.password)
-    else:
-        from app.services.station_accounts import authenticate_owner
-
-        user = authenticate_owner(body.username, body.password)
+    user = authenticate_station_user(body.username, body.password)
     if user is not None:
         clear_login_failures(key)
         ids = list(user.stations()) if hasattr(user, "stations") else [user.station_id]

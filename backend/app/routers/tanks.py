@@ -15,17 +15,17 @@ from app.schemas.station import (
     TankDeviceUpdate,
     TankOut,
 )
-from app.services.account_mode import use_postgres
-from app.services.catalog import get_station
-from app.services.device_ingest import (
-    TankDevice,
+from app.services.account import (
     delete_tank_device,
+    get_station,
     get_tank_device,
+    list_level_readings,
     list_station_tanks_out,
     list_tank_devices,
     register_tank,
     update_tank_device,
 )
+from app.services.device_ingest import TankDevice
 from app.services.level_journal import published_levels
 from app.services.shelly_link import shelly_view
 
@@ -115,12 +115,8 @@ def list_device_levels(
     """Журнал замеров уровня. По умолчанию только смены остатка (без шума датчика)."""
     require_existing_station_access(station_id, principal)
     get_tank_device(station_id, tank_id)
-    if not use_postgres():
-        return []
-    from app.services import postgres_account
-
     capped = max(1, min(limit, 5000))
-    rows = postgres_account.list_level_readings(
+    rows = list_level_readings(
         station_id,
         tank_id,
         since=since,

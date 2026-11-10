@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from app.config import get_settings
 from app.schemas.ingest import LevelIngest
 from app.schemas.station import ShellyLinkOut
-from app.services.device_ingest import accept_level, get_tank_device, has_calibration
+from app.services.account import accept_level, get_tank_device, has_calibration
 from app.services.shelly import HttpShelly, ShellyError, ShellyRpc, ShellySnapshot, read_snapshot, reset_shelly_runtime
 
 logger = logging.getLogger(__name__)

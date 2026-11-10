@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from app.schemas.common import MapOverviewOut, MapPoint
-from app.services.catalog import list_stations, list_trucks
+from app.services.account import list_stations, list_trucks
 from app.services.event_log import list_events
 
 router = APIRouter(prefix="/map", tags=["map"])

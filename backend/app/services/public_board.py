@@ -12,10 +12,8 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.schemas.public import PublicStationOut, PublicTankOut
-from app.services.account_mode import use_postgres
+from app.services.account import list_active_stations_with_tanks
 from app.services.calibration import remainder_fill_percent
-from app.services.catalog import list_stations
-from app.services.device_ingest import list_station_tanks_out
 
 _cache_lock = threading.Lock()
 _cached_rows: list[PublicStationOut] | None = None
@@ -49,16 +47,7 @@ def list_public_stations() -> list[PublicStationOut]:
             return _cached_rows
 
     now = datetime.now(timezone.utc)
-    if use_postgres():
-        from app.services import postgres_account
-
-        pairs = postgres_account.list_active_stations_with_tanks()
-    else:
-        pairs = [
-            (station, list_station_tanks_out(station.id))
-            for station in list_stations()
-            if station.is_active
-        ]
+    pairs = list_active_stations_with_tanks()
 
     rows: list[PublicStationOut] = []
     for station, tank_outs in pairs:

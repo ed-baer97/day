@@ -105,12 +105,6 @@ def _remember_seen(key: str) -> None:
 
 
 def get_tank_device(station_id: UUID, tank_id: UUID) -> TankDevice:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.get_tank_device(station_id, tank_id)
     with _lock:
         device = _devices_by_tank.get(tank_id)
         if device is None or device.station_id != station_id:
@@ -119,24 +113,12 @@ def get_tank_device(station_id: UUID, tank_id: UUID) -> TankDevice:
 
 
 def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.has_calibration(station_id, tank_id)
     with _lock:
         book = _books.get((station_id, tank_id))
         return book is not None and book.calibration is not None
 
 
 def tank_by_token(token: str | None) -> TankDevice | None:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.tank_by_token(token)
     if not token:
         return None
     with _lock:
@@ -144,12 +126,6 @@ def tank_by_token(token: str | None) -> TankDevice | None:
 
 
 def list_tank_devices(station_id: UUID) -> list[TankDevice]:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.list_tank_devices(station_id)
     with _lock:
         ids = _devices_by_station.get(station_id, [])
         return [_devices_by_tank[tank_id] for tank_id in ids if tank_id in _devices_by_tank]
@@ -157,12 +133,6 @@ def list_tank_devices(station_id: UUID) -> list[TankDevice]:
 
 def list_station_tanks_out(station_id: UUID) -> list[TankOut]:
     """Возвращает все резервуары станции с фактическим и расчётным остатком за 1 обращение (без N+1)."""
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.list_station_tanks_out(station_id)
     with _lock:
         ids = _devices_by_station.get(station_id, [])
         result: list[TankOut] = []
@@ -194,12 +164,6 @@ def list_station_tanks_out(station_id: UUID) -> list[TankOut]:
 
 
 def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDevice:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.register_tank(station_id, code, capacity_liters)
     cleaned = code.strip()
     if not cleaned:
         raise HTTPException(status_code=422, detail="укажите код резервуара")
@@ -228,15 +192,8 @@ def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDe
 
 
 def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
-    from app.services.account_mode import use_postgres
     from app.services.shelly_link import remove_shelly_for_tank
 
-    if use_postgres():
-        from app.services import postgres_account
-
-        postgres_account.delete_tank_device(station_id, tank_id)
-        remove_shelly_for_tank(tank_id)
-        return
     with _lock:
         device = _devices_by_tank.get(tank_id)
         if device is None or device.station_id != station_id:
@@ -259,13 +216,8 @@ def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
 
 
 def delete_station_devices(station_id: UUID) -> None:
-    from app.services.account_mode import use_postgres
     from app.services.shelly_link import remove_shelly_for_tank
 
-    if use_postgres():
-        for device in list_tank_devices(station_id):
-            remove_shelly_for_tank(device.tank_id)
-        return
     with _lock:
         tank_ids = list(_devices_by_station.pop(station_id, []))
         for tank_id in tank_ids:
@@ -291,17 +243,6 @@ def update_tank_device(
     code: str | None = None,
     capacity_liters: float | None = None,
 ) -> TankDevice:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.update_tank_device(
-            station_id,
-            tank_id,
-            code=code,
-            capacity_liters=capacity_liters,
-        )
     with _lock:
         device = _devices_by_tank.get(tank_id)
         if device is None or device.station_id != station_id:
@@ -343,7 +284,9 @@ def _assert_device_scope(
 
 
 def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
-    device = tank_by_token(token)
+    from app.services.account import tank_by_token as lookup
+
+    device = lookup(token)
     if device is not None:
         _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
@@ -356,7 +299,9 @@ def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
 
 
 def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
-    device = tank_by_token(token)
+    from app.services.account import tank_by_token as lookup
+
+    device = lookup(token)
     if device is not None:
         _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(
@@ -377,7 +322,9 @@ def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
 
 
 def bind_dispense(body: DispenseIngest, token: str | None) -> DispenseIngest:
-    device = tank_by_token(token)
+    from app.services.account import tank_by_token as lookup
+
+    device = lookup(token)
     if device is not None:
         _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
@@ -385,7 +332,9 @@ def bind_dispense(body: DispenseIngest, token: str | None) -> DispenseIngest:
 
 
 def bind_receipt(body: ReceiptIngest, token: str | None) -> ReceiptIngest:
-    device = tank_by_token(token)
+    from app.services.account import tank_by_token as lookup
+
+    device = lookup(token)
     if device is not None:
         _assert_device_scope(device, body.station_id, body.tank_id)
         return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
@@ -402,12 +351,6 @@ def _book(station_id: UUID, tank_id: UUID) -> TankBook:
 
 
 def tank_state(tank_id: UUID) -> TankIngestState:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.tank_state(tank_id)
     with _lock:
         for book in _books.values():
             if book.tank_id == tank_id:
@@ -421,12 +364,6 @@ def tank_state(tank_id: UUID) -> TankIngestState:
 
 
 def tank_remainder(tank_id: UUID) -> tuple[float | None, datetime | None]:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.tank_remainder(tank_id)
     with _lock:
         for book in _books.values():
             if book.tank_id == tank_id:
@@ -444,15 +381,6 @@ def _poll_linked_shelly(tank_id: UUID) -> None:
 
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        state = postgres_account.set_calibration(body)
-        if body.tank_id is not None:
-            _poll_linked_shelly(body.tank_id)
-        return state
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(status_code=422, detail="укажите резервуар")
     if body.low_volts == body.high_volts:
@@ -482,12 +410,6 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
 
 
 def accept_level(body: LevelIngest) -> IngestAck:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.accept_level(body)
     if body.station_id is None or body.tank_id is None:
         raise HTTPException(
             status_code=422,
@@ -533,12 +455,6 @@ def accept_level(body: LevelIngest) -> IngestAck:
 
 
 def accept_dispense(body: DispenseIngest) -> IngestAck:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.accept_dispense(body)
     key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
     with _lock:
         if key in _seen:
@@ -557,13 +473,6 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
 
 
 def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.accept_dispenses_batch(items)
-
     results: list[IngestAck] = []
     accepted = 0
     duplicates = 0
@@ -587,13 +496,6 @@ def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
 
 
 def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.accept_levels_batch(items)
-
     results: list[IngestAck] = []
     accepted = 0
     duplicates = 0
@@ -614,12 +516,6 @@ def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
-        from app.services import postgres_account
-
-        return postgres_account.accept_receipt(body)
     key = body.source_event_id or f"receipt:{body.tank_id}:{body.recorded_at.isoformat()}"
     with _lock:
         book = _book(body.station_id, body.tank_id)

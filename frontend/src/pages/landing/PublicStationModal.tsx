@@ -1,5 +1,5 @@
 import type { PublicStation } from "../../api/client";
-import { dateTime, liters } from "../../format";
+import { dateTime, liters, percentLabel } from "../../format";
 import {
   isLowFill,
   type LiveLevel,
@@ -7,10 +7,6 @@ import {
   tankSensorBadge,
   tankSensorLabel,
 } from "../../liveLevels";
-
-function percentLabel(v: number | null | undefined): string {
-  return v == null ? "—" : String(Math.round(v));
-}
 
 export default function PublicStationModal({
   station,
@@ -128,9 +124,7 @@ export default function PublicStationModal({
                         </td>
                         <td>
                           <strong className={isLowFill(tank.fill_percent) ? "text-danger" : ""}>
-                            {tank.fill_percent == null
-                              ? "—"
-                              : `${percentLabel(tank.fill_percent)}%`}
+                            {percentLabel(tank.fill_percent)}
                           </strong>
                         </td>
                         <td>{liters(tank.remainder_liters)}</td>

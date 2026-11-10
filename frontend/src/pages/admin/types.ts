@@ -1,3 +1,6 @@
+import type { CatalogStation } from "../../api/client";
+import type { LiveLevel } from "../../liveLevels";
+
 export const TRUCK_STATUS = [
   { value: "idle", label: "ожидание" },
   { value: "loading", label: "погрузка" },
@@ -9,6 +12,18 @@ export const TRUCK_STATUS = [
 export function statusLabel(value: string) {
   return TRUCK_STATUS.find((row) => row.value === value)?.label ?? value;
 }
+
+export type EnrichedStation = {
+  row: CatalogStation;
+  cap: number;
+  actual: number | null;
+  fill: number | null;
+  free: number | null;
+  safeRefill: number | null;
+  online: boolean;
+  live: LiveLevel | null;
+  region: string;
+};
 
 export type AdminTab = "stations" | "trucks" | "supplies" | "reconcile" | "security";
 

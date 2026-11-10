@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { isAdmin } from "../access";
 import { useAuth } from "../auth";
-import { dateTime, liters, REGIONS, stationRegion } from "../format";
+import { dateTime, liters, percentLabel, REGIONS, stationRegion } from "../format";
 import {
   isLowFill,
   LOW_FILL_PERCENT,
@@ -19,10 +19,6 @@ import MapView from "./MapView";
 type AvailFilter = "all" | "plenty" | "low" | "online" | "no_reading";
 type PublicSort = "region" | "liters_desc" | "fill_desc" | "fill_asc" | "name_asc";
 type PublicViewMode = "grid" | "table";
-
-function percentLabel(value: number) {
-  return String(Math.round(value));
-}
 
 function jump(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -600,7 +596,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                               <em style={{ fontStyle: "normal" }}>{tankSensorLabel(tank)}</em>
                             </span>
                             <strong className={lowGas ? "text-danger" : ""}>
-                              {tank.fill_percent == null ? "—" : `${percentLabel(tank.fill_percent)}%`}
+                              {percentLabel(tank.fill_percent)}
                             </strong>
                           </div>
                           <div className="public-track" aria-hidden="true">

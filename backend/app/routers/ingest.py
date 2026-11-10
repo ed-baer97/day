@@ -7,7 +7,7 @@ Shelly → POST /level (литры или вольты).
 
 import hmac
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
@@ -26,7 +26,7 @@ from app.schemas.ingest import (
     ReceiptIngest,
     TankIngestState,
 )
-from app.services.device_ingest import (
+from app.services.account import (
     accept_dispense,
     accept_dispenses_batch,
     accept_level,
@@ -36,15 +36,13 @@ from app.services.device_ingest import (
     bind_dispense,
     bind_level,
     bind_receipt,
+    record_truck_position,
     set_calibration,
     tank_by_token,
     tank_state,
 )
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
-
-_SEEN_GPS: set[str] = set()
-_MAX_SEEN_GPS = 10_000
 
 
 def require_device(
@@ -66,13 +64,13 @@ def require_device(
 
 @router.post("/gps", response_model=IngestAck)
 def ingest_gps(body: GpsIngest, _: str | None = Depends(require_device)) -> IngestAck:
-    key = body.source_event_id or f"gps:{body.truck_id}:{body.recorded_at.isoformat()}"
-    if key in _SEEN_GPS:
-        return IngestAck(accepted=True, message="duplicate", duplicate=True)
-    if len(_SEEN_GPS) >= _MAX_SEEN_GPS:
-        _SEEN_GPS.clear()
-    _SEEN_GPS.add(key)
-    return IngestAck(accepted=True, message="gps accepted", entity_id=uuid4())
+    return record_truck_position(
+        body.truck_id,
+        lat=body.lat,
+        lon=body.lon,
+        recorded_at=body.recorded_at,
+        source_event_id=body.source_event_id,
+    )
 
 
 @router.put("/calibration", response_model=TankIngestState)

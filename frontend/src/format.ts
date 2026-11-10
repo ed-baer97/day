@@ -51,6 +51,11 @@ export function fiscalText(status: FiscalStatus) {
   return "продажа без чека";
 }
 
+export function percentLabel(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${Math.round(value)}%`;
+}
+
 export function liters(v?: number | null) {
   if (v == null || Number.isNaN(v)) return "—";
   return `${Math.round(v).toLocaleString("ru-RU")} л`;
