@@ -101,3 +101,29 @@ class TankIngestState(BaseModel):
     calibrated: bool
     last_volts: float | None
     last_measured_at: datetime | None
+
+
+class DispenseBatchIngest(BaseModel):
+    """Пакет наливов с edge-компьютера АГЗС (АСКА-02 / Топаз)."""
+
+    items: list[DispenseIngest] = Field(min_length=1, max_length=200)
+
+
+class DispenseBatchAck(BaseModel):
+    accepted_count: int
+    duplicates_count: int
+    total_volume_liters: float
+    results: list[IngestAck]
+
+
+class LevelBatchIngest(BaseModel):
+    """Пакет замеров уровня (накопленные при обрыве связи)."""
+
+    items: list[LevelIngest] = Field(min_length=1, max_length=200)
+
+
+class LevelBatchAck(BaseModel):
+    accepted_count: int
+    duplicates_count: int
+    results: list[IngestAck]
+

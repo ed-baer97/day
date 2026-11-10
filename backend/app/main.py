@@ -30,7 +30,11 @@ from app.services.shelly_link import shelly_poller
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    testing = "PYTEST_CURRENT_TEST" in os.environ
+    testing = (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or os.environ.get("TESTING") == "true"
+        or os.environ.get("AUTH_DISABLED") == "true"
+    )
     if not testing:
         settings = get_settings()
         if settings.use_postgres:

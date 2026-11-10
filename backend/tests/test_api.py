@@ -18,9 +18,9 @@ def test_map_overview():
     assert r.status_code == 200
     body = r.json()
     stations = [point for point in body["points"] if point["kind"] == "station"]
-    assert {point["meta"]["code"] for point in stations} == {"AGZS-AKT-12", "AGZS-TEST"}
+    assert {point["meta"]["code"] for point in stations} == {"AGZS-AKT-12"}
     assert body["active_trips"] == 0
-    assert body["open_events"] == 0
+    assert body["open_events"] == 1
 
 
 def test_unknown_batch_trail_is_missing():

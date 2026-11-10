@@ -145,3 +145,56 @@ def test_full_emulator_service_cycle(tmp_path: Path) -> None:
     assert info["outbox_sent"] == 2
     assert info["outbox_pending"] == 0
     assert len(sent_payloads) == 2
+
+
+def test_bulk_outbox_sync(tmp_path: Path) -> None:
+    db = EdgeDatabase(tmp_path / "edge.db")
+    t0 = datetime(2026, 11, 11, 9, 0, 0, tzinfo=timezone.utc)
+
+    for i in range(1, 4):
+        disp = CompletedDispense(
+            external_txn_id=f"bulk-txn-{i}",
+            pump_address=i,
+            mode="dose",
+            preset_ml=10000 * i,
+            dispensed_ml=10000 * i,
+            volume_liters=10.0 * i,
+            price_kzt_per_liter=100.0,
+            final_state_code="03",
+            error_code="00",
+            started_at=t0,
+            finished_at=t0,
+            last_raw_frame_hex="01 31 34",
+        )
+        db.record_completed_dispense(
+            disp,
+            station_id="a2222222-2222-2222-2222-222222222201",
+            dispenser_id=f"d2222222-2222-2222-2222-22222222220{i}",
+            tank_id="b2222222-2222-2222-2222-222222222201",
+        )
+
+    batch_calls: list[list[dict]] = []
+
+    def fake_batch_sender(url: str, token: str, items: list[dict]) -> VpsSendResult:
+        batch_calls.append(items)
+        return VpsSendResult(
+            ok=True,
+            status_code=200,
+            response_text='{"accepted_count": 3, "duplicates_count": 0}',
+        )
+
+    worker = OutboxSyncWorker(
+        db,
+        vps_base_url="http://93.171.232.47",
+        device_token="secret-token",
+        batch_sender=fake_batch_sender,
+    )
+
+    sent, failed = worker.flush_due(limit=10, now=t0)
+    assert sent == 3
+    assert failed == 0
+    assert len(batch_calls) == 1
+    assert len(batch_calls[0]) == 3
+    assert db.summary()["outbox_sent"] == 3
+    assert db.summary()["outbox_pending"] == 0
+

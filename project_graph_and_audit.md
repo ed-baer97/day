@@ -2,10 +2,10 @@
 
 > [!NOTE]
 > Результаты автоматических проверок проекта (`d:\Проект\day`):
-> - **Backend (`pytest backend/tests`)**: `62 passed` (все 14 тестовых модулей пройдены успешно).
-> - **Station Edge (`pytest station-edge/tests`)**: `11 passed in 1.21s` (все 3 тестовых модуля протокола Искра 1.72, трекера `dispensed_ml` и очереди SQLite → VPS пройдены успешно).
+> - **Backend (`pytest backend/tests`)**: `68 passed` (все 16 тестовых модулей пройдены успешно, включая тесты Bulk Ingest и кэша витрины).
+> - **Station Edge (`pytest station-edge/tests`)**: `12 passed in 0.99s` (все 3 тестовых модуля протокола Искра 1.72, трекера `dispensed_ml` и высокоскоростного пакетного Outbox Sync пройдены успешно).
 > - **Backend + Station Edge (`python -m compileall backend station-edge`)**: `0 ошибок` синтаксиса/компиляции.
-> - **Frontend (`tsc --noEmit && vite build`)**: `PASSED` (56 модулей собрано, включает проверку [`levelSource.check.ts`](file:///d:/Проект/day/frontend/levelSource.check.ts)).
+> - **Frontend (`tsc --noEmit && vite build`)**: `PASSED` (66 модулей собрано, модульная архитектура CSS и компонентов).
 
 ---
 
@@ -298,6 +298,7 @@ d:\Проект\day\
 │       ├── test_api.py                   └── 6 тестов (health, map, batch 404, reconcile, dispense, levels)
 │       ├── test_auth.py                  └── 5 тестов (login, expired/revoked token, rate limit, SSRF)
 │       ├── test_balance.py               └── 5 тестов (calculate_remainder, ok, shortage, surplus, band)
+│       ├── test_bulk_ingest.py           └── 3 теста (пакетный инжест наливов, уровней, TTL-кэш витрины)
 │       ├── test_calibration.py           └── 7 тестов (midpoint, endpoints, dial clamp, rounding, flat)
 │       ├── test_catalog.py               └── 4 теста (seed stations, CRUD station, tank, CRUD truck)
 │       ├── test_device_ingest.py         └── 8 тестов (dispense/shortage, calibration, receipt, noise, token)
@@ -345,10 +346,11 @@ d:\Проект\day\
 │   │   │                                 ├── DispenseRow (dataclass)
 │   │   │                                 └── EdgeDatabase [update_live_state(), log_raw_frame(),
 │   │   │                                     record_completed_dispense(), fetch_due_outbox(),
-│   │   │                                     mark_outbox_sent(), mark_outbox_failed(),
-│   │   │                                     list_dispenses(), summary()]
+│   │   │                                     mark_outbox_sent(), mark_outbox_batch_sent(),
+│   │   │                                     mark_outbox_failed(), list_dispenses(), summary()]
 │   │   ├── sync.py                       ├── VpsSendResult (dataclass)
 │   │   │                                 ├── post_dispense_to_vps()
+│   │   │                                 ├── post_dispenses_batch_to_vps()
 │   │   │                                 └── OutboxSyncWorker [flush_due()]
 │   │   ├── service.py                    ├── build_link()
 │   │   │                                 └── StationEdgeService [poll_cycle_once(), maybe_sync_outbox(), serve()]
@@ -358,7 +360,7 @@ d:\Проект\day\
 │   └── tests/
 │       ├── test_iskra_protocol.py        └── 5 тестов (команда «Тест» 1..6, разбор 23 байт, авария 06, BCC)
 │       ├── test_tracker.py               └── 3 теста (обычная доза с убыванием остатка и налив «до полного»)
-│       └── test_storage_sync.py          └── 3 теста (SQLite WAL, дедупликация, очередь outbox и отправка на VPS)
+│       └── test_storage_sync.py          └── 4 теста (SQLite WAL, дедупликация, пакетный Bulk Outbox Sync на VPS)
 │
 └── frontend/
     ├── index.html
@@ -399,12 +401,27 @@ d:\Проект\day\
         │                                 │   LevelsProvider(), usePublicLevels(),
         │                                 │   useViewPeriod(), useSensorDay()
         ├── catalog.tsx                   ├── CatalogProvider(), useCatalog(), messageOf()
-        ├── App.tsx                       └── App() [Page, Selection, QuickFilter,
-        │                                     goHomeDashboard(), openStationPage(),
-        │                                     openStationOnMap(), openTruckOnMap(),
-        │                                     openAdminStation(), openAdminTruck()]
+        ├── App.tsx                       └── App() — корневой компонент приложения
         ├── styles/
-        │   └── variables.css             └── Токены темы, стили навигации, хлебных крошек и карточек
+        │   ├── variables.css             └── Корневая точка входа со ссылками @import
+        │   ├── tokens.css                └── Цветовые переменные, шрифты, радиусы, тени, z-index
+        │   ├── navigation-and-scale.css  └── Topbar, breadcrumbs, переключатель масштаба шрифта
+        │   ├── map-and-dash.css          └── Стили интерактивной карты, маркеров и дашборда
+        │   ├── landing.css               └── Стили публичного лэндинга и модального окна
+        │   └── admin-and-detail.css      └── Стили форм, таблиц админки и карточки АГЗС
+        ├── layout/
+        │   ├── Topbar.tsx                └── Topbar() — верхняя шапка, навигация, фильтры и профиль
+        │   └── BreadcrumbBar.tsx         └── BreadcrumbBar() — контекстная навигационная цепочка
+        ├── pages/
+        │   ├── MapScreen.tsx             └── MapScreen() — полноэкранный экран карты сети
+        │   ├── SupplyPage.tsx            └── SupplyPage() — экран диспетчеризации поставок
+        │   ├── landing/
+        │   │   └── PublicStationModal.tsx └── PublicStationModal() — модальное окно остатка газа АГЗС
+        │   └── admin/
+        │       ├── types.ts              └── TRUCK_STATUS, statusLabel(), AdminTab, ADMIN_SECTIONS
+        │       ├── StationForm.tsx       └── StationForm() — карточка создания/редактирования АГЗС
+        │       ├── TruckForm.tsx         └── TruckForm() — карточка создания/редактирования газовоза
+        │       └── AdminSecurityTab.tsx  └── AdminSecurityTab() — матрица доступа и контур безопасности
         ├── api/
         │   └── client.ts                 ├── ShellyLink, PublicTank, PublicStation, TankDevice,
         │                                 │   LevelReading, TankIngestState, IngestAck, BatchRecord,
@@ -413,13 +430,12 @@ d:\Проект\day\
         │                                 │   authHeader(), readError(), getJson(), sendJson(),
         │                                 └── api (объект всех HTTP-вызовов)
         └── components/
-            ├── AdminPage.tsx             ├── AdminPage(), StationForm(), TruckForm(),
-            │                             │   statusLabel(), scrollAdminTop()
+            ├── AdminPage.tsx             ├── AdminPage() — центральная консоль управления
             ├── Charts.tsx                ├── BarChart(), LineChart()
-            ├── Dashboard.tsx             ├── Dashboard(), Overview(), FillCell(), StationListRow()
+            ├── Dashboard.tsx             ├── Dashboard(), Overview()
+            ├── StationListRow.tsx        ├── FillCell(), StationListRow()
             ├── Empty.tsx                 └── Empty()
-            ├── Landing.tsx               ├── Landing(), PublicStationModal(),
-            │                             │   percentLabel(), jump()
+            ├── Landing.tsx               ├── Landing(), percentLabel(), jump()
             ├── LevelChangesToday.tsx     ├── LevelChangesToday(), percentLabel()
             ├── Logo.tsx                  └── Logo()
             ├── MapPopup.tsx              └── MapPopup()

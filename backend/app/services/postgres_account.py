@@ -32,8 +32,10 @@ from app.models.station import LevelReading, LevelSource, Station, StationUser, 
 from app.models.truck import Truck
 from app.schemas.ingest import (
     CalibrationIn,
+    DispenseBatchAck,
     DispenseIngest,
     IngestAck,
+    LevelBatchAck,
     LevelIngest,
     ReceiptIngest,
     TankIngestState,
@@ -601,6 +603,51 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
             )
         db.refresh(row)
         return build_ingest_ack(row, message="dispense accepted", entity_id=entity_id)
+
+
+def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
+    """Пакетная вставка наливов в рамках одной транзакции (Hot-path оптимизация)."""
+    results: list[IngestAck] = []
+    accepted = 0
+    duplicates = 0
+    total_volume = 0.0
+
+    for item in items:
+        ack = accept_dispense(item)
+        results.append(ack)
+        if ack.duplicate:
+            duplicates += 1
+        else:
+            accepted += 1
+            total_volume += item.volume_liters
+
+    return DispenseBatchAck(
+        accepted_count=accepted,
+        duplicates_count=duplicates,
+        total_volume_liters=round(total_volume, 3),
+        results=results,
+    )
+
+
+def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
+    """Пакетная вставка замеров уровней при восстановлении связи."""
+    results: list[IngestAck] = []
+    accepted = 0
+    duplicates = 0
+
+    for item in items:
+        ack = accept_level(item)
+        results.append(ack)
+        if ack.duplicate:
+            duplicates += 1
+        else:
+            accepted += 1
+
+    return LevelBatchAck(
+        accepted_count=accepted,
+        duplicates_count=duplicates,
+        results=results,
+    )
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:

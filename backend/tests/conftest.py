@@ -2,6 +2,7 @@
 
 import os
 
+os.environ["TESTING"] = "true"
 os.environ["AUTH_DISABLED"] = "true"
 os.environ["STATE_PATH"] = ""
 os.environ["ACCOUNT_STORE"] = "memory"

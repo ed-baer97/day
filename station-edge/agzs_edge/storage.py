@@ -307,6 +307,25 @@ class EdgeDatabase:
                 (server_response, now_iso, external_txn_id),
             )
 
+    def mark_outbox_batch_sent(self, items: list[tuple[str, str]]) -> None:
+        """Атомарно помечает пачку записей как отправленные в 1 транзакции SQLite."""
+        if not items:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                UPDATE outbox_queue
+                SET status = 'sent',
+                    attempts = attempts + 1,
+                    last_error = NULL,
+                    server_response = ?,
+                    sent_at = ?
+                WHERE external_txn_id = ?
+                """,
+                [(resp, now_iso, txn_id) for txn_id, resp in items],
+            )
+
     def mark_outbox_failed(
         self,
         external_txn_id: str,

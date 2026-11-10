@@ -26,8 +26,10 @@ from app.domain.tank_book import (
 )
 from app.schemas.ingest import (
     CalibrationIn,
+    DispenseBatchAck,
     DispenseIngest,
     IngestAck,
+    LevelBatchAck,
     LevelIngest,
     ReceiptIngest,
     TankIngestState,
@@ -88,6 +90,12 @@ def reset_device_ingest() -> None:
         _devices_by_token.clear()
         _devices_by_tank.clear()
         _devices_by_station.clear()
+    try:
+        from app.services.public_board import invalidate_public_board_cache
+
+        invalidate_public_board_cache()
+    except Exception:
+        pass
 
 
 def _remember_seen(key: str) -> None:
@@ -210,6 +218,12 @@ def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDe
         _devices_by_tank[device.tank_id] = device
         _devices_by_station.setdefault(station_id, []).append(device.tank_id)
     _commit()
+    try:
+        from app.services.public_board import invalidate_public_board_cache
+
+        invalidate_public_board_cache()
+    except Exception:
+        pass
     return device
 
 
@@ -236,6 +250,12 @@ def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
         _books.pop((station_id, tank_id), None)
     remove_shelly_for_tank(tank_id)
     _commit()
+    try:
+        from app.services.public_board import invalidate_public_board_cache
+
+        invalidate_public_board_cache()
+    except Exception:
+        pass
 
 
 def delete_station_devices(station_id: UUID) -> None:
@@ -256,6 +276,12 @@ def delete_station_devices(station_id: UUID) -> None:
     for tank_id in tank_ids:
         remove_shelly_for_tank(tank_id)
     _commit()
+    try:
+        from app.services.public_board import invalidate_public_board_cache
+
+        invalidate_public_board_cache()
+    except Exception:
+        pass
 
 
 def update_tank_device(
@@ -445,6 +471,12 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
             high_percent=body.high_percent,
         )
     _commit()
+    try:
+        from app.services.public_board import invalidate_public_board_cache
+
+        invalidate_public_board_cache()
+    except Exception:
+        pass
     _poll_linked_shelly(body.tank_id)
     return tank_state(body.tank_id)
 
@@ -490,6 +522,12 @@ def accept_level(body: LevelIngest) -> IngestAck:
                 book.level_ids.clear()
             book.level_ids[key] = entity_id
             ack = build_ingest_ack(book, message="level accepted", entity_id=entity_id)
+            try:
+                from app.services.public_board import invalidate_public_board_cache
+
+                invalidate_public_board_cache()
+            except Exception:
+                pass
     _commit()
     return ack
 
@@ -516,6 +554,63 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
             ack = build_ingest_ack(book, message="dispense accepted", entity_id=uuid4())
     _commit()
     return ack
+
+
+def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.accept_dispenses_batch(items)
+
+    results: list[IngestAck] = []
+    accepted = 0
+    duplicates = 0
+    total_volume = 0.0
+
+    for item in items:
+        ack = accept_dispense(item)
+        results.append(ack)
+        if ack.duplicate:
+            duplicates += 1
+        else:
+            accepted += 1
+            total_volume += item.volume_liters
+
+    return DispenseBatchAck(
+        accepted_count=accepted,
+        duplicates_count=duplicates,
+        total_volume_liters=round(total_volume, 3),
+        results=results,
+    )
+
+
+def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.accept_levels_batch(items)
+
+    results: list[IngestAck] = []
+    accepted = 0
+    duplicates = 0
+
+    for item in items:
+        ack = accept_level(item)
+        results.append(ack)
+        if ack.duplicate:
+            duplicates += 1
+        else:
+            accepted += 1
+
+    return LevelBatchAck(
+        accepted_count=accepted,
+        duplicates_count=duplicates,
+        results=results,
+    )
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:

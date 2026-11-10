@@ -15,16 +15,22 @@ from app.auth import is_admin_authorization
 from app.config import get_settings
 from app.schemas.ingest import (
     CalibrationIn,
+    DispenseBatchAck,
+    DispenseBatchIngest,
     DispenseIngest,
     GpsIngest,
     IngestAck,
+    LevelBatchAck,
+    LevelBatchIngest,
     LevelIngest,
     ReceiptIngest,
     TankIngestState,
 )
 from app.services.device_ingest import (
     accept_dispense,
+    accept_dispenses_batch,
     accept_level,
+    accept_levels_batch,
     accept_receipt,
     bind_calibration,
     bind_dispense,
@@ -79,10 +85,28 @@ def ingest_level(body: LevelIngest, token: str | None = Depends(require_device))
     return accept_level(bind_level(body, token))
 
 
+@router.post("/levels/batch", response_model=LevelBatchAck)
+def ingest_levels_batch(
+    body: LevelBatchIngest, token: str | None = Depends(require_device)
+) -> LevelBatchAck:
+    """Пакетный приём замеров уровня при восстановлении связи со станцией."""
+    bound_items = [bind_level(item, token) for item in body.items]
+    return accept_levels_batch(bound_items)
+
+
 @router.post("/dispense", response_model=IngestAck)
 def ingest_dispense(body: DispenseIngest, token: str | None = Depends(require_device)) -> IngestAck:
     """Accept read-only dispense readings from Topaz/ASKA — no control path."""
     return accept_dispense(bind_dispense(body, token))
+
+
+@router.post("/dispenses/batch", response_model=DispenseBatchAck)
+def ingest_dispenses_batch(
+    body: DispenseBatchIngest, token: str | None = Depends(require_device)
+) -> DispenseBatchAck:
+    """Пакетный приём наливов ТРК из очереди outbox edge-компьютера."""
+    bound_items = [bind_dispense(item, token) for item in body.items]
+    return accept_dispenses_batch(bound_items)
 
 
 @router.post("/receipt", response_model=IngestAck)

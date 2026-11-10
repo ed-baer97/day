@@ -89,8 +89,55 @@ def post_dispense_to_vps(
         )
 
 
+def post_dispenses_batch_to_vps(
+    base_url: str,
+    device_token: str,
+    items: list[dict],
+    *,
+    timeout_sec: float = 15.0,
+) -> VpsSendResult:
+    """Выполняет пакетный HTTP POST `/api/v1/ingest/dispenses/batch` на центральный VPS."""
+    url = base_url.rstrip("/") + "/api/v1/ingest/dispenses/batch"
+    headers = {"Content-Type": "application/json"}
+    if device_token:
+        headers["X-Device-Token"] = device_token
+    payload = json.dumps({"items": items}, ensure_ascii=False)
+    req = urllib.request.Request(
+        url=url,
+        data=payload.encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw_text = resp.read().decode("utf-8", errors="replace")
+            status_code = getattr(resp, "status", 200)
+            return VpsSendResult(
+                ok=True,
+                status_code=status_code,
+                response_text=raw_text,
+            )
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return VpsSendResult(
+            ok=False,
+            status_code=exc.code,
+            error_text=f"HTTP {exc.code}: {err_body or exc.reason}",
+        )
+    except Exception as exc:
+        return VpsSendResult(
+            ok=False,
+            status_code=0,
+            error_text=f"Ошибка связи с VPS: {exc}",
+        )
+
+
 class OutboxSyncWorker:
-    """Обработчик очереди `outbox_queue`."""
+    """Обработчик очереди `outbox_queue` с поддержкой высокоскоростного Bulk Ingest."""
 
     def __init__(
         self,
@@ -99,6 +146,7 @@ class OutboxSyncWorker:
         vps_base_url: str,
         device_token: str,
         sender: Callable[[str, str, str], VpsSendResult] | None = None,
+        batch_sender: Callable[[str, str, list[dict]], VpsSendResult] | None = None,
     ) -> None:
         self.db = db
         self.vps_base_url = vps_base_url
@@ -106,13 +154,37 @@ class OutboxSyncWorker:
         self._sender = sender or (
             lambda url, token, payload: post_dispense_to_vps(url, token, payload)
         )
+        self._batch_sender = batch_sender or (
+            lambda url, token, items: post_dispenses_batch_to_vps(url, token, items)
+        )
 
     def flush_due(self, *, limit: int = 25, now: datetime | None = None) -> tuple[int, int]:
         """Пытается отправить все готовые к отправке записи из `outbox_queue`.
 
+        Если готовых записей больше одной, сначала пробует пакетную отправку (Bulk Ingest).
+        При сбое откатывается к поштучной отправке с индивидуальным retry-бэкоффом.
         Возвращает кортеж `(sent_count, failed_count)`.
         """
         items: list[OutboxItem] = self.db.fetch_due_outbox(limit=limit, now=now)
+        if not items:
+            return 0, 0
+
+        # Попытка быстрой пакетной отправки, если записей несколько
+        if len(items) > 1:
+            try:
+                parsed = [json.loads(it.payload_json) for it in items]
+                batch_res = self._batch_sender(self.vps_base_url, self.device_token, parsed)
+                if batch_res.ok:
+                    self.db.mark_outbox_batch_sent(
+                        [(it.external_txn_id, batch_res.response_text) for it in items]
+                    )
+                    logger.info("Пакет из %d наливов успешно доставлен на VPS в 1 запросе", len(items))
+                    return len(items), 0
+                else:
+                    logger.warning("Пакетная отправка отклонена (%s), переход на поштучную", batch_res.error_text)
+            except Exception as exc:
+                logger.warning("Ошибка пакетной отправки (%s), переход на поштучную", exc)
+
         sent_count = 0
         failed_count = 0
 
