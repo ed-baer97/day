@@ -1,0 +1,216 @@
+/* LogHub design tokens — adapted for Цифровой след LPG
+   Source: https://github.com/ed-baer97/LogHub frontend/src/styles.css */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b100e;
+  --bg-2: #121a16;
+  --panel: rgba(16, 26, 22, 0.88);
+  --ink: #eef3ea;
+  --muted: #8b9a90;
+  --sea: #2ec4b6;
+  --sea-2: #147f78;
+  --dust: #e0a45a;
+  --coral: #e07a5f;
+  --line: rgba(232, 239, 230, 0.08);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  --radius: 18px;
+  --font: "Manrope", system-ui, sans-serif;
+  --serif: "Fraunces", Georgia, serif;
+  --topbar: rgba(11, 16, 14, 0.92);
+  --side: linear-gradient(180deg, #101915 0%, #0b100e 100%);
+  --input: #0e1512;
+  --modal: var(--bg-2);
+  --modal-scrim: rgba(6, 10, 8, 0.72);
+  --btn-fg: #06221f;
+  --hover-fill: rgba(255, 255, 255, 0.03);
+  --role-fill: rgba(255, 255, 255, 0.02);
+  --badge-done: rgba(255, 255, 255, 0.08);
+  --toast-ok-bg: #14332e;
+  --toast-ok-fg: #9ee8df;
+  --toast-err-bg: #3a1c18;
+  --toast-err-fg: #f0b4a8;
+  --skel-a: #121a16;
+  --skel-b: #1c2a24;
+  --popup: #141c18;
+  --truck-label-bg: rgba(11, 16, 14, 0.88);
+  --truck-label-fg: var(--ink);
+  --mark-deep: #0b4a46;
+  --map-route: var(--sea);
+  --map-trail: var(--dust);
+  --ok: var(--sea);
+  --warn: var(--dust);
+  --danger: var(--coral);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef3ea;
+  --bg-2: #ffffff;
+  --panel: rgba(255, 255, 255, 0.92);
+  --ink: #14201a;
+  --muted: #3f5248;
+  --sea: #147f78;
+  --sea-2: #0e5c57;
+  --dust: #c4842e;
+  --coral: #c45a42;
+  --line: rgba(20, 32, 26, 0.12);
+  --shadow: 0 16px 40px rgba(20, 40, 32, 0.12);
+  --topbar: rgba(238, 243, 234, 0.92);
+  --side: linear-gradient(180deg, #f7faf6 0%, #eef3ea 100%);
+  --input: #ffffff;
+  --modal: var(--bg-2);
+  --modal-scrim: rgba(20, 32, 26, 0.45);
+  --btn-fg: #f4fffd;
+  --hover-fill: rgba(20, 32, 26, 0.05);
+  --role-fill: rgba(20, 32, 26, 0.03);
+  --badge-done: rgba(20, 32, 26, 0.08);
+  --toast-ok-bg: #d7f3ee;
+  --toast-ok-fg: var(--sea-2);
+  --toast-err-bg: #f8ddd6;
+  --toast-err-fg: #8a2f1e;
+  --skel-a: #e4ebe4;
+  --skel-b: #f7faf6;
+  --popup: var(--bg-2);
+  --truck-label-bg: var(--panel);
+  --truck-label-fg: var(--ink);
+  --mark-deep: var(--sea-2);
+  --map-route: var(--sea);
+  --map-trail: var(--dust);
+  --ok: var(--sea);
+  --warn: var(--dust);
+  --danger: var(--coral);
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+}
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+.app {
+  min-height: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--topbar);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(12px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand .mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--sea), var(--mark-deep));
+  box-shadow: 0 0 0 4px rgba(46, 196, 182, 0.12);
+  flex: none;
+}
+.brand h1 {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 500;
+  margin: 0;
+}
+.brand span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-pages {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--hover-fill);
+}
+.nav-page {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.nav-page.active {
+  background: var(--sea);
+  color: var(--btn-fg);
+}
+
+.stats-chip {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stats-chip strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.btn {
+  border: 0;
+  background: var(--sea);
+  color: var(--btn-fg);
+  font-weight: 700;
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.btn.secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.btn.small {
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+}

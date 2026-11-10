@@ -1,0 +1,329 @@
+
+.who {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.landing {
+  position: relative;
+  height: 100%;
+  overflow: auto;
+  background: transparent;
+}
+.landing-map,
+.landing-veil {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+.landing-map {
+  z-index: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.landing-map .map-wrap {
+  position: absolute;
+  inset: 0;
+}
+.landing-map .maplibregl-canvas {
+  filter: blur(6px);
+}
+.landing-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f4fffd;
+  box-shadow:
+    0 0 0 7px rgba(46, 196, 182, 0.35),
+    0 0 22px 8px rgba(46, 196, 182, 0.8);
+}
+.landing-map .maplibregl-ctrl-attrib {
+  font-size: 9px;
+  opacity: 0.55;
+  filter: none;
+}
+.landing-veil {
+  z-index: 1;
+  background:
+    linear-gradient(90deg, rgba(11, 16, 14, 0.72) 0%, rgba(11, 16, 14, 0.2) 46%, rgba(11, 16, 14, 0.08) 100%),
+    linear-gradient(180deg, rgba(11, 16, 14, 0.22) 0%, transparent 36%, rgba(11, 16, 14, 0.28) 100%);
+}
+html[data-theme="light"] .landing-veil {
+  background:
+    linear-gradient(90deg, rgba(238, 243, 234, 0.78) 0%, rgba(238, 243, 234, 0.22) 48%, rgba(238, 243, 234, 0.06) 100%),
+    linear-gradient(180deg, rgba(238, 243, 234, 0.28) 0%, transparent 40%, rgba(238, 243, 234, 0.22) 100%);
+}
+.landing-page {
+  position: relative;
+  z-index: 2;
+}
+.landing-nav {
+  position: fixed;
+  z-index: 30;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 10px 8px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+}
+.landing-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.landing-brand strong {
+  display: block;
+  font-size: 14px;
+}
+.landing-brand .kicker {
+  margin: 0;
+}
+.landing-links {
+  display: flex;
+  gap: 6px;
+}
+.landing-links button {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.landing-links button:hover {
+  background: var(--hover-fill);
+}
+.landing-nav-actions {
+  display: flex;
+  gap: 8px;
+}
+.landing-hero {
+  position: relative;
+  min-height: 100dvh;
+  pointer-events: none;
+}
+.landing-copy {
+  pointer-events: auto;
+}
+.landing-copy {
+  position: absolute;
+  z-index: 3;
+  left: 48px;
+  bottom: 72px;
+  max-width: 560px;
+}
+.landing-copy h1 {
+  margin: 0 0 14px;
+  max-width: 12ch;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(40px, 5.4vw, 68px);
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+}
+.landing-prose {
+  margin: 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.5;
+}
+.landing-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+.landing-section {
+  position: relative;
+  z-index: 2;
+  width: min(1080px, calc(100% - 48px));
+  margin: 0 auto 20px;
+  padding: 64px 8px 28px;
+  scroll-margin-top: 96px;
+  background: transparent;
+}
+.landing-section h2 {
+  margin: 0 0 10px;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(32px, 4vw, 48px);
+  letter-spacing: -0.03em;
+}
+.level-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.level-head h2 {
+  margin-bottom: 0;
+}
+.level-head .public-fresh {
+  margin-top: 8px;
+}
+.level-search {
+  width: min(280px, 100%);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  backdrop-filter: blur(16px);
+}
+.level-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+.level-card {
+  min-width: 0;
+  padding: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(16px);
+}
+.level-card h3 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 20px;
+  line-height: 1.15;
+}
+.level-card header p {
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.level-tank + .level-tank {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.level-tank-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.level-tank-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.level-tank-head strong {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+.level-tank .public-track {
+  height: 8px;
+  margin: 8px 0;
+}
+.level-tank p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.level-tank-stale .level-tank-head strong {
+  color: var(--muted);
+}
+.login-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: var(--modal-scrim);
+}
+.login-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+  border-radius: 22px;
+  background: var(--modal);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.login-card h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 500;
+}
+.login-card p {
+  margin: 0;
+  color: var(--muted);
+}
+.login-card label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.login-card input {
+  border: 1px solid var(--line);
+  background: var(--input);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 15px;
+}
+.login-card .btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.login-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .landing-nav {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+  }
+  .landing-links {
+    order: 3;
+    width: 100%;
+  }
+  .landing-copy {
+    left: 20px;
+    right: 20px;
+    bottom: 28px;
+  }
+  .landing-section {
+    width: calc(100% - 28px);
+    padding-top: 36px;
+  }
+  .level-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .level-search {
+    width: 100%;
+  }
+}
+
