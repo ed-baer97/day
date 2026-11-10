@@ -8,7 +8,7 @@
 ```
 backend/            FastAPI, учёт, ingest, миграции Alembic
 frontend/           React + MapLibre (визуальный язык LogHub)
-desktop/            пульт колонок, PySide6, команда agzs-station --ui
+station-edge/       автономный узел станции: опрос УЗГС-01 через АСКА-02 (Искра 1.72), локальная БД SQLite и отправка отпусков на VPS
 docker-compose.yml  локальные PostgreSQL и API
 deploy/             площадка: web (nginx), api, Postgres
 ```
@@ -49,27 +49,39 @@ UI: `http://localhost:5173` (прокси `/api` → `:8000`).
 Витрина раз в 15 секунд читает `GET /api/v1/public/levels`.  
 Тема — по [LogHub](https://github.com/ed-baer97/LogHub) (Caspian/forest).
 
-### Пульт колонок
+### Станционный узел АСКА-02 + УЗГС-01 (`station-edge/`)
 
-Окно кассира — PySide6. Оно не встроено в сайт: смена, доза, пуск и стоп уходят на `http://127.0.0.1:5173/api/v1`. Сайт на 5173 проксирует запись на локальный API `8000`, в тестовую АГЗС `AGZS-TEST`. В существующую заправку эти данные не пишутся. На сервер пока не выкладываем.
+Автономный пакет для компьютера на АГЗС (Windows 10/11 и Linux), к которому кабелем USB подключён адаптер **АСКА-02** (`FTDI FT232R`, порт `COM7` / `/dev/ttyUSB0`, линия `9600 8N1`).
+
+- **Только чтение (безопасность):** шлёт исключительно команду «Тест» протокола **Искра 1.72** (код `4`, адреса `1–6`). Пуск, дозу и стоп на живую колонку компьютер не отправляет (газ включает пистолет и кнопка на пульте УЗГС-01).
+- **Разбор 23-байтного кадра и расчёт `dispensed_ml`:**
+  - *Обычная доза*: поле объёма в кадре — остаток, оно уменьшается (`отпущено = задали − осталось`; например, задали `20 000 мл`, в кадре `12 500` — налито `7 500 мл`).
+  - *«До полного»*: дозы заранее нет, поле объёма уже содержит отпущенные миллилитры.
+- **Локальная БД и очередь на VPS:** закрытая заправка пишется как `dispensed_ml` в локальную `station_edge.db` (SQLite WAL) и ставится в очередь `outbox_queue` для отправки на `POST /api/v1/ingest/dispense` (`X-Device-Token`). Повторная отправка того же `external_txn_id` не создаёт вторую заправку на VPS.
 
 ```powershell
-cd desktop
-python -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[ui]"
-$env:AGZS_ENV = "emulator"
-$env:AGZS_PUMP_DRIVER = "emulator"
-agzs-station --ui
+cd station-edge
+pip install -r requirements.txt
+Copy-Item .env.example .env
+
+# Разовый опрос адресов 1..6 командой «Тест» (проверка живой пары «К АСКА 01» на средних контактах RJ-11):
+python -m agzs_edge probe --port COM7 --all-addresses
+
+# Боевой запуск на станции (COM7 -> SQLite -> VPS):
+python -m agzs_edge serve
+
+# Проверка на Windows без колонки (встроенный имитатор кадров):
+python -m agzs_edge serve --emulator --cycles 8 --no-sync
+python -m agzs_edge status
 ```
 
-Те же две переменные можно записать в `desktop/.env`. Вход в окне — логин владельца тестовой АГЗС, не логин платформы. Без `--ui` процесс только печатает, что касса готова.
+Подробная памятка по клеммам «К АСКА 01», контактам RJ-11, индикаторам АСКА-02 и калибровке смещений кадра — в [`station-edge/README.md`](station-edge/README.md).
 
 ### Тесты
 
 ```bash
 cd backend && pip install pytest && PYTHONPATH=. pytest tests/ -q
+cd ../station-edge && PYTHONPATH=. pytest tests/ -q
 ```
 
 ## Учёт и режимы хранения
@@ -77,15 +89,13 @@ cd backend && pip install pytest && PYTHONPATH=. pytest tests/ -q
 | Режим | Когда | Где данные |
 |---|---|---|
 | `ACCOUNT_STORE=memory` | локальный стенд, pytest | память; опционально снимок в `STATE_PATH` |
-| `ACCOUNT_STORE=postgres` | площадка | Postgres; ключ, шкала, книга, история замеров |
+| `ACCOUNT_STORE=postgres` | площадка (высокая нагрузка, `workers > 1`) | Postgres: станции, газовозы, резервуары, токены, шкала, книга, замеры уровня (`level_readings`), транзакции отпуска (`dispense_records`) и приёмки (`receipt_records`) с индексами и строковой блокировкой `FOR UPDATE` |
 
 На площадке при старте `api`:
 
-1. применяются миграции Alembic;
+1. применяются миграции Alembic (`0001`–`0003`);
 2. если таблица станций пуста и есть `/data/state.json` — снимок один раз переносится в Postgres;
 3. если файла нет — создаётся стартовая АГЗС Актау · 12 мкр.
-
-Газовозы, партии и карта-симуляция на фронте пока не пишутся в Postgres.
 
 ## Вход
 

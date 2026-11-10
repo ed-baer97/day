@@ -1,10 +1,21 @@
-"""AGZS station and tank models."""
+"""AGZS station, tank, level reading, and station user models."""
 
 import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +30,9 @@ class LevelSource(str, enum.Enum):
 
 class Station(Base):
     __tablename__ = "stations"
+    __table_args__ = (
+        Index("ix_stations_is_active", "is_active"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -31,17 +45,21 @@ class Station(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tanks = relationship("Tank", back_populates="station", cascade="all, delete-orphan")
-    dispensers = relationship("Dispenser", back_populates="station", cascade="all, delete-orphan")
 
 
 class Tank(Base):
     __tablename__ = "tanks"
+    __table_args__ = (
+        UniqueConstraint("station_id", "code", name="uq_tanks_station_code"),
+        Index("ix_tanks_station_id", "station_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    station_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("stations.id"), nullable=False)
+    station_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stations.id", ondelete="CASCADE"), nullable=False
+    )
     code: Mapped[str] = mapped_column(String(64), nullable=False)
     capacity_liters: Mapped[float] = mapped_column(Float, nullable=False)
-    # Mechanical float remains primary physical gauge; electronic is optional.
     has_electronic_sensor: Mapped[bool] = mapped_column(Boolean, default=False)
     actual_remainder_liters: Mapped[float | None] = mapped_column(Float)
     calculated_remainder_liters: Mapped[float | None] = mapped_column(Float)
@@ -68,9 +86,15 @@ class Tank(Base):
 
 class LevelReading(Base):
     __tablename__ = "level_readings"
+    __table_args__ = (
+        Index("ix_level_readings_tank_recorded", "tank_id", "recorded_at"),
+        Index("ix_level_readings_station_recorded", "station_id", "recorded_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tank_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tanks.id", ondelete="CASCADE"), nullable=False)
+    tank_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tanks.id", ondelete="CASCADE"), nullable=False
+    )
     station_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stations.id", ondelete="CASCADE"), nullable=False
     )
@@ -86,7 +110,10 @@ class LevelReading(Base):
 
 class StationUser(Base):
     __tablename__ = "station_users"
-    __table_args__ = (UniqueConstraint("station_id", "username", name="uq_station_users_station_username"),)
+    __table_args__ = (
+        UniqueConstraint("station_id", "username", name="uq_station_users_station_username"),
+        Index("ix_station_users_username", "username"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     station_id: Mapped[uuid.UUID] = mapped_column(

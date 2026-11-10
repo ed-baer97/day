@@ -1,12 +1,8 @@
-"""Приём Shelly (уровень) и Топаз-119-28М (отпуск).
+"""Приём Shelly (уровень) и ТРК / АСКА-02 (отпуск).
 
-Книга резервуара: старт + приёмки − отпуски.
-Старт — первое показание уровня. Отпуски и приёмки до старта
-сохраняются, но в книгу не входят: они уже сидят в физическом уровне.
-
-Состояние приборов живёт в памяти процесса. Если задан STATE_PATH,
-после каждой записи оно сбрасывается в файл и поднимается при старте.
-Повтор с тем же ключом не двигает остаток.
+Книга резервуара: старт + приёмки − отпуски (см. app.domain.tank_book).
+Состояние приборов в режиме memory живёт в памяти процесса (сброс в STATE_PATH при наличии),
+а в режиме postgres — в таблицах tanks, level_readings, dispense_records, receipt_records.
 """
 
 from __future__ import annotations
@@ -19,6 +15,15 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
+from app.domain.tank_book import (
+    CALIBRATION_REQUIRED,
+    apply_dispense_volume,
+    apply_level_reading,
+    apply_receipt_volume,
+    build_ingest_ack,
+    build_tank_ingest_state,
+    recompute_tank_book,
+)
 from app.schemas.ingest import (
     CalibrationIn,
     DispenseIngest,
@@ -27,10 +32,9 @@ from app.schemas.ingest import (
     ReceiptIngest,
     TankIngestState,
 )
-from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import LevelCalibration, level_volts_changed, round_percent, volts_to_percent
+from app.schemas.station import TankOut
+from app.services.calibration import LevelCalibration
 
-CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
 _MAX_SEEN = 10_000
 
 _lock = threading.Lock()
@@ -131,12 +135,6 @@ def tank_by_token(token: str | None) -> TankDevice | None:
         return _devices_by_token.get(token)
 
 
-def _device_for_token(token: str | None) -> TankDevice | None:
-    if not token:
-        return None
-    return _devices_by_token.get(token)
-
-
 def list_tank_devices(station_id: UUID) -> list[TankDevice]:
     from app.services.account_mode import use_postgres
 
@@ -147,6 +145,44 @@ def list_tank_devices(station_id: UUID) -> list[TankDevice]:
     with _lock:
         ids = _devices_by_station.get(station_id, [])
         return [_devices_by_tank[tank_id] for tank_id in ids if tank_id in _devices_by_tank]
+
+
+def list_station_tanks_out(station_id: UUID) -> list[TankOut]:
+    """Возвращает все резервуары станции с фактическим и расчётным остатком за 1 обращение (без N+1)."""
+    from app.services.account_mode import use_postgres
+
+    if use_postgres():
+        from app.services import postgres_account
+
+        return postgres_account.list_station_tanks_out(station_id)
+    with _lock:
+        ids = _devices_by_station.get(station_id, [])
+        result: list[TankOut] = []
+        for tank_id in ids:
+            device = _devices_by_tank.get(tank_id)
+            if device is None:
+                continue
+            book = _books.get((station_id, tank_id))
+            actual = None if book is None else book.actual_remainder_liters
+            calc = (
+                actual
+                if book is None or book.calculated_remainder_liters is None
+                else book.calculated_remainder_liters
+            )
+            measured = None if book is None else book.last_measured_at
+            result.append(
+                TankOut(
+                    id=device.tank_id,
+                    code=device.code,
+                    capacity_liters=device.capacity_liters,
+                    has_electronic_sensor=True,
+                    actual_remainder_liters=actual,
+                    calculated_remainder_liters=calc,
+                    level_source="electronic",
+                    last_measured_at=measured,
+                )
+            )
+        return result
 
 
 def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDevice:
@@ -207,7 +243,6 @@ def delete_station_devices(station_id: UUID) -> None:
     from app.services.shelly_link import remove_shelly_for_tank
 
     if use_postgres():
-        # Каскад в Postgres при удалении станции. Локальные Shelly-привязки сбрасываем.
         for device in list_tank_devices(station_id):
             remove_shelly_for_tank(device.tank_id)
         return
@@ -340,52 +375,6 @@ def _book(station_id: UUID, tank_id: UUID) -> TankBook:
     return book
 
 
-def _recompute(book: TankBook) -> None:
-    if book.opening_liters is None:
-        book.calculated_remainder_liters = None
-        book.delta_liters = None
-        book.balance_status = "unknown"
-        return
-    calculated = calculate_remainder(
-        book.opening_liters, book.receipts_liters, book.dispense_liters
-    )
-    result = classify_discrepancy(calculated, book.actual_remainder_liters)
-    book.calculated_remainder_liters = result.calculated_remainder_liters
-    book.delta_liters = result.delta_liters
-    book.balance_status = result.status
-
-
-def _ack(book: TankBook, *, message: str, duplicate: bool = False, entity_id: UUID | None = None) -> IngestAck:
-    return IngestAck(
-        accepted=True,
-        message=message,
-        entity_id=entity_id,
-        duplicate=duplicate,
-        actual_remainder_liters=book.actual_remainder_liters,
-        calculated_remainder_liters=book.calculated_remainder_liters,
-        delta_liters=book.delta_liters,
-        balance_status=book.balance_status,
-    )
-
-
-def _state(book: TankBook) -> TankIngestState:
-    return TankIngestState(
-        station_id=book.station_id,
-        tank_id=book.tank_id,
-        opening_liters=book.opening_liters,
-        receipts_liters=book.receipts_liters,
-        dispense_liters=book.dispense_liters,
-        pending_dispense_liters=book.pending_dispense_liters,
-        calculated_remainder_liters=book.calculated_remainder_liters,
-        actual_remainder_liters=book.actual_remainder_liters,
-        delta_liters=book.delta_liters,
-        balance_status=book.balance_status,
-        calibrated=book.calibration is not None,
-        last_volts=book.last_volts,
-        last_measured_at=book.last_measured_at,
-    )
-
-
 def tank_state(tank_id: UUID) -> TankIngestState:
     from app.services.account_mode import use_postgres
 
@@ -396,7 +385,12 @@ def tank_state(tank_id: UUID) -> TankIngestState:
     with _lock:
         for book in _books.values():
             if book.tank_id == tank_id:
-                return _state(book)
+                return build_tank_ingest_state(
+                    book,
+                    station_id=book.station_id,
+                    tank_id=book.tank_id,
+                    calibrated=book.calibration is not None,
+                )
     raise HTTPException(status_code=404, detail="резервуар ещё не присылал данные")
 
 
@@ -455,24 +449,6 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
     return tank_state(body.tank_id)
 
 
-def _sensor_percent(book: TankBook, volts: float) -> int:
-    if book.calibration is None:
-        raise HTTPException(status_code=422, detail=CALIBRATION_REQUIRED)
-    return round_percent(volts_to_percent(volts, book.calibration))
-
-
-def _liters_from_level(body: LevelIngest, book: TankBook) -> float:
-    if body.actual_remainder_liters is not None:
-        if body.volts is not None:
-            book.last_volts = body.volts
-        return body.actual_remainder_liters
-    if book.calibration is None or body.volts is None:
-        raise HTTPException(status_code=422, detail=CALIBRATION_REQUIRED)
-    percent = _sensor_percent(book, body.volts)
-    book.last_volts = body.volts
-    return percent / 100 * book.calibration.capacity_liters
-
-
 def accept_level(body: LevelIngest) -> IngestAck:
     from app.services.account_mode import use_postgres
 
@@ -489,35 +465,31 @@ def accept_level(body: LevelIngest) -> IngestAck:
     with _lock:
         book = _book(body.station_id, body.tank_id)
         if key in _seen:
-            return _ack(book, message="duplicate", duplicate=True, entity_id=book.level_ids.get(key))
+            return build_ingest_ack(
+                book,
+                message="duplicate",
+                duplicate=True,
+                entity_id=book.level_ids.get(key),
+            )
         heard_at = datetime.now(timezone.utc)
-        if (
-            body.volts is not None
-            and body.actual_remainder_liters is None
-            and book.last_volts is not None
-            and book.calibration is not None
-            and not level_volts_changed(book.last_volts, body.volts)
-        ):
-            percent = _sensor_percent(book, book.last_volts)
-            book.actual_remainder_liters = percent / 100 * book.calibration.capacity_liters
-            book.last_measured_at = heard_at
-            _recompute(book)
-            ack = _ack(book, message="level unchanged")
+        device = _devices_by_tank.get(body.tank_id)
+        capacity = None if device is None else device.capacity_liters
+        changed, _, _ = apply_level_reading(
+            book,
+            body,
+            book.calibration,
+            capacity_liters=capacity,
+            heard_at=heard_at,
+        )
+        if not changed:
+            ack = build_ingest_ack(book, message="level unchanged")
         else:
-            liters = _liters_from_level(body, book)
-            if book.opening_liters is None or (
-                book.opening_liters < 0 and book.receipts_liters == 0 and book.dispense_liters == 0
-            ):
-                book.opening_liters = liters
-            book.actual_remainder_liters = liters
-            book.last_measured_at = heard_at
-            _recompute(book)
             entity_id = uuid4()
             _remember_seen(key)
             if len(book.level_ids) >= 2000:
                 book.level_ids.clear()
             book.level_ids[key] = entity_id
-            ack = _ack(book, message="level accepted", entity_id=entity_id)
+            ack = build_ingest_ack(book, message="level accepted", entity_id=entity_id)
     _commit()
     return ack
 
@@ -534,19 +506,14 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
         if key in _seen:
             if body.tank_id is None:
                 return IngestAck(accepted=True, message="duplicate", duplicate=True)
-            return _ack(_book(body.station_id, body.tank_id), message="duplicate", duplicate=True)
+            return build_ingest_ack(_book(body.station_id, body.tank_id), message="duplicate", duplicate=True)
         _remember_seen(key)
         if body.tank_id is None:
             ack = IngestAck(accepted=True, message="dispense accepted", entity_id=uuid4())
         else:
             book = _book(body.station_id, body.tank_id)
-            if book.opening_liters is None:
-                book.pending_dispense_liters += body.volume_liters
-                ack = _ack(book, message="dispense accepted", entity_id=uuid4())
-            else:
-                book.dispense_liters += body.volume_liters
-                _recompute(book)
-                ack = _ack(book, message="dispense accepted", entity_id=uuid4())
+            apply_dispense_volume(book, body.volume_liters)
+            ack = build_ingest_ack(book, message="dispense accepted", entity_id=uuid4())
     _commit()
     return ack
 
@@ -562,15 +529,10 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
     with _lock:
         book = _book(body.station_id, body.tank_id)
         if key in _seen:
-            return _ack(book, message="duplicate", duplicate=True)
+            return build_ingest_ack(book, message="duplicate", duplicate=True)
         _remember_seen(key)
-        if book.opening_liters is None:
-            book.pending_receipt_liters += body.volume_liters
-            ack = _ack(book, message="receipt accepted", entity_id=uuid4())
-        else:
-            book.receipts_liters += body.volume_liters
-            _recompute(book)
-            ack = _ack(book, message="receipt accepted", entity_id=uuid4())
+        apply_receipt_volume(book, body.volume_liters)
+        ack = build_ingest_ack(book, message="receipt accepted", entity_id=uuid4())
     _commit()
     return ack
 
@@ -676,5 +638,5 @@ def restore_snapshot(data: dict) -> None:
                 book.last_measured_at = datetime.fromisoformat(str(measured).replace("Z", "+00:00"))
             for key, value in (row.get("level_ids") or {}).items():
                 book.level_ids[str(key)] = UUID(str(value))
-            _recompute(book)
+            recompute_tank_book(book)
             _books[(station_id, tank_id)] = book

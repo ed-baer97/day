@@ -4,20 +4,17 @@ import policy from "../../backend/app/domain/level_policy.json";
 export const ROLE_ADMIN = policy.role_admin;
 export const ROLE_STATION = policy.role_station;
 export const ROLE_OWNER = "owner" as const;
-export const ROLE_CONSOLE = "console" as const;
 
 export type AppRole =
   | typeof ROLE_ADMIN
   | typeof ROLE_STATION
-  | typeof ROLE_OWNER
-  | typeof ROLE_CONSOLE;
+  | typeof ROLE_OWNER;
 
 export function roleOf(value: unknown): AppRole | undefined {
   if (
     value === ROLE_ADMIN ||
     value === ROLE_STATION ||
-    value === ROLE_OWNER ||
-    value === ROLE_CONSOLE
+    value === ROLE_OWNER
   ) {
     return value;
   }

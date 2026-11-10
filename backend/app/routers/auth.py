@@ -48,9 +48,7 @@ def login(body: LoginIn, request: Request) -> SessionOut:
         clear_login_failures(key)
         ids = list(user.stations()) if hasattr(user, "stations") else [user.station_id]
         kind = getattr(user, "kind", None)
-        if kind == "console":
-            role = "console"
-        elif kind == "owner":
+        if kind == "owner":
             role = "owner"
         else:
             role = ROLE_STATION

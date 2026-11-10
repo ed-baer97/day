@@ -158,7 +158,7 @@ def read_principal(token: str, secret: str) -> Principal | None:
             station_ids = [UUID(part) for part in station_raw.split(",") if part]
         except ValueError:
             return None
-    if role not in (ROLES | {"owner", "console"}):
+    if role not in (ROLES | {"owner"}):
         return None
     if role != ROLE_ADMIN and not station_ids:
         return None

@@ -2729,11 +2729,135 @@ html[data-theme="light"] .landing-veil {
   margin-bottom: 6px;
 }
 
+/* Сквозная панель хлебных крошек и быстрого переключения контекста */
+.breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 22px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-2) 75%, transparent);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.breadcrumb-trail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.breadcrumb-link {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.breadcrumb-link:hover {
+  color: var(--sea);
+  background: var(--hover-fill);
+}
+.breadcrumb-link.current {
+  color: var(--ink);
+  font-weight: 600;
+}
+.breadcrumb-sep {
+  color: var(--muted);
+  opacity: 0.5;
+}
+.breadcrumb-current {
+  color: var(--ink);
+  font-weight: 700;
+}
+.breadcrumb-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Расширенные карточки на публичной витрине и всплывающий паспорт */
+.level-card-clickable {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.level-card-clickable:hover {
+  border-color: var(--sea);
+  transform: translateY(-2px);
+}
+.public-station-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: var(--hover-fill);
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+.public-station-summary span {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.public-station-summary strong {
+  font-size: 13px;
+}
+.level-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.level-card-more {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sea);
+}
+.public-detail-modal {
+  width: min(760px, 95vw);
+  max-height: 88vh;
+  overflow: auto;
+}
+
+/* Список резервуаров в карточке на карте */
+.popup-tank-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.popup-tank-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--hover-fill);
+}
+
 @media (max-width: 960px) {
   .security-grid {
     grid-template-columns: 1fr;
   }
   .quick-jumper {
     display: none;
+  }
+  .breadcrumb-bar {
+    padding: 8px 14px;
   }
 }

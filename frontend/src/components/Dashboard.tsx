@@ -1,15 +1,23 @@
 import { useMemo, useState } from "react";
 import type { CatalogStation } from "../api/client";
 import { useCatalog } from "../catalog";
-import { liters, REGIONS, shortStationName, stationRegion } from "../format";
-import { isLowFill, LOW_FILL_PERCENT, SensorStatus, usePublicLevels, useSensorDay, useViewPeriod, type LiveLevel } from "../liveLevels";
+import { dateTime, liters, REGIONS, shortStationName, stationRegion } from "../format";
+import {
+  isLowFill,
+  LOW_FILL_PERCENT,
+  SensorStatus,
+  usePublicLevels,
+  useSensorDay,
+  useViewPeriod,
+  type LiveLevel,
+} from "../liveLevels";
 import { chartOf } from "../sensorDay";
 import { BarChart, LineChart } from "./Charts";
 import PeriodSwitch from "./PeriodSwitch";
 import StationDetailPage from "./StationDetailPage";
 
 type StatusFilter = "all" | "low" | "offline" | "no_sensor" | "ok";
-type SortBy = "attention" | "fill_asc" | "change_desc" | "name_asc";
+type SortBy = "attention" | "fill_asc" | "liters_desc" | "change_desc" | "name_asc";
 type ViewMode = "list" | "grid" | "regions";
 type ChartMode = "remainder" | "change" | "by_region";
 
@@ -90,10 +98,15 @@ function Overview({
       const live = byCode.get(station.code) ?? null;
       const hasTanks = !!live && live.tanks.length > 0;
       const fill = hasTanks && live.fill != null ? Math.round(live.fill) : null;
-      const online = !!live && live.tanks.some((tank) => tank.online === true && tank.remainder_liters != null);
+      const online =
+        !!live && live.tanks.some((tank) => tank.online === true && tank.remainder_liters != null);
       const spent = day.get(station.id)?.outflow ?? null;
+      const inflow = day.get(station.id)?.inflow ?? 0;
       const hasJournal = (day.get(station.id)?.points.length ?? 0) > 0;
       const attention = (!hasTanks ? 2 : !online ? 3 : 0) + (isLowFill(fill) ? 2 : 0);
+      const gas = hasTanks ? (live?.remainder ?? null) : null;
+      const cap = hasTanks ? (live?.capacity ?? 0) : 0;
+      const free = gas != null && cap > 0 ? Math.max(0, cap - gas) : null;
       return {
         station,
         live,
@@ -101,9 +114,11 @@ function Overview({
         fill,
         online,
         spent: hasJournal ? spent : null,
+        inflow,
         region: stationRegion(station),
-        gas: hasTanks ? live?.remainder ?? null : null,
-        cap: hasTanks ? live?.capacity ?? 0 : 0,
+        gas,
+        cap,
+        free,
         attention,
       };
     });
@@ -111,6 +126,7 @@ function Overview({
 
   const totals = useMemo(() => {
     let litersSum = 0;
+    let capSum = 0;
     let online = 0;
     let offline = 0;
     let noSensor = 0;
@@ -123,22 +139,38 @@ function Overview({
       else if (row.online) online++;
       else offline++;
       if (isLowFill(row.fill)) low++;
+      capSum += row.cap;
       if (row.gas != null) litersSum += row.gas;
       if (row.spent != null) {
         spent += row.spent;
         spentKnown = true;
       }
-      inflow += day.get(row.station.id)?.inflow ?? 0;
+      inflow += row.inflow;
     }
-    return { litersSum, online, offline, noSensor, low, spent, spentKnown, inflow, all: rows.length, ok: online };
+    const avgFill = capSum > 0 ? Math.round((litersSum / capSum) * 100) : 0;
+    return {
+      litersSum,
+      capSum,
+      freeSum: Math.max(0, capSum - litersSum),
+      avgFill,
+      online,
+      offline,
+      noSensor,
+      low,
+      spent,
+      spentKnown,
+      inflow,
+      all: rows.length,
+      ok: online,
+    };
   }, [rows]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = rows.filter((row) => {
       if (q) {
-        const hit = [row.station.name, row.station.code, row.station.address, row.region].some((part) =>
-          part?.toLowerCase().includes(q)
+        const hit = [row.station.name, row.station.code, row.station.address, row.region].some(
+          (part) => part?.toLowerCase().includes(q)
         );
         if (!hit) return false;
       }
@@ -150,8 +182,10 @@ function Overview({
       return true;
     });
     return [...list].sort((a, b) => {
-      if (sortBy === "attention") return b.attention - a.attention || a.station.name.localeCompare(b.station.name, "ru");
+      if (sortBy === "attention")
+        return b.attention - a.attention || a.station.name.localeCompare(b.station.name, "ru");
       if (sortBy === "fill_asc") return (a.fill ?? 101) - (b.fill ?? 101);
+      if (sortBy === "liters_desc") return (b.gas ?? -1) - (a.gas ?? -1);
       if (sortBy === "change_desc") return (b.spent ?? 0) - (a.spent ?? 0);
       return a.station.name.localeCompare(b.station.name, "ru");
     });
@@ -177,7 +211,9 @@ function Overview({
 
   const chartData = useMemo(() => {
     if (chartMode === "by_region") {
-      const regs = REGIONS.filter((region) => rows.some((row) => row.region === region && row.gas != null));
+      const regs = REGIONS.filter((region) =>
+        rows.some((row) => row.region === region && row.gas != null)
+      );
       return {
         labels: regs.map((region) => region.replace(" р-н", "").replace("г. ", "")),
         series: [
@@ -185,7 +221,9 @@ function Overview({
             name: "Остаток датчика",
             color: "var(--sea)",
             values: regs.map((region) =>
-              rows.filter((row) => row.region === region).reduce((sum, row) => sum + (row.gas ?? 0), 0)
+              rows
+                .filter((row) => row.region === region)
+                .reduce((sum, row) => sum + (row.gas ?? 0), 0)
             ),
           },
         ],
@@ -213,7 +251,13 @@ function Overview({
       .slice(0, 10);
     return {
       labels: top.map((row) => shortStationName(row.station.name)),
-      series: [{ name: "Остаток датчика", color: "var(--sea)", values: top.map((row) => row.gas ?? 0) }],
+      series: [
+        {
+          name: "Остаток датчика",
+          color: "var(--sea)",
+          values: top.map((row) => row.gas ?? 0),
+        },
+      ],
     };
   }, [chartMode, rows]);
 
@@ -256,33 +300,43 @@ function Overview({
       </header>
 
       <div className="dash-kpis">
-        <div className={`dash-kpi${statusFilter === "all" ? " active-kpi" : ""}`} onClick={() => pickFilter("all")} style={{ cursor: "pointer" }}>
+        <div
+          className={`dash-kpi${statusFilter === "all" ? " active-kpi" : ""}`}
+          onClick={() => pickFilter("all")}
+          style={{ cursor: "pointer" }}
+        >
           <span>Газ в резервуарах</span>
           <strong>{liters(totals.litersSum)}</strong>
-          <em>по последним замерам</em>
+          <em>
+            из {liters(totals.capSum)} ({totals.avgFill}% · своб. {liters(totals.freeSum)})
+          </em>
         </div>
-        <div className={`dash-kpi${statusFilter === "ok" ? " active-kpi" : ""}`} onClick={() => pickFilter("ok")} style={{ cursor: "pointer" }}>
+        <div
+          className={`dash-kpi${statusFilter === "ok" ? " active-kpi" : ""}`}
+          onClick={() => pickFilter("ok")}
+          style={{ cursor: "pointer" }}
+        >
           <span>Датчик на связи</span>
           <strong>{totals.online}</strong>
-          <em>замер свежий</em>
+          <em>актуальная телеметрия из {totals.all} АГЗС</em>
+        </div>
+        <div
+          className={`dash-kpi${statusFilter === "low" ? " active-kpi" : ""}`}
+          onClick={() => pickFilter("low")}
+          style={{ cursor: "pointer" }}
+        >
+          <span>Мало газа (&lt; {LOW_FILL_PERCENT}%)</span>
+          <strong className={totals.low > 0 ? "text-danger" : ""}>{totals.low}</strong>
+          <em>приоритет на подвоз топлива</em>
         </div>
         <div
           className={`dash-kpi${statusFilter === "offline" ? " active-kpi" : ""}`}
           onClick={() => pickFilter("offline")}
           style={{ cursor: "pointer" }}
         >
-          <span>Нет связи</span>
+          <span>Нет связи с датчиком</span>
           <strong className={totals.offline ? "text-danger" : ""}>{totals.offline}</strong>
-          <em>резервуар есть, замер устарел</em>
-        </div>
-        <div
-          className={`dash-kpi${statusFilter === "no_sensor" ? " active-kpi" : ""}`}
-          onClick={() => pickFilter("no_sensor")}
-          style={{ cursor: "pointer" }}
-        >
-          <span>Датчик не подключён</span>
-          <strong>{totals.noSensor}</strong>
-          <em>резервуара в кабинете нет</em>
+          <em>без датчика: {totals.noSensor} АГЗС</em>
         </div>
         <div className="dash-kpi">
           <span>{range.inflowTitle}</span>
@@ -307,13 +361,25 @@ function Overview({
           <div className="card-head-inline">
             <h3>Сравнение АГЗС</h3>
             <div className="mini-tabs">
-              <button type="button" className={chartMode === "remainder" ? "active" : ""} onClick={() => setChartMode("remainder")}>
+              <button
+                type="button"
+                className={chartMode === "remainder" ? "active" : ""}
+                onClick={() => setChartMode("remainder")}
+              >
                 Остаток
               </button>
-              <button type="button" className={chartMode === "change" ? "active" : ""} onClick={() => setChartMode("change")}>
+              <button
+                type="button"
+                className={chartMode === "change" ? "active" : ""}
+                onClick={() => setChartMode("change")}
+              >
                 Расход
               </button>
-              <button type="button" className={chartMode === "by_region" ? "active" : ""} onClick={() => setChartMode("by_region")}>
+              <button
+                type="button"
+                className={chartMode === "by_region" ? "active" : ""}
+                onClick={() => setChartMode("by_region")}
+              >
                 По районам
               </button>
             </div>
@@ -358,281 +424,329 @@ function Overview({
       </div>
 
       {chartsOnly ? null : (
-      <section className="dash-section">
-        <div className="st-nav-toolbar">
-          <div className="st-nav-top">
-            <h3>
-              Навигатор АГЗС{" "}
-              <span className="dash-muted">
-                (показано {filtered.length} из {totals.all})
-              </span>
-            </h3>
-            <div className="st-view-controls">
-              <div className="mini-tabs" role="group" aria-label="Режим отображения">
-                <button type="button" className={viewMode === "list" ? "active" : ""} onClick={() => setViewMode("list")}>
-                  Список
-                </button>
-                <button type="button" className={viewMode === "grid" ? "active" : ""} onClick={() => setViewMode("grid")}>
-                  Плитка
-                </button>
-                <button type="button" className={viewMode === "regions" ? "active" : ""} onClick={() => setViewMode("regions")}>
-                  По районам
-                </button>
+        <section className="dash-section">
+          <div className="st-nav-toolbar">
+            <div className="st-nav-top">
+              <h3>
+                Навигатор АГЗС{" "}
+                <span className="dash-muted">
+                  (показано {filtered.length} из {totals.all})
+                </span>
+              </h3>
+              <div className="st-view-controls">
+                <div className="mini-tabs" role="group" aria-label="Режим отображения">
+                  <button
+                    type="button"
+                    className={viewMode === "list" ? "active" : ""}
+                    onClick={() => setViewMode("list")}
+                  >
+                    Список
+                  </button>
+                  <button
+                    type="button"
+                    className={viewMode === "grid" ? "active" : ""}
+                    onClick={() => setViewMode("grid")}
+                  >
+                    Плитка
+                  </button>
+                  <button
+                    type="button"
+                    className={viewMode === "regions" ? "active" : ""}
+                    onClick={() => setViewMode("regions")}
+                  >
+                    По районам
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="st-filter-bar">
-            <input
-              type="search"
-              className="st-search-input"
-              value={query}
-              placeholder="Поиск АГЗС по названию, коду, адресу или району…"
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setCurrentPage(1);
-              }}
-            />
-            <select
-              className="st-select"
-              value={regionFilter}
-              aria-label="Район"
-              onChange={(event) => {
-                setRegionFilter(event.target.value);
-                setCurrentPage(1);
-              }}
-            >
-              <option value="all">Все районы ({totals.all})</option>
-              {REGIONS.map((region) => {
-                const count = rows.filter((row) => row.region === region).length;
-                if (!count) return null;
-                return (
-                  <option key={region} value={region}>
-                    {region} ({count})
-                  </option>
-                );
-              })}
-            </select>
-            <select
-              className="st-select"
-              value={sortBy}
-              aria-label="Сортировка"
-              onChange={(event) => setSortBy(event.target.value as SortBy)}
-            >
-              <option value="attention">Сначала без связи и мало газа</option>
-              <option value="fill_asc">По остатку газа (сначала мало)</option>
-              <option value="change_desc">По расходу за выбранный срок</option>
-              <option value="name_asc">По алфавиту (А–Я)</option>
-            </select>
-            {viewMode !== "regions" ? (
+            <div className="st-filter-bar">
+              <input
+                type="search"
+                className="st-search-input"
+                value={query}
+                placeholder="Поиск АГЗС по названию, коду, адресу или району…"
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setCurrentPage(1);
+                }}
+              />
               <select
                 className="st-select"
-                value={pageSize}
-                aria-label="Показывать по"
+                value={regionFilter}
+                aria-label="Район"
                 onChange={(event) => {
-                  setPageSize(Number(event.target.value));
+                  setRegionFilter(event.target.value);
                   setCurrentPage(1);
                 }}
               >
-                <option value={8}>По 8 на стр.</option>
-                <option value={10}>По 10 на стр.</option>
-                <option value={20}>По 20 на стр.</option>
-                <option value={100}>Все ({filtered.length})</option>
+                <option value="all">Все районы ({totals.all})</option>
+                {REGIONS.map((region) => {
+                  const count = rows.filter((row) => row.region === region).length;
+                  if (!count) return null;
+                  return (
+                    <option key={region} value={region}>
+                      {region} ({count})
+                    </option>
+                  );
+                })}
               </select>
-            ) : null}
-          </div>
-
-          <div className="st-status-pills" role="group" aria-label="Фильтр по статусу">
-            <button type="button" className={`filter-pill${statusFilter === "all" ? " active" : ""}`} onClick={() => pickFilter("all")}>
-              Все АГЗС ({totals.all})
-            </button>
-            <button type="button" className={`filter-pill${statusFilter === "low" ? " active" : ""}`} onClick={() => pickFilter("low")}>
-              Мало газа &lt; {LOW_FILL_PERCENT}% ({totals.low})
-            </button>
-            <button type="button" className={`filter-pill${statusFilter === "offline" ? " active" : ""}`} onClick={() => pickFilter("offline")}>
-              Нет связи ({totals.offline})
-            </button>
-            <button
-              type="button"
-              className={`filter-pill${statusFilter === "no_sensor" ? " active" : ""}`}
-              onClick={() => pickFilter("no_sensor")}
-            >
-              Без датчика ({totals.noSensor})
-            </button>
-            <button type="button" className={`filter-pill${statusFilter === "ok" ? " active" : ""}`} onClick={() => pickFilter("ok")}>
-              На связи ({totals.ok})
-            </button>
-            {query || regionFilter !== "all" || statusFilter !== "all" ? (
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => {
-                  setQuery("");
-                  setRegionFilter("all");
-                  setStatusFilter("all");
-                  setCurrentPage(1);
-                }}
+              <select
+                className="st-select"
+                value={sortBy}
+                aria-label="Сортировка"
+                onChange={(event) => setSortBy(event.target.value as SortBy)}
               >
-                Сбросить фильтры
-              </button>
-            ) : null}
-          </div>
-        </div>
-
-        {catalog.error ? <p className="tank-error">{catalog.error}</p> : null}
-        {!catalog.ready ? <p className="dash-muted">Загрузка станций…</p> : null}
-        {catalog.ready && filtered.length === 0 ? (
-          <div className="empty">
-            <strong>По заданным условиям АГЗС не найдены</strong>
-            <p>Измените поиск или сбросьте фильтр района и статуса.</p>
-          </div>
-        ) : viewMode === "list" ? (
-          <ul className="st-list">
-            {paged.map((row) => (
-              <StationListRow
-                key={row.station.id}
-                {...row}
-                spentCaption={range.spentCaption}
-                onOpen={() => onOpenStation(row.station.id)}
-                onMap={onOpenMapStation ? () => onOpenMapStation(row.station.id) : undefined}
-                onAdmin={onOpenAdminStation ? () => onOpenAdminStation(row.station.id) : undefined}
-              />
-            ))}
-          </ul>
-        ) : viewMode === "grid" ? (
-          <div className="st-card-grid">
-            {paged.map((row) => (
-              <article key={row.station.id} className="dash-card st-grid-card" onClick={() => onOpenStation(row.station.id)}>
-                <div className="st-grid-card-head">
-                  <div>
-                    <span className="badge">{row.region}</span>
-                    <h4>{row.station.name}</h4>
-                    <span className="dash-muted">
-                      {row.station.code} · {row.station.address || "адрес не указан"}
-                    </span>
-                  </div>
-                  <strong className={`st-grid-pct${isLowFill(row.fill) ? " text-danger" : ""}`}>
-                    {row.fill == null ? "—" : `${row.fill}%`}
-                  </strong>
-                </div>
-                <div className="fill-bar" style={{ margin: "10px 0 6px" }}>
-                  <i
-                    style={{
-                      width: `${row.fill ?? 0}%`,
-                      background: isLowFill(row.fill) ? "var(--coral)" : "var(--sea)",
-                    }}
-                  />
-                </div>
-                <div className="st-grid-metrics">
-                  <div>
-                    <span>Факт / ёмкость</span>
-                    <strong>
-                      {row.gas == null ? "замера нет" : liters(row.gas)} / {liters(row.cap)}
-                    </strong>
-                  </div>
-                  <div>
-                    <span>{range.spentCaption}</span>
-                    <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
-                  </div>
-                  <div>
-                    <span>Резервуаров</span>
-                    <strong>{row.live?.tanks.length ?? 0}</strong>
-                  </div>
-                  <div>
-                    <span>Датчик</span>
-                    <strong>{row.hasTanks && row.live ? (row.online ? "на связи" : "нет связи") : "не подключён"}</strong>
-                  </div>
-                </div>
-                <div className="st-grid-footer">
-                  {row.hasTanks && row.live ? <SensorStatus level={row.live} /> : <span className="badge warn">датчик не подключён</span>}
-                </div>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="st-regions-group">
-            {grouped.map(([region, items]) => (
-              <div key={region} className="region-group-block">
-                <header className="region-group-head">
-                  <h4>{region}</h4>
-                  <span>
-                    {items.length} АГЗС · остаток {liters(items.reduce((sum, row) => sum + (row.gas ?? 0), 0))}
-                  </span>
-                </header>
-                <ul className="st-list">
-                  {items.map((row) => (
-                    <li key={row.station.id}>
-                      <button type="button" className="st-row" onClick={() => onOpenStation(row.station.id)}>
-                        <div className="st-row-main">
-                          <strong>{row.station.name}</strong>
-                          <span>
-                            {row.station.code} · {row.station.address || "адрес не указан"}
-                          </span>
-                        </div>
-                        <FillCell fill={row.fill} gas={row.gas} cap={row.cap} live={row.hasTanks ? row.live : null} />
-                        <div className="st-row-num">
-                          <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
-                          <span>{range.spentCaption}</span>
-                        </div>
-                        <div className="st-row-num">
-                          <strong>{row.live?.tanks.length ?? 0}</strong>
-                          <span>резервуаров</span>
-                        </div>
-                        <div className="st-row-badges">
-                          {row.hasTanks && row.live ? (
-                            <SensorStatus level={row.live} />
-                          ) : (
-                            <span className="badge warn">не подключён</span>
-                          )}
-                        </div>
-                        <span className="st-row-chevron" aria-hidden>
-                          ›
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {viewMode !== "regions" && totalPages > 1 ? (
-          <div className="pagination-bar">
-            <span className="dash-muted">
-              Страница {safePage} из {totalPages} ({filtered.length} АГЗС)
-            </span>
-            <div className="pagination-buttons">
-              <button
-                type="button"
-                className="btn secondary small"
-                disabled={safePage <= 1}
-                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-              >
-                ← Пред.
-              </button>
-              {Array.from({ length: totalPages }, (_, index) => index + 1).map((page) => (
-                <button
-                  key={page}
-                  type="button"
-                  className={`btn small${page === safePage ? "" : " secondary"}`}
-                  onClick={() => setCurrentPage(page)}
+                <option value="attention">Сначала без связи и мало газа</option>
+                <option value="fill_asc">По остатку % (сначала мало)</option>
+                <option value="liters_desc">По объёму газа (сначала больше л)</option>
+                <option value="change_desc">По расходу за выбранный срок</option>
+                <option value="name_asc">По алфавиту (А–Я)</option>
+              </select>
+              {viewMode !== "regions" ? (
+                <select
+                  className="st-select"
+                  value={pageSize}
+                  aria-label="Показывать по"
+                  onChange={(event) => {
+                    setPageSize(Number(event.target.value));
+                    setCurrentPage(1);
+                  }}
                 >
-                  {page}
-                </button>
-              ))}
+                  <option value={8}>По 8 на стр.</option>
+                  <option value={10}>По 10 на стр.</option>
+                  <option value={20}>По 20 на стр.</option>
+                  <option value={100}>Все ({filtered.length})</option>
+                </select>
+              ) : null}
+            </div>
+
+            <div className="st-status-pills" role="group" aria-label="Фильтр по статусу">
               <button
                 type="button"
-                className="btn secondary small"
-                disabled={safePage >= totalPages}
-                onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                className={`filter-pill${statusFilter === "all" ? " active" : ""}`}
+                onClick={() => pickFilter("all")}
               >
-                След. →
+                Все АГЗС ({totals.all})
               </button>
+              <button
+                type="button"
+                className={`filter-pill${statusFilter === "low" ? " active" : ""}`}
+                onClick={() => pickFilter("low")}
+              >
+                Мало газа &lt; {LOW_FILL_PERCENT}% ({totals.low})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill${statusFilter === "offline" ? " active" : ""}`}
+                onClick={() => pickFilter("offline")}
+              >
+                Нет связи ({totals.offline})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill${statusFilter === "no_sensor" ? " active" : ""}`}
+                onClick={() => pickFilter("no_sensor")}
+              >
+                Без датчика ({totals.noSensor})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill${statusFilter === "ok" ? " active" : ""}`}
+                onClick={() => pickFilter("ok")}
+              >
+                На связи ({totals.ok})
+              </button>
+              {query || regionFilter !== "all" || statusFilter !== "all" ? (
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => {
+                    setQuery("");
+                    setRegionFilter("all");
+                    setStatusFilter("all");
+                    setCurrentPage(1);
+                  }}
+                >
+                  Сбросить фильтры
+                </button>
+              ) : null}
             </div>
           </div>
-        ) : null}
-      </section>
+
+          {catalog.error ? <p className="tank-error">{catalog.error}</p> : null}
+          {!catalog.ready ? <p className="dash-muted">Загрузка станций…</p> : null}
+          {catalog.ready && filtered.length === 0 ? (
+            <div className="empty">
+              <strong>По заданным условиям АГЗС не найдены</strong>
+              <p>Измените поиск или сбросьте фильтр района и статуса.</p>
+            </div>
+          ) : viewMode === "list" ? (
+            <ul className="st-list">
+              {paged.map((row) => (
+                <StationListRow
+                  key={row.station.id}
+                  {...row}
+                  spentCaption={range.spentCaption}
+                  onOpen={() => onOpenStation(row.station.id)}
+                  onMap={onOpenMapStation ? () => onOpenMapStation(row.station.id) : undefined}
+                  onAdmin={onOpenAdminStation ? () => onOpenAdminStation(row.station.id) : undefined}
+                />
+              ))}
+            </ul>
+          ) : viewMode === "grid" ? (
+            <div className="st-card-grid">
+              {paged.map((row) => (
+                <article
+                  key={row.station.id}
+                  className="dash-card st-grid-card"
+                  onClick={() => onOpenStation(row.station.id)}
+                >
+                  <div className="st-grid-card-head">
+                    <div>
+                      <span className="badge">{row.region}</span>
+                      <h4>{row.station.name}</h4>
+                      <span className="dash-muted">
+                        {row.station.code} · {row.station.address || "адрес не указан"}
+                      </span>
+                    </div>
+                    <strong className={`st-grid-pct${isLowFill(row.fill) ? " text-danger" : ""}`}>
+                      {row.fill == null ? "—" : `${row.fill}%`}
+                    </strong>
+                  </div>
+                  <div className="fill-bar" style={{ margin: "10px 0 6px" }}>
+                    <i
+                      style={{
+                        width: `${row.fill ?? 0}%`,
+                        background: isLowFill(row.fill) ? "var(--coral)" : "var(--sea)",
+                      }}
+                    />
+                  </div>
+                  <div className="st-grid-metrics">
+                    <div>
+                      <span>Факт / ёмкость</span>
+                      <strong>
+                        {row.gas == null ? "замера нет" : liters(row.gas)} / {liters(row.cap)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Свободный объём</span>
+                      <strong>{row.free == null ? "—" : liters(row.free)}</strong>
+                    </div>
+                    <div>
+                      <span>{range.spentCaption}</span>
+                      <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
+                    </div>
+                    <div>
+                      <span>Резервуаров / Замер</span>
+                      <strong>
+                        {row.live?.tanks.length ?? 0} шт. ·{" "}
+                        {row.live?.measuredAt ? dateTime(row.live.measuredAt) : "нет"}
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="st-grid-footer">
+                    {row.hasTanks && row.live ? (
+                      <SensorStatus level={row.live} />
+                    ) : (
+                      <span className="badge warn">датчик не подключён</span>
+                    )}
+                    <div
+                      style={{ display: "flex", gap: 6 }}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {onOpenMapStation ? (
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          onClick={() => onOpenMapStation(row.station.id)}
+                        >
+                          Карта
+                        </button>
+                      ) : null}
+                      {onOpenAdminStation ? (
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          onClick={() => onOpenAdminStation(row.station.id)}
+                        >
+                          Админка
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="st-regions-group">
+              {grouped.map(([region, items]) => (
+                <div key={region} className="region-group-block">
+                  <header className="region-group-head">
+                    <h4>{region}</h4>
+                    <span>
+                      {items.length} АГЗС · остаток{" "}
+                      {liters(items.reduce((sum, row) => sum + (row.gas ?? 0), 0))} из{" "}
+                      {liters(items.reduce((sum, row) => sum + row.cap, 0))}
+                    </span>
+                  </header>
+                  <ul className="st-list">
+                    {items.map((row) => (
+                      <StationListRow
+                        key={row.station.id}
+                        {...row}
+                        spentCaption={range.spentCaption}
+                        onOpen={() => onOpenStation(row.station.id)}
+                        onMap={
+                          onOpenMapStation ? () => onOpenMapStation(row.station.id) : undefined
+                        }
+                        onAdmin={
+                          onOpenAdminStation ? () => onOpenAdminStation(row.station.id) : undefined
+                        }
+                      />
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {viewMode !== "regions" && totalPages > 1 ? (
+            <div className="pagination-bar">
+              <span className="dash-muted">
+                Страница {safePage} из {totalPages} ({filtered.length} АГЗС)
+              </span>
+              <div className="pagination-buttons">
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  disabled={safePage <= 1}
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                >
+                  ← Пред.
+                </button>
+                {Array.from({ length: totalPages }, (_, index) => index + 1).map((page) => (
+                  <button
+                    key={page}
+                    type="button"
+                    className={`btn small${page === safePage ? "" : " secondary"}`}
+                    onClick={() => setCurrentPage(page)}
+                  >
+                    {page}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  disabled={safePage >= totalPages}
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                >
+                  След. →
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </section>
       )}
     </div>
   );
@@ -642,11 +756,13 @@ function FillCell({
   fill,
   gas,
   cap,
+  free,
   live,
 }: {
   fill: number | null;
   gas: number | null;
   cap: number;
+  free: number | null;
   live: LiveLevel | null;
 }) {
   return (
@@ -661,7 +777,10 @@ function FillCell({
       </div>
       <span>
         {gas == null ? "замера нет" : `${liters(gas)} из ${liters(cap)}`} ·{" "}
-        <strong className={isLowFill(fill) ? "text-danger" : ""}>{fill == null ? "—" : `${fill}%`}</strong>
+        <strong className={isLowFill(fill) ? "text-danger" : ""}>
+          {fill == null ? "—" : `${fill}%`}
+        </strong>
+        {free != null ? ` (своб. ${liters(free)})` : ""}
       </span>
       {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
     </div>
@@ -674,6 +793,7 @@ function StationListRow({
   fill,
   gas,
   cap,
+  free,
   live,
   hasTanks,
   spent,
@@ -687,6 +807,7 @@ function StationListRow({
   fill: number | null;
   gas: number | null;
   cap: number;
+  free: number | null;
   live: LiveLevel | null;
   hasTanks: boolean;
   spent: number | null;
@@ -702,21 +823,29 @@ function StationListRow({
           <strong>{station.name}</strong>
           <span>
             {station.code} · {region}
+            {station.address ? ` · ${station.address}` : ""}
           </span>
         </div>
-        <FillCell fill={fill} gas={gas} cap={cap} live={hasTanks ? live : null} />
+        <FillCell fill={fill} gas={gas} cap={cap} free={free} live={hasTanks ? live : null} />
         <div className="st-row-num">
           <strong>{spent == null ? "—" : liters(spent)}</strong>
           <span>{spentCaption}</span>
         </div>
         <div className="st-row-num">
-          <strong>{live?.tanks.length ?? 0}</strong>
-          <span>резервуаров</span>
+          <strong>{live?.tanks.length ?? 0} резерв.</strong>
+          <span>{live?.measuredAt ? dateTime(live.measuredAt) : "замера нет"}</span>
         </div>
         <div className="st-row-badges">
-          {hasTanks && live ? <SensorStatus level={live} /> : <span className="badge warn">не подключён</span>}
+          {hasTanks && live ? (
+            <SensorStatus level={live} />
+          ) : (
+            <span className="badge warn">не подключён</span>
+          )}
         </div>
         <div className="st-row-actions" onClick={(event) => event.stopPropagation()}>
+          <button type="button" className="btn secondary small" onClick={onOpen}>
+            Сводка
+          </button>
           {onMap ? (
             <button type="button" className="btn secondary small" onClick={onMap}>
               Карта
@@ -724,7 +853,7 @@ function StationListRow({
           ) : null}
           {onAdmin ? (
             <button type="button" className="btn secondary small" onClick={onAdmin}>
-              Администратор
+              Админка
             </button>
           ) : null}
         </div>

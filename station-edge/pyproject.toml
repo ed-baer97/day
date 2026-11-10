@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agzs-edge"
+version = "0.1.0"
+description = "Станционный узел АГЗС: опрос УЗГС-01 через АСКА-02 (Искра 1.72, только чтение), локальная БД SQLite и отправка отпусков на VPS"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+agzs-edge = "agzs_edge.main:main"
+
+[tool.setuptools.packages.find]
+include = ["agzs_edge*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

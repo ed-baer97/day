@@ -1,0 +1,17 @@
+[Unit]
+Description=AGZS Station Edge Service (ASKA-02 / UZGS-01 Read-Only Telemetry & VPS Sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/station-edge
+EnvironmentFile=/opt/station-edge/.env
+ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge serve
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

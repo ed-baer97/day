@@ -1,6 +1,7 @@
 """Открытая витрина: остаток, процент и признак связи.
 
-Считает то, что роутер раньше держал у себя. Ключей и сверки здесь нет.
+В режиме Postgres загружает все активные станции и их резервуары за 1 SQL-запрос (selectinload, без N+1).
+В режиме memory читает остатки пакетно за 1 проход по бакам станции.
 """
 
 from __future__ import annotations
@@ -9,9 +10,10 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.schemas.public import PublicStationOut, PublicTankOut
+from app.services.account_mode import use_postgres
 from app.services.calibration import remainder_fill_percent
 from app.services.catalog import list_stations
-from app.services.device_ingest import list_tank_devices, tank_remainder
+from app.services.device_ingest import list_station_tanks_out
 
 
 def sensor_online(measured_at: datetime | None, *, now: datetime | None = None) -> bool:
@@ -24,23 +26,31 @@ def sensor_online(measured_at: datetime | None, *, now: datetime | None = None) 
 
 
 def list_public_stations() -> list[PublicStationOut]:
+    now = datetime.now(timezone.utc)
+    if use_postgres():
+        from app.services import postgres_account
+
+        pairs = postgres_account.list_active_stations_with_tanks()
+    else:
+        pairs = [
+            (station, list_station_tanks_out(station.id))
+            for station in list_stations()
+            if station.is_active
+        ]
+
     rows: list[PublicStationOut] = []
-    for station in list_stations():
-        if not station.is_active:
-            continue
-        tanks: list[PublicTankOut] = []
-        for device in list_tank_devices(station.id):
-            remainder, measured_at = tank_remainder(device.tank_id)
-            tanks.append(
-                PublicTankOut(
-                    code=device.code,
-                    capacity_liters=device.capacity_liters,
-                    remainder_liters=remainder,
-                    fill_percent=remainder_fill_percent(remainder, device.capacity_liters),
-                    measured_at=measured_at,
-                    online=sensor_online(measured_at),
-                )
+    for station, tank_outs in pairs:
+        tanks = [
+            PublicTankOut(
+                code=tank.code,
+                capacity_liters=tank.capacity_liters,
+                remainder_liters=tank.actual_remainder_liters,
+                fill_percent=remainder_fill_percent(tank.actual_remainder_liters, tank.capacity_liters),
+                measured_at=tank.last_measured_at,
+                online=sensor_online(tank.last_measured_at, now=now),
             )
+            for tank in tank_outs
+        ]
         rows.append(
             PublicStationOut(
                 code=station.code,

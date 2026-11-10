@@ -1,7 +1,5 @@
 """Пользователь станции не читает чужой токен."""
 
-from uuid import uuid4
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,7 +7,7 @@ from app.auth import issue_token, reset_auth_state
 from app.config import get_settings
 from app.domain.access import ROLE_ADMIN, ROLE_STATION
 from app.main import create_app
-from app.services.catalog import reset_catalog
+from app.services.catalog import create_station, reset_catalog
 from app.services.device_ingest import reset_device_ingest
 from app.services.station_accounts import reset_station_accounts
 
@@ -98,7 +96,7 @@ def test_station_cannot_change_catalog(monkeypatch):
     assert client.get("/api/v1/stations").status_code == 401
 
 
-def test_owner_login_sees_only_own_station_and_opens_console(monkeypatch):
+def test_owner_login_sees_only_own_station(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
     monkeypatch.setenv("AUTH_SECRET", "test-secret")
     monkeypatch.setenv("ADMIN_USERNAME", "admin")
@@ -133,10 +131,6 @@ def test_owner_login_sees_only_own_station_and_opens_console(monkeypatch):
     assert {row["id"] for row in stations.json()} == {STATION}
     assert client.get("/api/v1/trucks", headers=owner_h).status_code == 403
     assert client.get("/api/v1/map/overview", headers=owner_h).status_code == 403
-    opened = client.post(f"/api/v1/stations/{STATION}/console/shift/open", headers=owner_h)
-    assert opened.status_code == 200
-    foreign = client.post(f"/api/v1/stations/{OTHER}/console/shift/open", headers=owner_h)
-    assert foreign.status_code in (403, 404)
     assert client.post(
         f"/api/v1/stations/{STATION}/users",
         json={"username": "second", "password": "owner-pass"},
@@ -144,38 +138,21 @@ def test_owner_login_sees_only_own_station_and_opens_console(monkeypatch):
     ).status_code == 403
 
 
-def test_test_station_owner_is_bound_to_the_console(monkeypatch):
+def test_owner_can_be_attached_to_multiple_stations(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
     monkeypatch.setenv("AUTH_SECRET", "test-secret")
     monkeypatch.setenv("ADMIN_USERNAME", "admin")
     monkeypatch.setenv("ADMIN_PASSWORD", "lpg-admin")
     get_settings.cache_clear()
-    from app.services.catalog import CONSOLE_STATION_ID, ensure_console_station
 
-    ensure_console_station()
-    client = TestClient(create_app())
-    owner = client.post("/api/v1/auth/login", json={"username": "console", "password": "console-test"})
-    assert owner.status_code == 200
-    body = owner.json()
-    assert body["role"] == "console"
-    assert body["station_id"] == str(CONSOLE_STATION_ID)
-    headers = {"Authorization": f"Bearer {body['token']}"}
-    stations = client.get("/api/v1/stations", headers=headers)
-    assert {row["code"] for row in stations.json()} == {"AGZS-TEST"}
-    opened = client.post(f"/api/v1/stations/{CONSOLE_STATION_ID}/console/shift/open", headers=headers)
-    assert opened.status_code == 200
-    assert len(opened.json()["pumps"]) == 2
-    foreign = client.post(f"/api/v1/stations/{STATION}/console/shift/open", headers=headers)
-    assert foreign.status_code == 403
-
-
-def test_owner_sets_price_for_each_station_and_creates_console_admin(monkeypatch):
-    monkeypatch.setenv("AUTH_DISABLED", "false")
-    monkeypatch.setenv("AUTH_SECRET", "test-secret")
-    monkeypatch.setenv("ADMIN_USERNAME", "admin")
-    monkeypatch.setenv("ADMIN_PASSWORD", "lpg-admin")
-    get_settings.cache_clear()
-    from app.services.catalog import CONSOLE_STATION_ID
+    second_station = create_station(
+        code="AGZS-SECOND",
+        name="Вторая АГЗС",
+        address=None,
+        lat=43.7,
+        lon=51.2,
+        is_active=True,
+    )
 
     client = TestClient(create_app())
     admin = client.post("/api/v1/auth/login", json={"username": "admin", "password": "lpg-admin"}).json()
@@ -186,7 +163,7 @@ def test_owner_sets_price_for_each_station_and_creates_console_admin(monkeypatch
         headers=admin_h,
     ).status_code == 201
     attached = client.post(
-        f"/api/v1/stations/{CONSOLE_STATION_ID}/users",
+        f"/api/v1/stations/{second_station.id}/users",
         json={"username": "multi", "password": "owner-pass"},
         headers=admin_h,
     )
@@ -195,51 +172,12 @@ def test_owner_sets_price_for_each_station_and_creates_console_admin(monkeypatch
 
     owner = client.post("/api/v1/auth/login", json={"username": "multi", "password": "owner-pass"}).json()
     assert owner["role"] == "owner"
-    assert set(owner["station_ids"]) == {STATION, str(CONSOLE_STATION_ID)}
+    assert set(owner["station_ids"]) == {STATION, str(second_station.id)}
     owner_h = {"Authorization": f"Bearer {owner['token']}"}
     assert {row["id"] for row in client.get("/api/v1/stations", headers=owner_h).json()} == {
         STATION,
-        str(CONSOLE_STATION_ID),
+        str(second_station.id),
     }
-    assert client.put(
-        f"/api/v1/stations/{STATION}/console/cabinet/price",
-        json={"price_kzt_per_liter": 90},
-        headers=admin_h,
-    ).status_code == 403
-    priced = client.put(
-        f"/api/v1/stations/{STATION}/console/cabinet/price",
-        json={"price_kzt_per_liter": 90},
-        headers=owner_h,
-    )
-    assert priced.status_code == 200
-    assert priced.json()["price_kzt_per_liter"] == 90
-
-    created = client.post(
-        f"/api/v1/stations/{STATION}/console/admins",
-        json={"username": "pump", "password": "pump-pass"},
-        headers=owner_h,
-    )
-    assert created.status_code == 201
-    assert client.post(
-        f"/api/v1/stations/{STATION}/console/admins",
-        json={"username": "pump2", "password": "pump-pass"},
-        headers=admin_h,
-    ).status_code == 403
-
-    console = client.post("/api/v1/auth/login", json={"username": "pump", "password": "pump-pass"}).json()
-    assert console["role"] == "console"
-    assert console["station_id"] == STATION
-    console_h = {"Authorization": f"Bearer {console['token']}"}
-    assert client.put(
-        f"/api/v1/stations/{STATION}/console/cabinet/price",
-        json={"price_kzt_per_liter": 70},
-        headers=console_h,
-    ).status_code == 403
-    assert client.post(f"/api/v1/stations/{STATION}/console/shift/open", headers=console_h).status_code == 200
-    assert client.post(
-        f"/api/v1/stations/{CONSOLE_STATION_ID}/console/shift/open",
-        headers=console_h,
-    ).status_code == 403
 
 
 def test_login_response_includes_role(monkeypatch):
