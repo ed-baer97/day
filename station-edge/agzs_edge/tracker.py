@@ -96,7 +96,7 @@ class PumpDispenseTracker:
                 self._staged_preset_ml[addr] = frame.volume_ml
                 return None
 
-            if frame.state_code == STATE_DISPENSING:
+            if frame.is_dispensing:
                 staged_preset = self._staged_preset_ml.pop(addr, None)
                 # Определяем начальный режим, если возможно сразу
                 if staged_preset is not None and staged_preset > 0 and frame.volume_ml <= staged_preset:
@@ -145,7 +145,7 @@ class PumpDispenseTracker:
         self._update_session_volume(session, frame)
 
         # Если налив продолжается — ничего не закрываем
-        if frame.state_code == STATE_DISPENSING:
+        if frame.is_dispensing:
             return None
 
         # 3. Переход из DISPENSING в завершающее состояние (COMPLETED, STOPPED, IDLE, ERROR)
@@ -196,7 +196,7 @@ class PumpDispenseTracker:
             session.last_error_code = frame.error_code
         session.last_raw_frame_hex = frame.raw_hex
 
-        if frame.state_code != STATE_DISPENSING:
+        if not frame.is_dispensing:
             return
 
         curr = frame.volume_ml

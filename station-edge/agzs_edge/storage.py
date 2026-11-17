@@ -155,6 +155,27 @@ class EdgeDatabase:
                 ),
             )
 
+    def mark_no_response(self, pump_address: int, *, observed_at: datetime | None = None) -> None:
+        """Помечает колонку как NO_RESPONSE без постановки фиктивного объёма в outbox/VPS.
+
+        Не затирает volume_ml предыдущего успешного кадра: обновляет только статус связи и время.
+        """
+        stamp = (observed_at or datetime.now(timezone.utc)).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pump_live_state (
+                    pump_address, state_code, state_name, error_code,
+                    price_kzt_per_liter, volume_ml, raw_hex, updated_at
+                ) VALUES (?, 'NR', 'NO_RESPONSE', '00', 0, 0, '', ?)
+                ON CONFLICT(pump_address) DO UPDATE SET
+                    state_code = 'NR',
+                    state_name = 'NO_RESPONSE',
+                    updated_at = excluded.updated_at
+                """,
+                (pump_address, stamp),
+            )
+
     def log_raw_frame(
         self,
         *,

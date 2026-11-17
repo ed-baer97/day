@@ -25,6 +25,21 @@ def load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
+def _resolve_preferred_port(configured: str) -> str:
+    """Предпочитает стабильный /dev/serial/by-id/ для FTDI, если он есть."""
+    import glob
+    from pathlib import Path
+
+    if configured.startswith("/dev/serial/by-id/"):
+        return configured
+    by_id = sorted(glob.glob("/dev/serial/by-id/*FTDI*") + glob.glob("/dev/serial/by-id/*A5069RR4*"))
+    if by_id:
+        return by_id[0]
+    if Path(configured).exists() or configured.upper().startswith("COM"):
+        return configured
+    return configured
+
+
 def _parse_addresses(raw: str) -> tuple[int, ...]:
     items: list[int] = []
     for part in raw.split(","):
@@ -63,17 +78,17 @@ def _parse_dispenser_map(raw: str, station_id: str) -> dict[int, str]:
 class FrameLayout:
     """Калибровочная раскладка 23-байтного ответного кадра «Искра 1.72».
 
-    Стандартная 23-байтная структура кадра ответа на команду «Тест» (код 4):
-      [0]      : 0x01 (SOH — начало кадра)
-      [1]      : Адрес колонки ASCII ('1'..'6', 0x31..0x36)
-      [2]      : Код команды/ответа ASCII ('4', 0x34)
-      [3..5]   : Состояние колонки (2 ASCII-символа, например '00'..'04')
-      [5..7]   : Код ошибки протокола/аварии (2 ASCII-символа, например '00' или '06')
-      [7..13]  : Поле цены, 6 ASCII-цифр (копейки/тыйны или сотые доли тенге)
-      [13..19] : Поле объёма в миллилитрах, 6 ASCII-цифр (остаток дозы или налитые мл)
-      [19..21] : Резерв / флаги режима (2 ASCII-символа)
-      [21]     : 0x03 (ETX — конец текста кадра)
-      [22]     : Контрольная сумма (BCC)
+    Кадр «Тест» Искра 1.72, 23 байта:
+      [0]      : 0x01 (SOH)
+      [1..3]   : номер ТРК, две ASCII-цифры ('01'..'06')
+      [3]      : код команды ASCII ('4')
+      [4]      : 0x02 (STX)
+      [5..11]  : цена, 6 ASCII-цифр
+      [11..17] : объём, 6 ASCII-цифр (остаток дозы или налитые мл)
+      [17..19] : ошибка протокола, 2 ASCII-символа
+      [19..21] : код состояния ТРК, 2 ASCII-символа
+      [21]     : 0x03 (ETX)
+      [22]     : CRC, XOR байтов после SOH, включая ETX
 
     При пусконаладке на живом стенде АСКА-02 смещения можно скорректировать
     без переписывания логики трекера и базы данных.
@@ -85,11 +100,11 @@ class FrameLayout:
     etx_byte: int = 0x03
     bcc_offset: int = 22
     addr_offset: int = 1
-    cmd_offset: int = 2
-    state_slice: tuple[int, int] = (3, 5)
-    error_slice: tuple[int, int] = (5, 7)
-    price_slice: tuple[int, int] = (7, 13)
-    volume_slice: tuple[int, int] = (13, 19)
+    cmd_offset: int = 3
+    state_slice: tuple[int, int] = (19, 21)
+    error_slice: tuple[int, int] = (17, 19)
+    price_slice: tuple[int, int] = (5, 11)
+    volume_slice: tuple[int, int] = (11, 17)
     flags_slice: tuple[int, int] = (19, 21)
     checksum_mode: str = "xor"  # xor | sum7 | sum8 | any
 
@@ -98,11 +113,13 @@ class FrameLayout:
 class EdgeSettings:
     serial_port: str = "COM7"
     serial_baudrate: int = 9600
-    serial_timeout_sec: float = 0.25
+    serial_timeout_sec: float = 1.0
     pump_addresses: tuple[int, ...] = (1, 2)
     poll_interval_sec: float = 0.5
     source_mode: str = "serial"  # serial | emulator
+    protocol: str = "iskra_172"  # только подтверждённые: iskra_172
     checksum_mode: str = "xor"
+    read_only: bool = True
     db_path: Path = field(default_factory=lambda: Path("station_edge.db"))
     save_raw_frames: bool = False
     vps_base_url: str = "http://93.171.232.47"
@@ -120,12 +137,22 @@ class EdgeSettings:
         load_dotenv(dotenv_path or Path(".env"))
         serial_port = os.environ.get("AGZS_SERIAL_PORT", "COM7").strip() or "COM7"
         serial_baudrate = int(os.environ.get("AGZS_SERIAL_BAUDRATE", "9600").strip() or "9600")
-        serial_timeout_sec = float(os.environ.get("AGZS_SERIAL_TIMEOUT_SEC", "0.25").strip() or "0.25")
+        serial_timeout_sec = float(os.environ.get("AGZS_SERIAL_TIMEOUT_SEC", "1.5").strip() or "1.5")
         pump_addresses = _parse_addresses(os.environ.get("AGZS_PUMP_ADDRESSES", "1,2"))
         poll_interval_sec = float(os.environ.get("AGZS_POLL_INTERVAL_SEC", "0.5").strip() or "0.5")
         source_mode = os.environ.get("AGZS_SOURCE_MODE", "serial").strip().lower() or "serial"
         if source_mode not in {"serial", "emulator"}:
             raise ValueError("AGZS_SOURCE_MODE должен быть 'serial' или 'emulator'")
+
+        protocol = os.environ.get("AGZS_PROTOCOL", "iskra_172").strip().lower() or "iskra_172"
+        if protocol not in {"iskra_172"}:
+            raise ValueError(
+                "AGZS_PROTOCOL: разрешён только iskra_172. "
+                "aska02_native не активирован — нет подтверждённой спецификации прошивки АСКА-02 07.2026"
+            )
+        read_only = os.environ.get("AGZS_READ_ONLY", "1").strip() not in {"0", "false", "no"}
+        if not read_only:
+            raise ValueError("AGZS_READ_ONLY=0 запрещён: узел работает только на чтение")
 
         checksum_mode = os.environ.get("AGZS_ISKRA_CHECKSUM_MODE", "xor").strip().lower() or "xor"
         if checksum_mode not in {"xor", "sum7", "sum8", "any"}:
@@ -153,6 +180,10 @@ class EdgeSettings:
         sync_interval_sec = float(os.environ.get("AGZS_SYNC_INTERVAL_SEC", "5.0").strip() or "5.0")
 
         layout = FrameLayout(checksum_mode=checksum_mode)
+        # Предпочитаем стабильный by-id на Linux, если порт задан как ttyUSB*
+        if serial_port.startswith("/dev/ttyUSB"):
+            serial_port = _resolve_preferred_port(serial_port)
+
         return cls(
             serial_port=serial_port,
             serial_baudrate=serial_baudrate,
@@ -160,7 +191,9 @@ class EdgeSettings:
             pump_addresses=pump_addresses,
             poll_interval_sec=poll_interval_sec,
             source_mode=source_mode,
+            protocol=protocol,
             checksum_mode=checksum_mode,
+            read_only=read_only,
             db_path=db_path,
             save_raw_frames=save_raw,
             vps_base_url=vps_base_url,

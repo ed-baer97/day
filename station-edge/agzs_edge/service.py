@@ -57,14 +57,15 @@ class StationEdgeService:
         for address in self.settings.pump_addresses:
             raw_res = self.link.poll_test(address)
             if not raw_res.has_response:
-                if self.settings.save_raw_frames:
-                    self.db.log_raw_frame(
-                        pump_address=address,
-                        request_bytes=raw_res.request_bytes,
-                        response_bytes=b"",
-                        valid=False,
-                        note=raw_res.error_message or "нет ответа от УЗГС-01",
-                    )
+                # Не подставляем газ=0 на VPS; помечаем отсутствие связи для оператора.
+                self.db.mark_no_response(address, observed_at=now)
+                self.db.log_raw_frame(
+                    pump_address=address,
+                    request_bytes=raw_res.request_bytes,
+                    response_bytes=b"",
+                    valid=False,
+                    note=raw_res.error_message or "нет ответа от УЗГС-01",
+                )
                 continue
 
             try:

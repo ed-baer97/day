@@ -7,13 +7,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from agzs_edge.aska_compat import Attempt
 from agzs_edge.config import FrameLayout
 from agzs_edge.iskra import (
-    EXPECTED_FRAME_LEN,
     SOH,
     STATE_COMPLETED,
     STATE_DISPENSING,
@@ -24,6 +26,24 @@ from agzs_edge.iskra import (
 )
 
 logger = logging.getLogger(__name__)
+_PORT_LOCK = threading.RLock()
+
+
+class _ObservedSerial:
+    """Пропускает write/read через Attempt без изменения аргументов и числа вызовов."""
+
+    def __init__(self, ser: object, attempt: Attempt) -> None:
+        self._ser = ser
+        self._attempt = attempt
+
+    def write(self, data: bytes) -> int:
+        return self._attempt.write(self._ser.write, data)  # type: ignore[attr-defined]
+
+    def read(self, size: int) -> bytes:
+        return self._attempt.read(self._ser.read, size)  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._ser, name)
 
 
 @dataclass(frozen=True)
@@ -45,7 +65,7 @@ class AskaLink(Protocol):
 
     def open(self) -> None: ...
     def close(self) -> None: ...
-    def poll_test(self, address: int) -> PollRawResult: ...
+    def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult: ...
 
 
 class SerialAskaLink:
@@ -55,75 +75,117 @@ class SerialAskaLink:
         self,
         port: str = "COM7",
         baudrate: int = 9600,
-        timeout_sec: float = 0.25,
+        timeout_sec: float = 1.0,
         layout: FrameLayout | None = None,
+        *,
+        min_wait_sec: float = 1.0,
+        inter_byte_timeout_sec: float = 0.15,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
         self.timeout_sec = timeout_sec
         self.layout = layout or FrameLayout()
+        self.min_wait_sec = min_wait_sec
+        self.inter_byte_timeout_sec = inter_byte_timeout_sec
         self._serial: object | None = None
+        self._lock = _PORT_LOCK
+        self.last_attempt: Attempt | None = None
 
     def open(self) -> None:
-        if self._serial is not None and getattr(self._serial, "is_open", False):
-            return
-        import serial  # pyserial
+        with self._lock:
+            if self._serial is not None and getattr(self._serial, "is_open", False):
+                return
+            import serial  # pyserial
 
-        self._serial = serial.Serial(
-            port=self.port,
-            baudrate=self.baudrate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=self.timeout_sec,
-            write_timeout=self.timeout_sec,
-        )
-        logger.info("Открыт порт АСКА-02: %s (%d 8N1)", self.port, self.baudrate)
+            # Короткий таймаут одного read() + общий deadline в _read_aligned_frame.
+            read_timeout = min(max(self.timeout_sec, self.min_wait_sec, 0.02), self.inter_byte_timeout_sec)
+            kwargs = {
+                "port": self.port,
+                "baudrate": self.baudrate,
+                "bytesize": serial.EIGHTBITS,
+                "parity": serial.PARITY_NONE,
+                "stopbits": serial.STOPBITS_ONE,
+                "timeout": read_timeout,
+                "write_timeout": max(self.timeout_sec, 0.5),
+            }
+            # На Linux исключаем параллельный доступ к тому же TTY.
+            if os.name == "posix":
+                kwargs["exclusive"] = True
+            self._serial = serial.Serial(**kwargs)
+            logger.info("Открыт порт АСКА-02: %s (%d 8N1)", self.port, self.baudrate)
 
     def close(self) -> None:
-        if self._serial is not None:
+        with self._lock:
+            if self._serial is not None:
+                try:
+                    self._serial.close()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                self._serial = None
+
+    def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+        """Отправляет команду «Тест» (код 4) на указанный адрес и читает ответ (если есть)."""
+        mode = checksum_mode or self.layout.checksum_mode
+        request = build_test_command(address, checksum_mode=mode)
+        with self._lock:
             try:
-                self._serial.close()  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            self._serial = None
+                self.open()
+                assert self._serial is not None
+                attempt = Attempt(request, channel=address)
+                self.last_attempt = attempt
+                ser = _ObservedSerial(self._serial, attempt)
+                ser.reset_input_buffer()  # type: ignore[attr-defined]
+                ser.write(request)
+                ser.flush()  # type: ignore[attr-defined]
+                logger.debug("TX addr=%s hex=%s", address, request.hex(" ").upper())
 
-    def poll_test(self, address: int) -> PollRawResult:
-        """Отправляет команду «Тест» (код 4) на указанный адрес и читает 23-байтный кадр ответа."""
-        request = build_test_command(address, checksum_mode=self.layout.checksum_mode)
-        try:
-            self.open()
-            ser = self._serial
-            assert ser is not None
-            ser.reset_input_buffer()  # type: ignore[attr-defined]
-            ser.write(request)  # type: ignore[attr-defined]
-            ser.flush()  # type: ignore[attr-defined]
-
-            # Читаем с выравниванием по стартовому байту SOH (0x01) на случай помех на линии
-            raw = self._read_aligned_frame(ser, self.layout.frame_length)
-            return PollRawResult(address=address, request_bytes=request, response_bytes=raw)
-        except Exception as exc:
-            self.close()
-            return PollRawResult(
-                address=address,
-                request_bytes=request,
-                response_bytes=b"",
-                error_message=str(exc),
-            )
+                raw = self._read_aligned_frame(ser, self.layout.frame_length)
+                if raw:
+                    logger.debug("RX addr=%s len=%s hex=%s", address, len(raw), raw.hex(" ").upper())
+                else:
+                    logger.debug("RX addr=%s EMPTY", address)
+                return PollRawResult(address=address, request_bytes=request, response_bytes=raw)
+            except Exception as exc:
+                self.close()
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=b"",
+                    error_message=str(exc),
+                )
 
     def _read_aligned_frame(self, ser: object, expected_len: int) -> bytes:
-        deadline = time.monotonic() + max(self.timeout_sec * 2.0, 0.35)
+        deadline = time.monotonic() + max(self.timeout_sec, self.min_wait_sec)
         buf = bytearray()
-        while time.monotonic() < deadline and len(buf) < expected_len:
-            chunk: bytes = ser.read(expected_len - len(buf))  # type: ignore[attr-defined]
-            if not chunk:
+        while True:
+            soh_idx = buf.index(SOH) if SOH in buf else -1
+            target_len = (soh_idx + expected_len) if soh_idx >= 0 else expected_len
+            if len(buf) >= target_len or time.monotonic() >= deadline:
                 break
+
+            t_before = time.monotonic()
+            chunk: bytes = ser.read(target_len - len(buf))  # type: ignore[attr-defined]
+            if not chunk:
+                # Если данные уже начали поступать и линия замолчала — отдаём то, что успело прийти
+                if buf:
+                    break
+                if time.monotonic() - t_before < 0.005:
+                    time.sleep(0.01)
+                continue
             buf.extend(chunk)
-            # Если в начале мусор до 0x01 (SOH), сдвигаем буфер до первого SOH
-            if SOH in buf:
-                soh_idx = buf.index(SOH)
-                if soh_idx > 0:
-                    del buf[:soh_idx]
+
+        if SOH in buf:
+            soh_idx = buf.index(SOH)
+            tail = buf[soh_idx:]
+            if soh_idx == 0:
+                return bytes(tail[:expected_len])
+            # Срезаем ведущий шум до SOH только если за ним действительно лежит полный кадр Искра
+            if (
+                len(tail) >= expected_len
+                and 0 <= self.layout.etx_offset < len(tail)
+                and tail[self.layout.etx_offset] == self.layout.etx_byte
+            ):
+                return bytes(tail[:expected_len])
         return bytes(buf)
 
 
@@ -146,8 +208,9 @@ class EmulatorAskaLink:
     def close(self) -> None:
         return
 
-    def poll_test(self, address: int) -> PollRawResult:
-        request = build_test_command(address, checksum_mode=self.layout.checksum_mode)
+    def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+        mode = checksum_mode or self.layout.checksum_mode
+        request = build_test_command(address, checksum_mode=mode)
         step = self._step_by_addr.get(address, 0)
         self._step_by_addr[address] = (step + 1) % 8
 
@@ -184,7 +247,7 @@ class EmulatorAskaLink:
             price_digits=self.price_digits,
             volume_ml=vol_ml,
             flags=flags,
-            checksum_mode=self.layout.checksum_mode,
+            checksum_mode=mode,
         )
         return PollRawResult(address=address, request_bytes=request, response_bytes=response)
 

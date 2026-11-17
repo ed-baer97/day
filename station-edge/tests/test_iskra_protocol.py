@@ -19,11 +19,13 @@ from agzs_edge.iskra import (
 def test_build_test_command_addresses_1_to_6() -> None:
     for addr in range(1, 7):
         cmd = build_test_command(addr)
-        assert len(cmd) == 5
+        assert len(cmd) == EXPECTED_FRAME_LEN
         assert cmd[0] == SOH
-        assert cmd[1] == ord(str(addr))
-        assert cmd[2] == ord("4")  # код 4 — команда «Тест»
-        assert cmd[3] == 0x03
+        assert cmd[1:3] == f"{addr:02d}".encode("ascii")
+        assert cmd[3] == ord("4")  # код 4 — команда «Тест»
+        assert cmd[4] == 0x02
+        assert cmd[21] == 0x03
+        assert cmd[5:21] == b"0000000000000000"
 
 
 def test_build_test_command_rejects_out_of_range() -> None:
@@ -40,10 +42,11 @@ def test_parse_valid_23_byte_iskra_frame() -> None:
         error_code="00",
         price_digits=10500,  # 105.00 ₸/л
         volume_ml=12500,
-        flags="01",
     )
     assert len(raw) == EXPECTED_FRAME_LEN
     assert raw[0] == 0x01
+    assert raw[1:3] == b"01"
+    assert raw[4] == 0x02
     assert verify_frame_checksum(raw)
 
     parsed = parse_iskra_frame(raw)
@@ -55,7 +58,6 @@ def test_parse_valid_23_byte_iskra_frame() -> None:
     assert parsed.price_raw == "010500"
     assert parsed.price_kzt_per_liter == 105.0
     assert parsed.volume_ml == 12500
-    assert parsed.flags_raw == "01"
     assert not parsed.has_protocol_alarm
 
 

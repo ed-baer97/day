@@ -13,25 +13,28 @@ from dataclasses import dataclass
 from agzs_edge.config import FrameLayout
 
 SOH = 0x01
+STX = 0x02
 ETX = 0x03
-CMD_TEST_ASCII = ord("4")  # 0x34 — код команды «Тест» в протоколе Искра 1.72
+CMD_TEST_ASCII = ord("4")  # 0x34 — единственная команда, которую шлёт узел: «Тест»
 EXPECTED_FRAME_LEN = 23
 
-# Коды состояния колонки в кадре ответа «Тест»
-STATE_IDLE = "00"        # Свободна / ожидание
-STATE_DOSE_SET = "01"    # Доза набрана на пульте, ожидание пуска
-STATE_DISPENSING = "02"  # Идёт отпуск газа (клапан/насос включены)
-STATE_STOPPED = "03"     # Остановлена до окончания дозы (кнопка Стоп / отсечка)
-STATE_COMPLETED = "04"   # Отпуск завершён (доза выдана или завершён налив «до полного»)
-STATE_ERROR = "06"       # Авария в кадре (код 06)
+# Поле Code ответа «Тест» протокола Искра 1.72 (универсальный протокол КУ ТРК).
+STATE_DOSE_SET = "01"     # Готовность к пуску
+STATE_REMAINDER = "02"    # Остаток дозы (устаревшее, держим как идущий налив)
+STATE_DISPENSING = "03"   # Пуск
+STATE_STOPPED = "04"      # Останов
+STATE_IDLE = "05"         # Сброс, дозы нет
+STATE_ERROR = "06"        # Авария
+STATE_COMPLETED = "07"    # До полного бака останов
 
 STATE_NAMES: dict[str, str] = {
-    STATE_IDLE: "IDLE",
     STATE_DOSE_SET: "DOSE_SET",
+    STATE_REMAINDER: "REMAINDER",
     STATE_DISPENSING: "DISPENSING",
     STATE_STOPPED: "STOPPED",
-    STATE_COMPLETED: "COMPLETED",
+    STATE_IDLE: "IDLE",
     STATE_ERROR: "ERROR",
+    STATE_COMPLETED: "COMPLETED",
 }
 
 
@@ -61,7 +64,7 @@ class IskraTelemetryFrame:
 
     @property
     def is_dispensing(self) -> bool:
-        return self.state_code == STATE_DISPENSING
+        return self.state_code in {STATE_DISPENSING, STATE_REMAINDER}
 
     @property
     def is_finished_state(self) -> bool:
@@ -111,20 +114,23 @@ def verify_frame_checksum(frame: bytes, layout: FrameLayout | None = None) -> bo
 def build_test_command(address: int, *, checksum_mode: str = "xor") -> bytes:
     """Собирает запрос «Тест» (код 4) протокола Искра 1.72 для адреса 1..6.
 
-    Формат кадра запроса (5 байт):
-      [0] 0x01 (SOH)
-      [1] ASCII адрес колонки ('1'..'6', 0x31..0x36)
-      [2] 0x34 ('4' — команда «Тест»)
-      [3] 0x03 (ETX)
-      [4] BCC (контрольная сумма по байтам [1..3])
+    Кадр 23 байта, как в п. 4.1 универсального протокола КУ ТРК:
+      SOH, номер ТРК из двух цифр, '4', STX, цена 000000, объём 000000,
+      ошибка 00, состояние 00, ETX, XOR всех байт после SOH.
+    Другие коды команд (доза, пуск, останов, сброс, до полного) не формируются.
     """
     if not isinstance(address, int) or address < 1 or address > 6:
         raise ValueError(f"Адрес колонки должен быть целым числом 1..6, получено: {address!r}")
-    addr_byte = ord(str(address))
-    body = bytes([addr_byte, CMD_TEST_ASCII, ETX])
+    body = (
+        f"{address:02d}".encode("ascii")
+        + bytes([CMD_TEST_ASCII, STX])
+        + b"000000"
+        + b"000000"
+        + b"0000"
+        + bytes([ETX])
+    )
     mode = "xor" if checksum_mode == "any" else checksum_mode
-    bcc = compute_bcc(body, mode)
-    return bytes([SOH]) + body + bytes([bcc])
+    return bytes([SOH]) + body + bytes([compute_bcc(body, mode)])
 
 
 def build_test_response_frame(
@@ -137,15 +143,16 @@ def build_test_response_frame(
     flags: str = "00",
     checksum_mode: str = "xor",
 ) -> bytes:
-    """Собирает эталонный 23-байтный ответный кадр «Искра 1.72» (для тестов и эмулятора).
+    """Собирает эталонный 23-байтный ответ «Тест» протокола Искра 1.72.
 
-    Раскладка (23 байта):
-      1 (SOH) + 1 (addr) + 1 ('4') + 2 (state) + 2 (err) + 6 (price) + 6 (volume_ml) + 2 (flags) + 1 (ETX) + 1 (BCC) = 23
+    Раскладка: SOH, адрес из 2 цифр, '4', STX, цена 6, объём 6, ошибка 2, состояние 2, ETX, CRC.
+    Параметр flags оставлен для старых вызовов и в кадр не входит.
     """
+    del flags
     if address < 1 or address > 6:
         raise ValueError("Адрес должен быть в диапазоне 1..6")
-    if len(state_code) != 2 or len(error_code) != 2 or len(flags) != 2:
-        raise ValueError("Поля state_code, error_code и flags должны состоять ровно из 2 ASCII-символов")
+    if len(state_code) != 2 or len(error_code) != 2:
+        raise ValueError("Поля state_code и error_code должны состоять ровно из 2 ASCII-символов")
     if volume_ml < 0 or volume_ml > 999_999:
         raise ValueError("volume_ml должен помещаться в 6 десятичных цифр (0..999999)")
 
@@ -154,8 +161,15 @@ def build_test_response_frame(
         raise ValueError("Поле цены должно состоять из 6 цифр")
 
     vol_str = f"{volume_ml:06d}"
-    ascii_payload = f"{address}4{state_code}{error_code}{price_str}{vol_str}{flags}".encode("ascii")
-    body = ascii_payload + bytes([ETX])
+    body = (
+        f"{address:02d}".encode("ascii")
+        + bytes([CMD_TEST_ASCII, STX])
+        + price_str.encode("ascii")
+        + vol_str.encode("ascii")
+        + error_code.encode("ascii")
+        + state_code.encode("ascii")
+        + bytes([ETX])
+    )
     mode = "xor" if checksum_mode == "any" else checksum_mode
     bcc = compute_bcc(body, mode)
     frame = bytes([SOH]) + body + bytes([bcc])
@@ -196,11 +210,15 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
             f"Неверная контрольная сумма кадра: в кадре 0x{raw[cfg.bcc_offset]:02X}, ожидалось 0x{expected:02X}"
         )
 
+    if raw[4] != STX:
+        raise IskraFrameError(f"Отсутствует маркер STX (0x02) на позиции 4: 0x{raw[4]:02X}")
     try:
-        addr_char = chr(raw[cfg.addr_offset])
-        address = int(addr_char)
+        address = int(raw[cfg.addr_offset : cfg.addr_offset + 2].decode("ascii"))
     except ValueError as exc:
-        raise IskraFrameError(f"Некорректный адрес колонки в байте [{cfg.addr_offset}]: 0x{raw[cfg.addr_offset]:02X}") from exc
+        raise IskraFrameError(
+            f"Некорректный адрес колонки в байтах [{cfg.addr_offset}:{cfg.addr_offset + 2}]: "
+            f"{raw[cfg.addr_offset : cfg.addr_offset + 2].hex(' ').upper()}"
+        ) from exc
 
     if address < 1 or address > 6:
         raise IskraFrameError(f"Адрес колонки вне диапазона 1..6: {address}")
@@ -211,7 +229,7 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
         error_code = raw[cfg.error_slice[0] : cfg.error_slice[1]].decode("ascii")
         price_raw = raw[cfg.price_slice[0] : cfg.price_slice[1]].decode("ascii")
         volume_raw = raw[cfg.volume_slice[0] : cfg.volume_slice[1]].decode("ascii")
-        flags_raw = raw[cfg.flags_slice[0] : cfg.flags_slice[1]].decode("ascii")
+        flags_raw = ""
     except UnicodeDecodeError as exc:
         raise IskraFrameError(f"Не-ASCII символы в полях данных кадра: {raw.hex(' ').upper()}") from exc
 
