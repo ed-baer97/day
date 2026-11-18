@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agzs_edge.config import EdgeSettings, _resolve_preferred_port
+from agzs_edge.config import EdgeSettings, resolve_preferred_port
 from agzs_edge.iskra import IskraFrameError, build_test_command, parse_iskra_frame
 from agzs_edge.serial_link import SerialAskaLink, list_available_serial_ports
 
@@ -66,9 +66,8 @@ class DiagnoseReport:
         return "\n".join(lines)
 
 
-def resolve_preferred_port(configured: str) -> str:
-    """Предпочитает стабильный /dev/serial/by-id/ для FTDI, если он есть."""
-    return _resolve_preferred_port(configured)
+def _is_posix() -> bool:
+    return os.name == "posix"
 
 
 def _run(cmd: list[str]) -> str:
@@ -104,10 +103,10 @@ def collect_usb_info(
             report.ftdi_detected = True
             if not report.serial_number:
                 report.serial_number = _extract_serial_from_hwid(hwid)
-            if os.name != "posix" and not report.driver:
+            if not _is_posix() and not report.driver:
                 report.driver = "FTDI"
 
-    if os.name != "posix":
+    if not _is_posix():
         return
 
     lsusb = _run(["lsusb"])

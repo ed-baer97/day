@@ -25,7 +25,7 @@ def load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
-def _resolve_preferred_port(configured: str) -> str:
+def resolve_preferred_port(configured: str) -> str:
     """Предпочитает стабильный /dev/serial/by-id/ для FTDI, если он есть."""
     import glob
 
@@ -37,6 +37,9 @@ def _resolve_preferred_port(configured: str) -> str:
     if Path(configured).exists() or configured.upper().startswith("COM"):
         return configured
     return configured
+
+
+_resolve_preferred_port = resolve_preferred_port
 
 
 def _parse_bool(raw: str | None, *, default: bool = False) -> bool:
@@ -122,6 +125,11 @@ class FrameLayout:
     flags_slice: tuple[int, int] = (19, 21)
     checksum_mode: str = "xor"  # xor | sum7 | sum8 | any
 
+    @property
+    def tx_checksum_mode(self) -> str:
+        """Фактический режим КС для исходящих кадров (для 'any' используется 'xor')."""
+        return "xor" if self.checksum_mode == "any" else self.checksum_mode
+
 
 @dataclass
 class EdgeSettings:
@@ -151,6 +159,11 @@ class EdgeSettings:
     monitor_refresh_sec: float = 2.0
     monitor_kiosk: bool = False
     currency_symbol: str = "₸"
+    update_channel: str = "stable"
+    releases_dir: Path = field(default_factory=lambda: Path("releases"))
+    update_idle_quiet_sec: float = 60.0
+    lock_buttons_on_update: bool = True
+    pump_buttons_mode: str = "lock-reset"
     layout: FrameLayout = field(default_factory=FrameLayout)
 
     def __post_init__(self) -> None:
@@ -230,11 +243,24 @@ class EdgeSettings:
 
         monitor_kiosk = _parse_bool(os.environ.get("AGZS_MONITOR_KIOSK"), default=False)
         currency_symbol = os.environ.get("AGZS_CURRENCY", "₸").strip() or "₸"
+        update_channel = os.environ.get("AGZS_UPDATE_CHANNEL", "stable").strip().lower() or "stable"
+        if update_channel not in {"stable", "canary", "ring0", "ring1", "ring2"}:
+            raise ValueError("AGZS_UPDATE_CHANNEL должен быть 'ring0', 'ring1', 'ring2', 'canary' или 'stable'")
+        releases_dir = Path(os.environ.get("AGZS_RELEASES_DIR", "releases").strip() or "releases")
+        update_idle_quiet_sec = float(
+            os.environ.get("AGZS_UPDATE_IDLE_QUIET_SEC", "60.0").strip() or "60.0"
+        )
+        if update_idle_quiet_sec < 0:
+            raise ValueError("AGZS_UPDATE_IDLE_QUIET_SEC должен быть >= 0")
+        lock_buttons_on_update = _parse_bool(os.environ.get("AGZS_LOCK_BUTTONS_ON_UPDATE"), default=True)
+        pump_buttons_mode = os.environ.get("AGZS_PUMP_BUTTONS_MODE", "lock-reset").strip().lower() or "lock-reset"
+        if pump_buttons_mode not in {"lock-reset", "enable"}:
+            raise ValueError("AGZS_PUMP_BUTTONS_MODE должен быть 'lock-reset' или 'enable'")
 
         layout = FrameLayout(checksum_mode=checksum_mode)
         # Предпочитаем стабильный by-id на Linux, если порт задан как ttyUSB*
         if serial_port.startswith("/dev/ttyUSB"):
-            serial_port = _resolve_preferred_port(serial_port)
+            serial_port = resolve_preferred_port(serial_port)
 
         return cls(
             serial_port=serial_port,
@@ -263,6 +289,11 @@ class EdgeSettings:
             monitor_refresh_sec=monitor_refresh_sec,
             monitor_kiosk=monitor_kiosk,
             currency_symbol=currency_symbol,
+            update_channel=update_channel,
+            releases_dir=releases_dir,
+            update_idle_quiet_sec=update_idle_quiet_sec,
+            lock_buttons_on_update=lock_buttons_on_update,
+            pump_buttons_mode=pump_buttons_mode,
             layout=layout,
         )
 

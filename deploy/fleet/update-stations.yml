@@ -1,0 +1,71 @@
+---
+- name: Безопасное волновое обновление station-edge на сети АГЗС
+  hosts: agzs_fleet
+  become: true
+  serial: "20%"
+  max_fail_percentage: 10
+  gather_facts: false
+
+  vars:
+    edge_dir: /opt/station-edge
+    edge_venv_python: "{{ edge_dir }}/.venv/bin/python"
+    src_station_edge: "{{ playbook_dir }}/../../station-edge"
+
+  tasks:
+    - name: Установить правило udev для стабильного симлинка /dev/aska02
+      ansible.builtin.copy:
+        src: "{{ src_station_edge }}/99-aska02.rules"
+        dest: /etc/udev/rules.d/99-aska02.rules
+        mode: "0644"
+      notify: Reload udev
+
+    - name: Установить systemd-юнит основного демона с Graceful Shutdown
+      ansible.builtin.copy:
+        src: "{{ src_station_edge }}/station-edge.service"
+        dest: /etc/systemd/system/station-edge.service
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Установить systemd-сервис и таймер Pull-автообновления
+      ansible.builtin.copy:
+        src: "{{ src_station_edge }}/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop:
+        - station-edge-updater.service
+        - station-edge-updater.timer
+      notify: Reload systemd
+
+    - name: Выполнить reload systemd до запуска таймера и апдейтера
+      ansible.builtin.meta: flush_handlers
+
+    - name: Включить запуск апдейтера при старте компьютера (возобновление после сбоя питания)
+      ansible.builtin.systemd:
+        name: station-edge-updater.service
+        enabled: true
+
+    - name: Включить и запустить периодический таймер Pull-обновлений
+      ansible.builtin.systemd:
+        name: station-edge-updater.timer
+        enabled: true
+        state: started
+
+    - name: Безопасно обновить станцию (ожидание окончания активного налива до 180 сек)
+      ansible.builtin.command:
+        cmd: >-
+          {{ edge_venv_python }} -m agzs_edge update
+          --wait-idle-sec 180
+          --restart-cmd "systemctl restart station-edge.service station-edge-monitor.service"
+        chdir: "{{ edge_dir }}"
+      register: update_out
+      changed_when: "'[UPDATED]' in update_out.stdout"
+      failed_when: update_out.rc != 0
+
+  handlers:
+    - name: Reload udev
+      ansible.builtin.command:
+        cmd: udevadm control --reload-rules && udevadm trigger
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

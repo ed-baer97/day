@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -12,6 +14,7 @@ from agzs_edge.iskra import (
     STATE_COMPLETED,
     IskraFrameError,
     IskraTelemetryFrame,
+    build_param_command,
     build_reset_command,
     parse_iskra_frame,
 )
@@ -19,6 +22,7 @@ from agzs_edge.serial_link import AskaLink, EmulatorAskaLink, SerialAskaLink
 from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import OutboxSyncWorker, probe_vps_link
 from agzs_edge.tracker import CompletedDispense, PumpDispenseTracker
+from agzs_edge.updater import read_update_state
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,29 @@ def build_link(settings: EdgeSettings) -> AskaLink:
         timeout_sec=settings.serial_timeout_sec,
         layout=settings.layout,
     )
+
+
+def send_buttons_param_to_pumps(
+    link: AskaLink,
+    addresses: tuple[int, ...],
+    param_code: str,
+    *,
+    checksum_mode: str,
+) -> tuple[list[int], list[tuple[int, str]]]:
+    """Отправляет команду режима кнопок (0.16/0.17/0.18) на список адресов колонок."""
+    succeeded: list[int] = []
+    errors: list[tuple[int, str]] = []
+    for address in addresses:
+        req = build_param_command(address, param_code, volume_digits=0, checksum_mode=checksum_mode)
+        res = link.send_command(address, req)
+        if res.error_message:
+            errors.append((address, res.error_message))
+            continue
+        if param_code == "0.16":
+            reset_req = build_reset_command(address, checksum_mode=checksum_mode)
+            link.send_command(address, reset_req)
+        succeeded.append(address)
+    return succeeded, errors
 
 
 class StationEdgeService:
@@ -57,6 +84,64 @@ class StationEdgeService:
         self._last_sync_ts = 0.0
         self._last_seen: dict[int, tuple[str, str, int]] = {}
         self._stop_07_since: dict[int, float] = {}
+        self._stop_requested: bool = False
+        self._pumps_locked_for_update: bool = False
+        self._restore_buttons_pending: bool = False
+
+    def request_stop(self) -> None:
+        """Запрашивает мягкую остановку сервиса после завершения активных наливов."""
+        self._stop_requested = True
+
+    def is_idle_for_update(self) -> bool:
+        """True, если нет активных наливов и нет отложенного авто-сброса 0x37."""
+        return not self.tracker.has_active_sessions() and not self._stop_07_since
+
+    def _tx_checksum_mode(self) -> str:
+        return self.settings.layout.tx_checksum_mode
+
+    def _can_control_buttons(self) -> bool:
+        return (
+            not self.settings.read_only
+            and self.settings.lock_buttons_on_update
+            and self.settings.source_mode != "emulator"
+        )
+
+    def lock_pump_buttons_for_update(self) -> list[int]:
+        """Отключает физические кнопки на колонках (команда 0x38, код 0.17) на время обновления ПО."""
+        if not self._can_control_buttons():
+            return []
+        locked, errors = send_buttons_param_to_pumps(
+            self.link,
+            self.settings.pump_addresses,
+            "0.17",
+            checksum_mode=self._tx_checksum_mode(),
+        )
+        for address, err in errors:
+            logger.warning("Колонка #%d: ошибка блокировки кнопок (0.17): %s", address, err)
+        for address in locked:
+            logger.info("Колонка #%d: кнопки на ГРК заблокированы (0.17) на время обновления ПО", address)
+        self._pumps_locked_for_update = True
+        self._restore_buttons_pending = False
+        return locked
+
+    def restore_pump_buttons(self) -> list[int]:
+        """Включает физические кнопки на колонках (0.18 или 0.16) после старта или завершения обновления."""
+        if not self._can_control_buttons():
+            return []
+        param_code = "0.16" if self.settings.pump_buttons_mode == "enable" else "0.18"
+        restored, errors = send_buttons_param_to_pumps(
+            self.link,
+            self.settings.pump_addresses,
+            param_code,
+            checksum_mode=self._tx_checksum_mode(),
+        )
+        for address, err in errors:
+            logger.warning("Колонка #%d: ошибка включения кнопок (%s): %s", address, param_code, err)
+        for address in restored:
+            logger.info("Колонка #%d: кнопки на ГРК включены (%s)", address, param_code)
+        self._pumps_locked_for_update = False
+        self._restore_buttons_pending = False
+        return restored
 
     def poll_cycle_once(self, *, observed_at: datetime | None = None) -> list[CompletedDispense]:
         """Опрашивает все адреса из `settings.pump_addresses` по одному разу (команда «Тест»)."""
@@ -143,7 +228,22 @@ class StationEdgeService:
 
             self._maybe_auto_reset(address, frame, completed=completed, observed_at=now)
 
+        self._sync_pump_buttons_with_update_state()
         return closed_dispenses
+
+    def _sync_pump_buttons_with_update_state(self) -> None:
+        if not self._can_control_buttons():
+            return
+        update_state = read_update_state(self.settings)
+        if update_state is not None and update_state.in_progress:
+            if self.is_idle_for_update() and not self._pumps_locked_for_update:
+                self.lock_pump_buttons_for_update()
+                self._restore_buttons_pending = False
+        elif self._pumps_locked_for_update or (
+            self._restore_buttons_pending and self.is_idle_for_update()
+        ):
+            self.restore_pump_buttons()
+            self._restore_buttons_pending = False
 
     def _maybe_auto_reset(
         self,
@@ -231,8 +331,13 @@ class StationEdgeService:
         self._last_sync_ts = now_mono
         return self.sync_worker.flush_due()
 
-    def serve(self, *, max_cycles: int | None = None) -> None:
-        """Непрерывный цикл работы на станции."""
+    def serve(
+        self,
+        *,
+        max_cycles: int | None = None,
+        graceful_timeout_sec: float = 120.0,
+    ) -> None:
+        """Непрерывный цикл работы на станции с мягким завершением при остановке."""
         logger.info(
             "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s)",
             self.settings.source_mode,
@@ -243,15 +348,84 @@ class StationEdgeService:
             self.settings.sync_enabled,
         )
         self._announce_vps()
+        if self._can_control_buttons():
+            initial_update = read_update_state(self.settings)
+            if initial_update is None or not initial_update.in_progress:
+                self._restore_buttons_pending = True
+
+        previous_handlers: dict[int, object] = {}
+        is_main_thread = threading.current_thread() is threading.main_thread()
+        if is_main_thread:
+            def _handle_stop_signal(signum: int, _frame: object) -> None:
+                if not self._stop_requested:
+                    self.request_stop()
+                    active = self.tracker.active_addresses()
+                    if active:
+                        logger.info(
+                            "Получен сигнал остановки (%s): ожидаем завершения активного налива на колонках %s...",
+                            signum,
+                            active,
+                        )
+                    else:
+                        logger.info(
+                            "Получен сигнал остановки (%s): завершаем текущий цикл и синхронизируем outbox...",
+                            signum,
+                        )
+                    return
+                if signum == signal.SIGINT:
+                    raise KeyboardInterrupt
+
+            sig_candidates: list[int] = [signal.SIGINT]
+            sigterm = getattr(signal, "SIGTERM", None)
+            if isinstance(sigterm, int):
+                sig_candidates.append(sigterm)
+            for sig in sig_candidates:
+                try:
+                    previous_handlers[sig] = signal.getsignal(sig)
+                    signal.signal(sig, _handle_stop_signal)
+                except (ValueError, OSError):
+                    pass
+
         cycle = 0
+        stop_deadline: float | None = None
         try:
             while max_cycles is None or cycle < max_cycles:
                 cycle += 1
                 closed = self.poll_cycle_once()
                 self.maybe_sync_outbox(force=bool(closed))
+
+                if self._stop_requested:
+                    if stop_deadline is None:
+                        stop_deadline = time.monotonic() + max(0.0, graceful_timeout_sec)
+                    if self.is_idle_for_update():
+                        update_state = read_update_state(self.settings)
+                        if (
+                            update_state is not None
+                            and update_state.in_progress
+                            and not self._pumps_locked_for_update
+                        ):
+                            self.lock_pump_buttons_for_update()
+                        self.maybe_sync_outbox(force=True)
+                        logger.info("Станционный узел безопасно остановлен: все наливы завершены.")
+                        break
+                    if time.monotonic() >= stop_deadline:
+                        logger.warning(
+                            "Таймаут мягкой остановки (%.1f с), активные колонки=%s — принудительный выход.",
+                            graceful_timeout_sec,
+                            self.tracker.active_addresses(),
+                        )
+                        self.maybe_sync_outbox(force=True)
+                        break
+
                 if max_cycles is None or cycle < max_cycles:
                     time.sleep(self.settings.poll_interval_sec)
         except KeyboardInterrupt:
             logger.info("Остановка станционного узла по сигналу оператора...")
         finally:
+            if is_main_thread:
+                for sig, prev in previous_handlers.items():
+                    try:
+                        signal.signal(sig, prev)  # type: ignore[arg-type]
+                    except (ValueError, OSError):
+                        pass
             self.link.close()

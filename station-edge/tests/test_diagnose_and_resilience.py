@@ -215,7 +215,7 @@ def test_diagnose_connected_no_response_mismatch_and_port_busy(monkeypatch) -> N
     # Проверка POSIX-ветки collect_usb_info без ошибок в driver
     from agzs_edge.diagnose import DiagnoseReport
 
-    monkeypatch.setattr("agzs_edge.diagnose.os.name", "posix", raising=False)
+    monkeypatch.setattr("agzs_edge.diagnose._is_posix", lambda: True)
 
     def _fake_run(cmd: list[str]) -> str:
         if cmd[0] == "lsusb":

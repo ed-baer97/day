@@ -17,6 +17,7 @@
   python -m agzs_edge status     -- сводка по локальной БД и очереди отправки на VPS
   python -m agzs_edge monitor    -- табло статистики по колонкам за смену (в т.ч. для tty1)
   python -m agzs_edge flush      -- принудительная отправка накопленной очереди outbox на VPS
+  python -m agzs_edge update     -- Pull-проверка и безопасное обновление станции с VPS
 """
 
 from __future__ import annotations
@@ -521,6 +522,33 @@ def _cmd_diagnose(args: argparse.Namespace, settings: EdgeSettings) -> int:
     return 0 if report.status in {"CONNECTED"} else 1
 
 
+def _cmd_update(args: argparse.Namespace, settings: EdgeSettings) -> int:
+    from agzs_edge.updater import EdgeUpdater
+
+    if args.channel is not None:
+        settings.update_channel = args.channel
+    if args.releases_dir:
+        settings.releases_dir = Path(args.releases_dir)
+    if args.wait_idle_sec < 0:
+        print("Ошибка: --wait-idle-sec должен быть >= 0", file=sys.stderr)
+        return 2
+
+    db = EdgeDatabase(settings.db_path, read_only=True)
+    updater = EdgeUpdater(settings, db=db)
+    result = updater.run_update(
+        check_only=args.check,
+        wait_idle_sec=args.wait_idle_sec,
+        restart_cmd=args.restart_cmd,
+    )
+    print(
+        f"[{result.status.upper()}] станция={settings.station_code} канал={settings.update_channel} "
+        f"текущая={result.current_version} целевая={result.target_version}: {result.message}"
+    )
+    if result.status in {"up_to_date", "update_available", "updated", "deferred_busy"}:
+        return 0
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agzs-edge",
@@ -679,6 +707,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_flush = sub.add_parser("flush", help="Разово выгрузить очередь неотправленных заправок на VPS")
     p_flush.add_argument("--limit", type=int, default=50, help="Максимум пакетов за один прогон")
 
+    p_update = sub.add_parser(
+        "update",
+        help="Проверить и безопасно установить обновление station-edge с центрального VPS",
+    )
+    p_update.add_argument("--check", action="store_true", help="Только проверить наличие новой версии")
+    p_update.add_argument(
+        "--channel",
+        choices=["stable", "canary", "ring0", "ring1", "ring2"],
+        default=None,
+        help="Кольцо/канал обновлений (по умолчанию из AGZS_UPDATE_CHANNEL)",
+    )
+    p_update.add_argument(
+        "--wait-idle-sec",
+        type=float,
+        default=180.0,
+        help="Сколько секунд ждать завершения активного налива перед рестартом (по умолчанию 180)",
+    )
+    p_update.add_argument(
+        "--restart-cmd",
+        default="",
+        help="Команда перезапуска сервиса после установки нового .whl",
+    )
+    p_update.add_argument(
+        "--releases-dir",
+        default="",
+        help="Каталог хранения скачанных .whl пакетов",
+    )
+
     return parser
 
 
@@ -725,6 +781,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_monitor(args, settings)
     if args.command == "flush":
         return _cmd_flush(args, settings)
+    if args.command == "update":
+        return _cmd_update(args, settings)
     return 0
 
 

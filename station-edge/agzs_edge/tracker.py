@@ -87,6 +87,14 @@ class PumpDispenseTracker:
     def active_session(self, address: int) -> _ActiveSession | None:
         return self._active.get(address)
 
+    def has_active_sessions(self) -> bool:
+        """Возвращает True, если хотя бы на одной колонке сейчас идёт налив."""
+        return bool(self._active)
+
+    def active_addresses(self) -> tuple[int, ...]:
+        """Возвращает отсортированный кортеж адресов колонок с активным наливом."""
+        return tuple(sorted(self._active.keys()))
+
     def process_frame(
         self,
         frame: IskraTelemetryFrame,
@@ -112,7 +120,7 @@ class PumpDispenseTracker:
 
     def _handle_idle_frame(self, frame: IskraTelemetryFrame, now: datetime) -> None:
         addr = frame.address
-        if frame.state_code == STATE_DOSE_SET and frame.volume_ml > 0:
+        if frame.state_code == STATE_DOSE_SET and frame.volume_ml > 0 and not frame.flags_raw.startswith("P"):
             # На пульте УЗГС-01 набрали дозу перед пуском (например, 20 000 мл)
             self._staged_preset_ml[addr] = frame.volume_ml
             return
@@ -143,10 +151,10 @@ class PumpDispenseTracker:
 
     def _detect_initial_mode(self, addr: int, frame: IskraTelemetryFrame) -> tuple[str, int | None, int]:
         staged_preset = self._staged_preset_ml.pop(addr, None)
-        if staged_preset is not None and staged_preset > 0 and frame.volume_ml <= staged_preset:
-            return MODE_DOSE, staged_preset, max(0, staged_preset - frame.volume_ml)
         if frame.flags_raw.startswith("P"):
             return MODE_FULL_TANK, None, frame.volume_ml
+        if staged_preset is not None and staged_preset > 0 and frame.volume_ml <= staged_preset:
+            return MODE_DOSE, staged_preset, max(0, staged_preset - frame.volume_ml)
         if frame.flags_raw == "01":
             return MODE_DOSE, frame.volume_ml, 0
         if frame.flags_raw == "02":

@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from agzs_edge.config import EdgeSettings
 from agzs_edge.psu_controller import STATE_DESCRIPTIONS_RU
 from agzs_edge.storage import DispenseRow, EdgeDatabase, parse_iso_datetime
+from agzs_edge.updater import UpdateProgressState, read_update_state
 
 _SHORT_STATE_RU: dict[str, str] = {
     "01": "Доза задана",
@@ -80,10 +81,19 @@ class ShiftDashboardSnapshot:
     total_amount: float
     outbox_pending: int
     outbox_sent: int
+    update_state: UpdateProgressState | None = None
 
 
 def _local_tz() -> tzinfo:
     return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _coerce_local_now(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now().astimezone()
+    if now.tzinfo is None:
+        return now.replace(tzinfo=_local_tz())
+    return now
 
 
 def resolve_shift_window(
@@ -98,12 +108,7 @@ def resolve_shift_window(
     if shift_hours < 1 or shift_hours > 24:
         raise ValueError("shift_hours должен быть в диапазоне 1..24")
 
-    if now is None:
-        local_now = datetime.now().astimezone()
-    elif now.tzinfo is None:
-        local_now = now.replace(tzinfo=_local_tz())
-    else:
-        local_now = now
+    local_now = _coerce_local_now(now)
 
     today_anchor = local_now.replace(hour=shift_start_hour, minute=0, second=0, microsecond=0)
     anchor = today_anchor - timedelta(days=1) if local_now < today_anchor else today_anchor
@@ -178,12 +183,7 @@ def build_shift_snapshot(
     recent_limit: int = 12,
 ) -> ShiftDashboardSnapshot:
     """Собирает срез статистики по колонкам и заправкам за текущую смену."""
-    if now is None:
-        local_now = datetime.now().astimezone()
-    elif now.tzinfo is None:
-        local_now = now.replace(tzinfo=_local_tz())
-    else:
-        local_now = now
+    local_now = _coerce_local_now(now)
 
     tz = local_now.tzinfo
     shift = resolve_shift_window(
@@ -236,6 +236,9 @@ def build_shift_snapshot(
                 )
             )
 
+    raw_update_state = read_update_state(settings)
+    active_update = raw_update_state if (raw_update_state and raw_update_state.in_progress) else None
+
     pump_summaries: list[PumpShiftSummary] = []
     for addr in addresses:
         live = live_by_addr.get(addr, {})
@@ -257,7 +260,7 @@ def build_shift_snapshot(
                 pump_address=addr,
                 state_code=state_code,
                 state_name=state_name,
-                state_label_ru=_state_label(state_code, state_name),
+                state_label_ru="ОБНОВЛЕНИЕ" if active_update is not None else _state_label(state_code, state_name),
                 current_price=current_price,
                 live_volume_ml=live_volume_ml,
                 last_time_str=last_time_str,
@@ -279,6 +282,7 @@ def build_shift_snapshot(
         total_amount=round(total_amount, 2),
         outbox_pending=int(summary.get("outbox_pending", 0) or 0),
         outbox_sent=int(summary.get("outbox_sent", 0) or 0),
+        update_state=active_update,
     )
 
 
@@ -319,8 +323,31 @@ def render_shift_dashboard(snapshot: ShiftDashboardSnapshot, *, kiosk: bool = Fa
         f" {snapshot.shift.label}: {shift_start} – {shift_end} | "
         f"VPS: отпр. {snapshot.outbox_sent}, очер. {snapshot.outbox_pending}",
         "",
-        " [1] СТАТИСТИКА ПО КОЛОНКАМ ЗА СМЕНУ",
     ]
+
+    if snapshot.update_state is not None and snapshot.update_state.in_progress:
+        st = snapshot.update_state
+        ver_line = f"Версия: {st.current_version or '—'} -> {st.target_version or '—'} | Фаза: {st.phase or '—'} | Кольцо: {st.channel or '—'}"
+        lines.extend(
+            [
+                "╔" + "═" * 78 + "╗",
+                "║" + _clip("ОБНОВЛЕНИЕ — КОЛОНКИ НЕДОСТУПНЫ", 78).center(78) + "║",
+                "║ " + _clip(ver_line, 76).ljust(76) + " ║",
+            ]
+        )
+        if st.interrupted_count > 0:
+            rec_line = f"Возобновление обновления после отключения питания (попытка #{st.interrupted_count})"
+            lines.append("║ " + _clip(rec_line, 76).ljust(76) + " ║")
+        lines.extend(
+            [
+                "║ " + _clip("Кнопки ПУСК на колонках временно заблокированы до завершения обновления.", 76).ljust(76) + " ║",
+                "║ " + _clip("Пожалуйста, не выключайте питание. Работа возобновится автоматически.", 76).ljust(76) + " ║",
+                "╚" + "═" * 78 + "╝",
+                "",
+            ]
+        )
+
+    lines.append(" [1] СТАТИСТИКА ПО КОЛОНКАМ ЗА СМЕНУ")
 
     # Сумма ширин: 6 + 11 + 8 + 8 + 4 + 9 + 12 = 58 + 22 обрамление = ровно 80 символов
     p_widths = [6, 11, 8, 8, 4, 9, 12]

@@ -1,0 +1,18 @@
+[Unit]
+Description=AGZS Station Edge Pull Updater (Checks VPS release, waits for idle station, power-loss recovery, auto-rollback)
+After=network-online.target
+Wants=network-online.target
+Before=station-edge.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/station-edge
+EnvironmentFile=/opt/station-edge/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge update --wait-idle-sec 180 --restart-cmd "systemctl restart station-edge.service station-edge-monitor.service"
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=360
+
+[Install]
+WantedBy=multi-user.target

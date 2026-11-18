@@ -127,3 +127,57 @@ class LevelBatchAck(BaseModel):
     duplicates_count: int
     results: list[IngestAck]
 
+
+class EdgeReleaseManifest(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    artifact_url: str = Field(min_length=1, max_length=1024)
+    sha256: str = Field(min_length=64, max_length=64)
+    channel: str = Field(default="stable", pattern="^(stable|canary|ring0|ring1|ring2)$")
+    min_version: str | None = Field(default=None, max_length=64)
+    notes: str = Field(default="", max_length=1024)
+
+
+class EdgeReleaseOut(EdgeReleaseManifest):
+    update_required: bool = False
+
+
+class EdgeHeartbeatIn(BaseModel):
+    station_code: str = Field(min_length=1, max_length=64)
+    station_id: UUID | None = None
+    current_version: str = Field(min_length=1, max_length=64)
+    channel: str = Field(default="stable", pattern="^(stable|canary|ring0|ring1|ring2)$")
+    outbox_pending: int = Field(default=0, ge=0)
+    active_pumps: int = Field(default=0, ge=0, le=6)
+    update_status: str = Field(default="ok", max_length=64)
+    last_error: str | None = Field(default=None, max_length=1024)
+
+
+class EdgeNodeStatus(BaseModel):
+    station_code: str
+    station_id: UUID | None = None
+    current_version: str
+    target_version: str
+    channel: str
+    up_to_date: bool
+    outbox_pending: int
+    active_pumps: int
+    update_status: str
+    last_error: str | None = None
+    last_seen_at: datetime
+
+
+class EdgeHeartbeatAck(BaseModel):
+    accepted: bool = True
+    update_required: bool
+    release: EdgeReleaseOut
+
+
+class EdgeFleetSummaryOut(BaseModel):
+    total_nodes: int
+    up_to_date_nodes: int
+    outdated_nodes: int
+    releases: dict[str, EdgeReleaseManifest]
+    canary_stations: list[str]
+    ring1_stations: list[str] = Field(default_factory=list)
+    nodes: list[EdgeNodeStatus]
+

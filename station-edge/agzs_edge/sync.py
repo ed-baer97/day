@@ -32,7 +32,7 @@ class VpsSendResult:
     error_text: str = ""
 
 
-def _send_vps_request(
+def send_vps_request(
     base_url: str,
     path: str,
     device_token: str,
@@ -70,6 +70,9 @@ def _send_vps_request(
         return VpsSendResult(ok=False, status_code=0, error_text=f"Ошибка связи с VPS: {exc}")
 
 
+_send_vps_request = send_vps_request
+
+
 def probe_vps_link(
     base_url: str,
     device_token: str,
@@ -83,7 +86,7 @@ def probe_vps_link(
     """
     if not tank_id:
         return VpsSendResult(ok=False, error_text="не задан идентификатор резервуара")
-    return _send_vps_request(
+    return send_vps_request(
         base_url,
         f"/api/v1/ingest/tanks/{tank_id}",
         device_token,
@@ -101,7 +104,7 @@ def post_dispense_to_vps(
     timeout_sec: float = 10.0,
 ) -> VpsSendResult:
     """Выполняет HTTP POST `/api/v1/ingest/dispense` на центральный сервер (Ubuntu VPS)."""
-    result = _send_vps_request(
+    result = send_vps_request(
         base_url,
         "/api/v1/ingest/dispense",
         device_token,
@@ -138,7 +141,7 @@ def post_dispenses_batch_to_vps(
 ) -> VpsSendResult:
     """Выполняет пакетный HTTP POST `/api/v1/ingest/dispenses/batch` на центральный VPS."""
     payload = json.dumps({"items": items}, ensure_ascii=False)
-    result = _send_vps_request(
+    result = send_vps_request(
         base_url,
         "/api/v1/ingest/dispenses/batch",
         device_token,

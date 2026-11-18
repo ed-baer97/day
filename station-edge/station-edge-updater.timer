@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic pull update check during station idle windows (with jitter for fleet scale)
+
+[Timer]
+OnBootSec=30sec
+OnUnitActiveSec=10min
+RandomizedDelaySec=120
+Persistent=true
+Unit=station-edge-updater.service
+
+[Install]
+WantedBy=timers.target

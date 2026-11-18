@@ -151,7 +151,36 @@ AGZS_AUTO_RESET_DELAY_SEC=2.0
 
 ---
 
-## 5. Автотесты
+## 5. Массовое обновление сотен АГЗС (Pull-Updater + Canary + Ansible)
+
+Для безопасного обновления сотен мини-ПК за сотовым NAT (4G/CGNAT) без потери активных наливов предусмотрен двухуровневый контур:
+
+1. **Graceful Shutdown в `station-edge.service` (`KillSignal=SIGTERM`, `TimeoutStopSec=180`):**
+   - При остановке или рестарте демон не обрывает активный налив (`'01'`/`'02'`/`'03'`), а дожидается перехода колонки в останов, записи транзакции в `station_edge.db`, отправки авто-сброса `0x37` и выгрузки `outbox_queue` на VPS.
+2. **Pull-автообновление во время простоя и 3 кольца раскатки (`python -m agzs_edge update` + `station-edge-updater.timer`):**
+   - Поддерживаются 3 кольца: `ring0` (`canary`, 1–2 станции у инженера, обкатка сутки), `ring1` (10% станций, обкатка 1 смену) и `ring2` (`stable`, остальные 90% станций).
+   - Каждые 10 минут (со случайным разбросом `RandomizedDelaySec=120`) таймер проверяет `GET /api/v1/ingest/edge/release`. Обновление запускается только во время **простоя станции** (нет активного налива `'01'`/`'02'`/`'03'` и прошло не менее `AGZS_UPDATE_IDLE_QUIET_SEC=60` секунд после последнего закрытого налива).
+   - Во время установки и рестарта на диск рядом с БД записывается файл состояния `station_edge_update_state.json`: на мониторе `/dev/tty1` бесправного пользователя появляется окно **«ОБНОВЛЕНИЕ — КОЛОНКИ НЕДОСТУПНЫ»**, а при внезапном отключении питания `station-edge-updater.service` (`Before=station-edge.service`) при следующем включении сам возобновит и доведёт обновление до конца с авто-откатом при сбое.
+   - Посмотреть статус всех станций сети: `GET /api/v1/ingest/edge/fleet`.
+
+```bash
+# Проверка наличия обновления на станции без установки
+python -m agzs_edge update --check
+
+# Запуск безопасного обновления в окно простоя (ожидание тишины и окончания налива до 180 секунд)
+python -m agzs_edge update --wait-idle-sec 180 --restart-cmd "systemctl restart station-edge.service station-edge-monitor.service"
+
+# Установка таймера, авто-возобновления при старте, udev-правила /dev/aska02 и юнита с Graceful Shutdown на Linux
+sudo cp 99-aska02.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo cp station-edge.service station-edge-updater.service station-edge-updater.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable station-edge-updater.service && sudo systemctl enable --now station-edge-updater.timer
+```
+
+Для централизованной волновой раскатки (`serial: "20%"`) через Headscale / WireGuard используйте шаблоны [`../deploy/fleet/hosts.example.ini`](../deploy/fleet/hosts.example.ini) и [`../deploy/fleet/update-stations.yml`](../deploy/fleet/update-stations.yml).
+
+---
+
+## 6. Автотесты
 
 ```powershell
 cd station-edge

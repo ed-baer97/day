@@ -9,7 +9,7 @@ import hmac
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.auth import is_admin_authorization
 from app.config import get_settings
@@ -18,6 +18,11 @@ from app.schemas.ingest import (
     DispenseBatchAck,
     DispenseBatchIngest,
     DispenseIngest,
+    EdgeFleetSummaryOut,
+    EdgeHeartbeatAck,
+    EdgeHeartbeatIn,
+    EdgeReleaseManifest,
+    EdgeReleaseOut,
     GpsIngest,
     IngestAck,
     LevelBatchAck,
@@ -40,6 +45,12 @@ from app.services.account import (
     set_calibration,
     tank_by_token,
     tank_state,
+)
+from app.services.edge_fleet import (
+    fleet_summary,
+    get_release_for_station,
+    publish_release,
+    record_heartbeat,
 )
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -129,3 +140,49 @@ def ingest_tank(
     ):
         raise HTTPException(status_code=401, detail="Нужен вход или токен резервуара")
     return tank_state(tank_id)
+
+
+@router.get("/edge/release", response_model=EdgeReleaseOut)
+def get_edge_release(
+    channel: Annotated[str, Query(pattern="^(stable|canary|ring0|ring1|ring2)$")] = "stable",
+    station_code: Annotated[str | None, Query(max_length=64)] = None,
+    current_version: Annotated[str | None, Query(max_length=64)] = None,
+    outbox_pending: Annotated[int | None, Query(ge=0)] = None,
+    _: str | None = Depends(require_device),
+) -> EdgeReleaseOut:
+    """Возвращает целевой релиз station-edge для АГЗС и при наличии параметров отмечает контакт узла."""
+    return get_release_for_station(
+        channel=channel,
+        station_code=station_code,
+        current_version=current_version,
+        outbox_pending=outbox_pending,
+        record_check=bool(station_code and current_version),
+    )
+
+
+@router.post("/edge/heartbeat", response_model=EdgeHeartbeatAck)
+def post_edge_heartbeat(
+    body: EdgeHeartbeatIn,
+    _: str | None = Depends(require_device),
+) -> EdgeHeartbeatAck:
+    """Принимает heartbeat со станционного узла (текущая версия, outbox, статус обновления)."""
+    return record_heartbeat(body)
+
+
+@router.put("/edge/release", response_model=EdgeReleaseManifest)
+def put_edge_release(
+    body: EdgeReleaseManifest,
+    canary_stations: Annotated[list[str] | None, Query()] = None,
+    ring1_stations: Annotated[list[str] | None, Query()] = None,
+    _: str | None = Depends(require_device),
+) -> EdgeReleaseManifest:
+    """Публикует целевой релиз для кольца (ring0/canary, ring1, ring2/stable) и обновляет списки станций."""
+    return publish_release(body, canary_stations=canary_stations, ring1_stations=ring1_stations)
+
+
+@router.get("/edge/fleet", response_model=EdgeFleetSummaryOut)
+def get_edge_fleet(
+    _: str | None = Depends(require_device),
+) -> EdgeFleetSummaryOut:
+    """Возвращает сводку по версиям и состоянию обновлений всех АГЗС."""
+    return fleet_summary()

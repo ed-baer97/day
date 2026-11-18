@@ -14,6 +14,8 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge serve
 Restart=always
 RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=180
 StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true

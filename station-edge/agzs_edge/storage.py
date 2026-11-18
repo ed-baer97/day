@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from agzs_edge.iskra import IskraTelemetryFrame
+from agzs_edge.iskra import (
+    STATE_DISPENSING,
+    STATE_DOSE_SET,
+    STATE_REMAINDER,
+    IskraTelemetryFrame,
+)
 from agzs_edge.tracker import CompletedDispense
 
 _MAX_RAW_FRAMES = 5_000
@@ -566,3 +571,82 @@ class EdgeDatabase:
             "outbox_sent": int(sent["cnt"]) if sent else 0,
             "pumps": [dict(row) for row in pumps],
         }
+
+    def active_dispensing_pumps(
+        self,
+        *,
+        max_age_sec: float = 30.0,
+        now: datetime | None = None,
+    ) -> list[int]:
+        """Возвращает отсортированный список адресов колонок, на которых идёт налив или набрана доза."""
+        if self._read_only and not self.db_path.is_file():
+            return []
+        active_states = (STATE_DOSE_SET, STATE_REMAINDER, STATE_DISPENSING)
+        try:
+            with self._lock, self._session() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT pump_address, updated_at
+                    FROM pump_live_state
+                    WHERE state_code IN (?, ?, ?)
+                    ORDER BY pump_address ASC
+                    """,
+                    active_states,
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if self._read_only and "no such table" in str(exc).lower():
+                return []
+            raise
+
+        if max_age_sec <= 0:
+            return [int(row["pump_address"]) for row in rows]
+
+        ref_now = _to_utc(now or datetime.now(timezone.utc))
+        cutoff = ref_now - timedelta(seconds=max_age_sec)
+        active: list[int] = []
+        for row in rows:
+            updated = _parse_iso_utc(str(row["updated_at"]))
+            if updated is not None and updated >= cutoff:
+                active.append(int(row["pump_address"]))
+        return active
+
+    def seconds_since_last_dispense(self, *, now: datetime | None = None) -> float | None:
+        """Возвращает количество секунд с момента последней закрытой заправки (или None, если их ещё не было)."""
+        if self._read_only and not self.db_path.is_file():
+            return None
+        try:
+            with self._lock, self._session() as conn:
+                row = conn.execute(
+                    "SELECT finished_at FROM dispenses ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if self._read_only and "no such table" in str(exc).lower():
+                return None
+            raise
+        if row is None:
+            return None
+        finished_utc = _parse_iso_utc(str(row["finished_at"]))
+        if finished_utc is None:
+            return None
+        ref_now = _to_utc(now or datetime.now(timezone.utc))
+        return max(0.0, (ref_now - finished_utc).total_seconds())
+
+    def is_station_idle_for_update(
+        self,
+        *,
+        min_quiet_sec: float = 60.0,
+        active_max_age_sec: float = 30.0,
+        now: datetime | None = None,
+    ) -> tuple[bool, str]:
+        """Проверяет, находится ли АГЗС в простое и безопасна ли для обновления."""
+        active = self.active_dispensing_pumps(max_age_sec=active_max_age_sec, now=now)
+        if active:
+            return False, f"идёт налив или задана доза на колонках {active}"
+        if min_quiet_sec > 0:
+            elapsed = self.seconds_since_last_dispense(now=now)
+            if elapsed is not None and elapsed < min_quiet_sec:
+                return (
+                    False,
+                    f"после последнего налива прошло {elapsed:.0f} с (нужно {min_quiet_sec:.0f} с простоя)",
+                )
+        return True, "станция в простое, колонки свободны"

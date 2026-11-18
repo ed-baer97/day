@@ -1,0 +1,3 @@
+# Фиксация USB-адаптера АСКА-02 (FTDI FT232R) на стабильном симлинке /dev/aska02
+# Установка: sudo cp 99-aska02.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="aska02", GROUP="dialout", MODE="0660"

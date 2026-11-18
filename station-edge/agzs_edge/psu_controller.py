@@ -204,8 +204,7 @@ class Uzsg01PsuController:
         self.layout = layout or FrameLayout()
 
     def _tx_checksum_mode(self) -> str:
-        mode = self.layout.checksum_mode
-        return "xor" if mode == "any" else mode
+        return self.layout.tx_checksum_mode
 
     def _send_and_parse(
         self,
@@ -296,6 +295,10 @@ class Uzsg01PsuController:
         status = self.get_status(address)
         if status.state_code == STATE_DISPENSING or status.valve_open:
             raise PsuControlError(f"Нельзя менять режим кнопок во время налива на колонке #{address}.")
+        if status.state_code != STATE_IDLE:
+            reset_res = self.reset_column(address)
+            if not reset_res.unlocked:
+                raise PsuControlError(reset_res.message)
         req = build_param_command(
             address,
             code_map[mode],

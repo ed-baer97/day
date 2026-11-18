@@ -268,7 +268,7 @@ class EmulatorAskaLink:
             + state_code.encode("ascii")
             + bytes([ETX])
         )
-        mode = "xor" if self.layout.checksum_mode == "any" else self.layout.checksum_mode
+        mode = self.layout.tx_checksum_mode
         return bytes([SOH]) + body + bytes([compute_bcc(body, mode)])
 
     def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
@@ -332,7 +332,7 @@ class EmulatorAskaLink:
             and not self._initial_locked
         ):
             self._step_by_addr[address] = 0
-            mode = "xor" if self.layout.checksum_mode == "any" else self.layout.checksum_mode
+            mode = self.layout.tx_checksum_mode
             reply = build_command_frame(
                 address,
                 CMD_RESET_ASCII,
