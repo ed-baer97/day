@@ -5,6 +5,7 @@
     calculated_remainder = opening_liters + receipts_liters - dispense_liters
 Отпуски и приёмки, пришедшие до первого показания физического уровня (opening_liters is None),
 учитываются в pending_* и не сдвигают расчётный остаток после старта, так как уже учтены в стартовом уровне.
+Пока приёмок и отпусков нет, начальный остаток следует за шкалой: симуляция уровня не создаёт расхождение.
 """
 
 from __future__ import annotations
@@ -98,6 +99,26 @@ def build_tank_ingest_state(
     )
 
 
+def _gauge_is_the_book(target: Any) -> bool:
+    """Уровень — единственный источник, пока нет отдельной приёмки или отпуска.
+
+    Симуляция резервуара двигает только шкалу. Книга повторяет её, иначе первый
+    замер (часто пол шкалы) остаётся «начальным остатком», а следующий уровень
+    система принимает за излишек или недостачу.
+    """
+    return (
+        float(getattr(target, "receipts_liters", 0) or 0) == 0
+        and float(getattr(target, "dispense_liters", 0) or 0) == 0
+        and float(getattr(target, "pending_receipt_liters", 0) or 0) == 0
+        and float(getattr(target, "pending_dispense_liters", 0) or 0) == 0
+    )
+
+
+def _adopt_opening(target: Any, liters: float) -> None:
+    if target.opening_liters is None or _gauge_is_the_book(target):
+        target.opening_liters = liters
+
+
 def apply_level_reading(
     target: Any,
     body: LevelIngest,
@@ -129,6 +150,7 @@ def apply_level_reading(
         liters = percent / 100 * calibration.capacity_liters
         target.actual_remainder_liters = liters
         target.last_measured_at = heard_at
+        _adopt_opening(target, liters)
         recompute_tank_book(target)
         return False, liters, float(percent)
 
@@ -149,12 +171,8 @@ def apply_level_reading(
         liters = percent / 100 * calibration.capacity_liters
         fill = float(percent)
 
-    if target.opening_liters is None or (
-        target.opening_liters < 0 and target.receipts_liters == 0 and target.dispense_liters == 0
-    ):
-        target.opening_liters = liters
-
     target.actual_remainder_liters = liters
+    _adopt_opening(target, liters)
     target.last_measured_at = heard_at
     recompute_tank_book(target)
     return True, liters, fill

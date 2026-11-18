@@ -127,7 +127,6 @@ export default function AdminTrucksTab({
                       <TruckForm
                         key="new-truck"
                         initial={null}
-                        onCancel={() => setTruckId(null)}
                         onSaved={(saved) => {
                           setTruckId(saved.id);
                           toast.ok(`Газовоз ${saved.plate_number} добавлен`);
@@ -138,7 +137,6 @@ export default function AdminTrucksTab({
                       <TruckForm
                         key={truck.id}
                         initial={truck}
-                        onCancel={() => setTruckId(null)}
                         onSaved={(saved) => toast.ok(`Газовоз ${saved.plate_number} обновлён`)}
                         onDeleted={() => {
                           setTruckId(null);

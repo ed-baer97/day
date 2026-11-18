@@ -4,12 +4,10 @@ import { messageOf, useCatalog } from "../../catalog";
 
 export default function StationForm({
   initial,
-  onCancel,
   onSaved,
   onDeleted,
 }: {
   initial: CatalogStation | null;
-  onCancel: () => void;
   onSaved: (saved: CatalogStation) => void;
   onDeleted: () => void;
 }) {
@@ -119,9 +117,6 @@ export default function StationForm({
             Удалить АГЗС
           </button>
         )}
-        <button type="button" className="btn secondary small" onClick={onCancel}>
-          К списку
-        </button>
       </div>
     </form>
   );

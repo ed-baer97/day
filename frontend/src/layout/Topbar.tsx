@@ -6,7 +6,6 @@ import { isLowFill, type LiveLevel, SensorStatus } from "../liveLevels";
 import type { AdminSession } from "../session";
 
 export type AppScreen = "landing" | "map" | "dashboard" | "admin" | "supply";
-export type QuickFilter = "all" | "low" | "offline" | "online";
 
 export interface NetworkStats {
   litersSum: number;
@@ -25,16 +24,11 @@ export default function Topbar({
   screen,
   stations,
   byCode,
-  mapPointsCount,
-  trucksCount,
-  networkStats,
   theme,
   onToggleTheme,
   onGoHomeDashboard,
   onSelectPage,
   onOpenStationPage,
-  onOpenStationOnMap,
-  onOpenAdminStation,
   onOpenAdminRoot,
   onLogout,
 }: {
@@ -45,22 +39,16 @@ export default function Topbar({
   screen: AppScreen;
   stations: CatalogStation[];
   byCode: Map<string, LiveLevel>;
-  mapPointsCount: number;
-  trucksCount: number;
-  networkStats: NetworkStats;
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onGoHomeDashboard: () => void;
   onSelectPage: (page: AppScreen) => void;
   onOpenStationPage: (id: string) => void;
-  onOpenStationOnMap: (id: string) => void;
-  onOpenAdminStation: (id: string) => void;
   onOpenAdminRoot: () => void;
   onLogout: () => void;
 }) {
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickQuery, setQuickQuery] = useState("");
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const quickRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,22 +76,12 @@ export default function Topbar({
   const quickStations = useMemo(() => {
     const q = quickQuery.trim().toLowerCase();
     return stations.filter((row) => {
-      if (q) {
-        const hit = [row.name, row.code, row.address, stationRegion(row)].some((part) =>
-          part?.toLowerCase().includes(q)
-        );
-        if (!hit) return false;
-      }
-      const live = byCode.get(row.code);
-      const hasLive = !!live && live.tanks.length > 0;
-      const fill = hasLive && live?.fill != null ? Math.round(live.fill) : null;
-      const online = !!live?.tanks.some((t) => t.online && t.remainder_liters != null);
-      if (quickFilter === "low" && !isLowFill(fill)) return false;
-      if (quickFilter === "offline" && online) return false;
-      if (quickFilter === "online" && !online) return false;
-      return true;
+      if (!q) return true;
+      return [row.name, row.code, row.address, stationRegion(row)].some((part) =>
+        part?.toLowerCase().includes(q)
+      );
     });
-  }, [stations, quickQuery, quickFilter, byCode]);
+  }, [stations, quickQuery]);
 
   return (
     <header className="topbar">
@@ -132,9 +110,9 @@ export default function Topbar({
         >
           {isStationSide
             ? stations.length > 1
-              ? `Мои АГЗС (${stations.length})`
+              ? "Мои АГЗС"
               : "Моя АГЗС"
-            : `Дашборд (${stations.length})`}
+            : "Дашборд"}
         </button>
         {isStationSide ? null : (
           <button
@@ -142,7 +120,7 @@ export default function Topbar({
             className={`nav-page${screen === "map" ? " active" : ""}`}
             onClick={() => onSelectPage("map")}
           >
-            Карта ({mapPointsCount})
+            Карта
           </button>
         )}
         {admin ? (
@@ -151,7 +129,7 @@ export default function Topbar({
             className={`nav-page${screen === "supply" ? " active" : ""}`}
             onClick={() => onSelectPage("supply")}
           >
-            Поставки ({trucksCount})
+            Поставки
           </button>
         ) : null}
         {admin ? (
@@ -164,33 +142,6 @@ export default function Topbar({
           </button>
         ) : null}
       </nav>
-
-      {!isStationSide ? (
-        <div className="stats-chip" aria-label="Сводка по сети">
-          <span>
-            Газ: <strong>{liters(networkStats.litersSum)}</strong>
-          </span>
-          <span>
-            Онлайн:{" "}
-            <strong>
-              {networkStats.online}/{stations.length}
-            </strong>
-          </span>
-          {networkStats.low > 0 ? (
-            <button
-              type="button"
-              className="stats-chip-btn text-danger"
-              onClick={() => {
-                setQuickFilter("low");
-                setQuickOpen(true);
-              }}
-              title="Показать АГЗС с малым остатком газа"
-            >
-              Мало газа: <strong>{networkStats.low}</strong>
-            </button>
-          ) : null}
-        </div>
-      ) : null}
 
       <div className="quick-jumper" ref={quickRef}>
         <button
@@ -212,36 +163,6 @@ export default function Topbar({
                 placeholder="Найти АГЗС по названию, коду, адресу или району…"
                 onChange={(event) => setQuickQuery(event.target.value)}
               />
-              <div className="st-status-pills" style={{ marginTop: 8 }}>
-                <button
-                  type="button"
-                  className={`filter-pill${quickFilter === "all" ? " active" : ""}`}
-                  onClick={() => setQuickFilter("all")}
-                >
-                  Все ({stations.length})
-                </button>
-                <button
-                  type="button"
-                  className={`filter-pill${quickFilter === "low" ? " active" : ""}`}
-                  onClick={() => setQuickFilter("low")}
-                >
-                  Мало газа ({networkStats.low})
-                </button>
-                <button
-                  type="button"
-                  className={`filter-pill${quickFilter === "offline" ? " active" : ""}`}
-                  onClick={() => setQuickFilter("offline")}
-                >
-                  Нет связи ({networkStats.offline})
-                </button>
-                <button
-                  type="button"
-                  className={`filter-pill${quickFilter === "online" ? " active" : ""}`}
-                  onClick={() => setQuickFilter("online")}
-                >
-                  Онлайн ({networkStats.online})
-                </button>
-              </div>
             </div>
             <ul className="quick-jumper-list">
               {quickStations.map((row) => {
@@ -281,47 +202,11 @@ export default function Topbar({
                         )}
                       </div>
                     </div>
-                    <div className="quick-jumper-actions">
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        onClick={() => {
-                          setQuickOpen(false);
-                          onOpenStationPage(row.id);
-                        }}
-                      >
-                        Сводка
-                      </button>
-                      {!isStationSide ? (
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => {
-                            setQuickOpen(false);
-                            onOpenStationOnMap(row.id);
-                          }}
-                        >
-                          На карте
-                        </button>
-                      ) : null}
-                      {admin ? (
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => {
-                            setQuickOpen(false);
-                            onOpenAdminStation(row.id);
-                          }}
-                        >
-                          Админка
-                        </button>
-                      ) : null}
-                    </div>
                   </li>
                 );
               })}
               {quickStations.length === 0 ? (
-                <li className="quick-jumper-empty">АГЗС по заданному фильтру не найдена</li>
+                <li className="quick-jumper-empty">АГЗС не найдена</li>
               ) : null}
             </ul>
           </div>

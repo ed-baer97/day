@@ -25,55 +25,27 @@ export default function Dashboard({
   onOpenStation,
   onOpenAdminStation,
   onOpenMapStation,
-  showOverviewCharts = false,
 }: {
   stationId: string | null;
   onOpenStation: (id: string | null) => void;
   onOpenAdminStation?: (id: string) => void;
   onOpenMapStation?: (id: string) => void;
-  showOverviewCharts?: boolean;
 }) {
   if (stationId) {
     return (
-      <>
-        {showOverviewCharts ? (
-          <Overview
-            onOpenStation={onOpenStation}
-            onOpenAdminStation={onOpenAdminStation}
-            onOpenMapStation={onOpenMapStation}
-            chartsOnly
-          />
-        ) : null}
-        <StationDetailPage
-          stationId={stationId}
-          onBack={() => onOpenStation(null)}
-          onSelectStation={(id) => onOpenStation(id)}
-          onOpenAdmin={onOpenAdminStation}
-          onOpenMap={onOpenMapStation}
-        />
-      </>
+      <StationDetailPage
+        stationId={stationId}
+        onBack={() => onOpenStation(null)}
+        onSelectStation={(id) => onOpenStation(id)}
+        onOpenAdmin={onOpenAdminStation}
+        onOpenMap={onOpenMapStation}
+      />
     );
   }
-  return (
-    <Overview
-      onOpenStation={onOpenStation}
-      onOpenAdminStation={onOpenAdminStation}
-      onOpenMapStation={onOpenMapStation}
-    />
-  );
+  return <Overview onOpenStation={onOpenStation} />;
 }
 
-function Overview({
-  onOpenStation,
-  onOpenAdminStation,
-  onOpenMapStation,
-  chartsOnly = false,
-}: {
-  onOpenStation: (id: string) => void;
-  onOpenAdminStation?: (id: string) => void;
-  onOpenMapStation?: (id: string) => void;
-  chartsOnly?: boolean;
-}) {
+function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
   const { range, historyLoading } = useViewPeriod();
@@ -422,331 +394,274 @@ function Overview({
         </section>
       </div>
 
-      {chartsOnly ? null : (
-        <section className="dash-section">
-          <div className="st-nav-toolbar">
-            <div className="st-nav-top">
-              <h3>
-                Навигатор АГЗС{" "}
-                <span className="dash-muted">
-                  (показано {filtered.length} из {totals.all})
-                </span>
-              </h3>
-              <div className="st-view-controls">
-                <div className="mini-tabs" role="group" aria-label="Режим отображения">
-                  <button
-                    type="button"
-                    className={viewMode === "list" ? "active" : ""}
-                    onClick={() => setViewMode("list")}
-                  >
-                    Список
-                  </button>
-                  <button
-                    type="button"
-                    className={viewMode === "grid" ? "active" : ""}
-                    onClick={() => setViewMode("grid")}
-                  >
-                    Плитка
-                  </button>
-                  <button
-                    type="button"
-                    className={viewMode === "regions" ? "active" : ""}
-                    onClick={() => setViewMode("regions")}
-                  >
-                    По районам
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="st-filter-bar">
-              <input
-                type="search"
-                className="st-search-input"
-                value={query}
-                placeholder="Поиск АГЗС по названию, коду, адресу или району…"
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setCurrentPage(1);
-                }}
-              />
-              <select
-                className="st-select"
-                value={regionFilter}
-                aria-label="Район"
-                onChange={(event) => {
-                  setRegionFilter(event.target.value);
-                  setCurrentPage(1);
-                }}
-              >
-                <option value="all">Все районы ({totals.all})</option>
-                {REGIONS.map((region) => {
-                  const count = rows.filter((row) => row.region === region).length;
-                  if (!count) return null;
-                  return (
-                    <option key={region} value={region}>
-                      {region} ({count})
-                    </option>
-                  );
-                })}
-              </select>
-              <select
-                className="st-select"
-                value={sortBy}
-                aria-label="Сортировка"
-                onChange={(event) => setSortBy(event.target.value as SortBy)}
-              >
-                <option value="attention">Сначала без связи и мало газа</option>
-                <option value="fill_asc">По остатку % (сначала мало)</option>
-                <option value="liters_desc">По объёму газа (сначала больше л)</option>
-                <option value="change_desc">По расходу за выбранный срок</option>
-                <option value="name_asc">По алфавиту (А–Я)</option>
-              </select>
-              {viewMode !== "regions" ? (
-                <select
-                  className="st-select"
-                  value={pageSize}
-                  aria-label="Показывать по"
-                  onChange={(event) => {
-                    setPageSize(Number(event.target.value));
-                    setCurrentPage(1);
-                  }}
-                >
-                  <option value={8}>По 8 на стр.</option>
-                  <option value={10}>По 10 на стр.</option>
-                  <option value={20}>По 20 на стр.</option>
-                  <option value={100}>Все ({filtered.length})</option>
-                </select>
-              ) : null}
-            </div>
-
-            <div className="st-status-pills" role="group" aria-label="Фильтр по статусу">
-              <button
-                type="button"
-                className={`filter-pill${statusFilter === "all" ? " active" : ""}`}
-                onClick={() => pickFilter("all")}
-              >
-                Все АГЗС ({totals.all})
-              </button>
-              <button
-                type="button"
-                className={`filter-pill${statusFilter === "low" ? " active" : ""}`}
-                onClick={() => pickFilter("low")}
-              >
-                Мало газа &lt; {LOW_FILL_PERCENT}% ({totals.low})
-              </button>
-              <button
-                type="button"
-                className={`filter-pill${statusFilter === "offline" ? " active" : ""}`}
-                onClick={() => pickFilter("offline")}
-              >
-                Нет связи ({totals.offline})
-              </button>
-              <button
-                type="button"
-                className={`filter-pill${statusFilter === "no_sensor" ? " active" : ""}`}
-                onClick={() => pickFilter("no_sensor")}
-              >
-                Без датчика ({totals.noSensor})
-              </button>
-              <button
-                type="button"
-                className={`filter-pill${statusFilter === "ok" ? " active" : ""}`}
-                onClick={() => pickFilter("ok")}
-              >
-                На связи ({totals.ok})
-              </button>
-              {query || regionFilter !== "all" || statusFilter !== "all" ? (
+      <section className="dash-section">
+        <div className="st-nav-toolbar">
+          <div className="st-nav-top">
+            <h3>
+              Навигатор АГЗС{" "}
+              <span className="dash-muted">
+                (показано {filtered.length} из {totals.all})
+              </span>
+            </h3>
+            <div className="st-view-controls">
+              <div className="mini-tabs" role="group" aria-label="Режим отображения">
                 <button
                   type="button"
-                  className="btn secondary small"
-                  onClick={() => {
-                    setQuery("");
-                    setRegionFilter("all");
-                    setStatusFilter("all");
-                    setCurrentPage(1);
-                  }}
+                  className={viewMode === "list" ? "active" : ""}
+                  onClick={() => setViewMode("list")}
                 >
-                  Сбросить фильтры
+                  Список
                 </button>
-              ) : null}
+                <button
+                  type="button"
+                  className={viewMode === "grid" ? "active" : ""}
+                  onClick={() => setViewMode("grid")}
+                >
+                  Плитка
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === "regions" ? "active" : ""}
+                  onClick={() => setViewMode("regions")}
+                >
+                  По районам
+                </button>
+              </div>
             </div>
           </div>
 
-          {catalog.error ? <p className="tank-error">{catalog.error}</p> : null}
-          {!catalog.ready ? <p className="dash-muted">Загрузка станций…</p> : null}
-          {catalog.ready && filtered.length === 0 ? (
-            <div className="empty">
-              <strong>По заданным условиям АГЗС не найдены</strong>
-              <p>Измените поиск или сбросьте фильтр района и статуса.</p>
-            </div>
-          ) : viewMode === "list" ? (
-            <ul className="st-list">
-              {paged.map((row) => (
-                <StationListRow
-                  key={row.station.id}
-                  {...row}
-                  spentCaption={range.spentCaption}
-                  onOpen={() => onOpenStation(row.station.id)}
-                  onMap={onOpenMapStation ? () => onOpenMapStation(row.station.id) : undefined}
-                  onAdmin={onOpenAdminStation ? () => onOpenAdminStation(row.station.id) : undefined}
-                />
-              ))}
-            </ul>
-          ) : viewMode === "grid" ? (
-            <div className="st-card-grid">
-              {paged.map((row) => (
-                <article
-                  key={row.station.id}
-                  className="dash-card st-grid-card"
-                  onClick={() => onOpenStation(row.station.id)}
-                >
-                  <div className="st-grid-card-head">
-                    <div>
-                      <span className="badge">{row.region}</span>
-                      <h4>{row.station.name}</h4>
-                      <span className="dash-muted">
-                        {row.station.code} · {row.station.address || "адрес не указан"}
-                      </span>
-                    </div>
-                    <strong className={`st-grid-pct${isLowFill(row.fill) ? " text-danger" : ""}`}>
-                      {row.fill == null ? "—" : `${row.fill}%`}
+          <div className="st-filter-bar">
+            <input
+              type="search"
+              className="st-search-input"
+              value={query}
+              placeholder="Поиск АГЗС по названию, коду, адресу или району…"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setCurrentPage(1);
+              }}
+            />
+            <select
+              className="st-select"
+              value={regionFilter}
+              aria-label="Район"
+              onChange={(event) => {
+                setRegionFilter(event.target.value);
+                setCurrentPage(1);
+              }}
+            >
+              <option value="all">Все районы ({totals.all})</option>
+              {REGIONS.map((region) => {
+                const count = rows.filter((row) => row.region === region).length;
+                if (!count) return null;
+                return (
+                  <option key={region} value={region}>
+                    {region} ({count})
+                  </option>
+                );
+              })}
+            </select>
+            <select
+              className="st-select"
+              value={statusFilter}
+              aria-label="Статус"
+              onChange={(event) => pickFilter(event.target.value as StatusFilter)}
+            >
+              <option value="all">Все АГЗС ({totals.all})</option>
+              <option value="low">
+                Мало газа &lt; {LOW_FILL_PERCENT}% ({totals.low})
+              </option>
+              <option value="offline">Нет связи ({totals.offline})</option>
+              <option value="no_sensor">Без датчика ({totals.noSensor})</option>
+              <option value="ok">На связи ({totals.ok})</option>
+            </select>
+            <select
+              className="st-select"
+              value={sortBy}
+              aria-label="Сортировка"
+              onChange={(event) => setSortBy(event.target.value as SortBy)}
+            >
+              <option value="attention">Сначала без связи и мало газа</option>
+              <option value="fill_asc">По остатку % (сначала мало)</option>
+              <option value="liters_desc">По объёму газа (сначала больше л)</option>
+              <option value="change_desc">По расходу за выбранный срок</option>
+              <option value="name_asc">По алфавиту (А–Я)</option>
+            </select>
+            {viewMode !== "regions" ? (
+              <select
+                className="st-select"
+                value={pageSize}
+                aria-label="Показывать по"
+                onChange={(event) => {
+                  setPageSize(Number(event.target.value));
+                  setCurrentPage(1);
+                }}
+              >
+                <option value={8}>По 8 на стр.</option>
+                <option value={10}>По 10 на стр.</option>
+                <option value={20}>По 20 на стр.</option>
+                <option value={100}>Все ({filtered.length})</option>
+              </select>
+            ) : null}
+            {query || regionFilter !== "all" || statusFilter !== "all" ? (
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => {
+                  setQuery("");
+                  setRegionFilter("all");
+                  setStatusFilter("all");
+                  setCurrentPage(1);
+                }}
+              >
+                Сбросить фильтры
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {catalog.error ? <p className="tank-error">{catalog.error}</p> : null}
+        {!catalog.ready ? <p className="dash-muted">Загрузка станций…</p> : null}
+        {catalog.ready && filtered.length === 0 ? (
+          <div className="empty">
+            <strong>По заданным условиям АГЗС не найдены</strong>
+            <p>Измените поиск или сбросьте фильтр района и статуса.</p>
+          </div>
+        ) : viewMode === "list" ? (
+          <ul className="st-list">
+            {paged.map((row) => (
+              <StationListRow
+                key={row.station.id}
+                {...row}
+                spentCaption={range.spentCaption}
+                onOpen={() => onOpenStation(row.station.id)}
+              />
+            ))}
+          </ul>
+        ) : viewMode === "grid" ? (
+          <div className="st-card-grid">
+            {paged.map((row) => (
+              <article
+                key={row.station.id}
+                className="dash-card st-grid-card"
+                onClick={() => onOpenStation(row.station.id)}
+              >
+                <div className="st-grid-card-head">
+                  <div>
+                    <span className="badge">{row.region}</span>
+                    <h4>{row.station.name}</h4>
+                    <span className="dash-muted">
+                      {row.station.code} · {row.station.address || "адрес не указан"}
+                    </span>
+                  </div>
+                  <strong className={`st-grid-pct${isLowFill(row.fill) ? " text-danger" : ""}`}>
+                    {row.fill == null ? "—" : `${row.fill}%`}
+                  </strong>
+                </div>
+                <div className="fill-bar" style={{ margin: "10px 0 6px" }}>
+                  <i
+                    style={{
+                      width: `${row.fill ?? 0}%`,
+                      background: isLowFill(row.fill) ? "var(--coral)" : "var(--sea)",
+                    }}
+                  />
+                </div>
+                <div className="st-grid-metrics">
+                  <div>
+                    <span>Факт / ёмкость</span>
+                    <strong>
+                      {row.gas == null ? "замера нет" : liters(row.gas)} / {liters(row.cap)}
                     </strong>
                   </div>
-                  <div className="fill-bar" style={{ margin: "10px 0 6px" }}>
-                    <i
-                      style={{
-                        width: `${row.fill ?? 0}%`,
-                        background: isLowFill(row.fill) ? "var(--coral)" : "var(--sea)",
-                      }}
-                    />
+                  <div>
+                    <span>Свободный объём</span>
+                    <strong>{row.free == null ? "—" : liters(row.free)}</strong>
                   </div>
-                  <div className="st-grid-metrics">
-                    <div>
-                      <span>Факт / ёмкость</span>
-                      <strong>
-                        {row.gas == null ? "замера нет" : liters(row.gas)} / {liters(row.cap)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Свободный объём</span>
-                      <strong>{row.free == null ? "—" : liters(row.free)}</strong>
-                    </div>
-                    <div>
-                      <span>{range.spentCaption}</span>
-                      <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
-                    </div>
-                    <div>
-                      <span>Резервуаров / Замер</span>
-                      <strong>
-                        {row.live?.tanks.length ?? 0} шт. ·{" "}
-                        {row.live?.measuredAt ? dateTime(row.live.measuredAt) : "нет"}
-                      </strong>
-                    </div>
+                  <div>
+                    <span>{range.spentCaption}</span>
+                    <strong>{row.spent == null ? "—" : liters(row.spent)}</strong>
                   </div>
-                  <div className="st-grid-footer">
-                    {row.hasTanks && row.live ? (
-                      <SensorStatus level={row.live} />
-                    ) : (
-                      <span className="badge warn">датчик не подключён</span>
-                    )}
-                    <div
-                      style={{ display: "flex", gap: 6 }}
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      {onOpenMapStation ? (
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => onOpenMapStation(row.station.id)}
-                        >
-                          Карта
-                        </button>
-                      ) : null}
-                      {onOpenAdminStation ? (
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => onOpenAdminStation(row.station.id)}
-                        >
-                          Админка
-                        </button>
-                      ) : null}
-                    </div>
+                  <div>
+                    <span>Резервуаров / Замер</span>
+                    <strong>
+                      {row.live?.tanks.length ?? 0} шт. ·{" "}
+                      {row.live?.measuredAt ? dateTime(row.live.measuredAt) : "нет"}
+                    </strong>
                   </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="st-regions-group">
-              {grouped.map(([region, items]) => (
-                <div key={region} className="region-group-block">
-                  <header className="region-group-head">
-                    <h4>{region}</h4>
-                    <span>
-                      {items.length} АГЗС · остаток{" "}
-                      {liters(items.reduce((sum, row) => sum + (row.gas ?? 0), 0))} из{" "}
-                      {liters(items.reduce((sum, row) => sum + row.cap, 0))}
-                    </span>
-                  </header>
-                  <ul className="st-list">
-                    {items.map((row) => (
-                      <StationListRow
-                        key={row.station.id}
-                        {...row}
-                        spentCaption={range.spentCaption}
-                        onOpen={() => onOpenStation(row.station.id)}
-                        onMap={
-                          onOpenMapStation ? () => onOpenMapStation(row.station.id) : undefined
-                        }
-                        onAdmin={
-                          onOpenAdminStation ? () => onOpenAdminStation(row.station.id) : undefined
-                        }
-                      />
-                    ))}
-                  </ul>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {viewMode !== "regions" && totalPages > 1 ? (
-            <div className="pagination-bar">
-              <span className="dash-muted">
-                Страница {safePage} из {totalPages} ({filtered.length} АГЗС)
-              </span>
-              <div className="pagination-buttons">
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  disabled={safePage <= 1}
-                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                >
-                  ← Пред.
-                </button>
-                {Array.from({ length: totalPages }, (_, index) => index + 1).map((page) => (
-                  <button
-                    key={page}
-                    type="button"
-                    className={`btn small${page === safePage ? "" : " secondary"}`}
-                    onClick={() => setCurrentPage(page)}
-                  >
-                    {page}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="btn secondary small"
-                  disabled={safePage >= totalPages}
-                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-                >
-                  След. →
-                </button>
+                <div className="st-grid-footer">
+                  {row.hasTanks && row.live ? (
+                    <SensorStatus level={row.live} />
+                  ) : (
+                    <span className="badge warn">датчик не подключён</span>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="st-regions-group">
+            {grouped.map(([region, items]) => (
+              <div key={region} className="region-group-block">
+                <header className="region-group-head">
+                  <h4>{region}</h4>
+                  <span>
+                    {items.length} АГЗС · остаток{" "}
+                    {liters(items.reduce((sum, row) => sum + (row.gas ?? 0), 0))} из{" "}
+                    {liters(items.reduce((sum, row) => sum + row.cap, 0))}
+                  </span>
+                </header>
+                <ul className="st-list">
+                  {items.map((row) => (
+                    <StationListRow
+                      key={row.station.id}
+                      {...row}
+                      spentCaption={range.spentCaption}
+                      onOpen={() => onOpenStation(row.station.id)}
+                    />
+                  ))}
+                </ul>
               </div>
+            ))}
+          </div>
+        )}
+
+        {viewMode !== "regions" && totalPages > 1 ? (
+          <div className="pagination-bar">
+            <span className="dash-muted">
+              Страница {safePage} из {totalPages} ({filtered.length} АГЗС)
+            </span>
+            <div className="pagination-buttons">
+              <button
+                type="button"
+                className="btn secondary small"
+                disabled={safePage <= 1}
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              >
+                ← Пред.
+              </button>
+              {Array.from({ length: totalPages }, (_, index) => index + 1).map((page) => (
+                <button
+                  key={page}
+                  type="button"
+                  className={`btn small${page === safePage ? "" : " secondary"}`}
+                  onClick={() => setCurrentPage(page)}
+                >
+                  {page}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="btn secondary small"
+                disabled={safePage >= totalPages}
+                onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              >
+                След. →
+              </button>
             </div>
-          ) : null}
-        </section>
-      )}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

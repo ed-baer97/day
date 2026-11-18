@@ -12,7 +12,6 @@ export default function SupplyPage({
   onOpenTrucksOnMap,
   onCreateNewTruck,
   onOpenStationPage,
-  onOpenStationOnMap,
   onOpenAdminStation,
   onOpenTruckOnMap,
   onOpenAdminTruck,
@@ -25,7 +24,6 @@ export default function SupplyPage({
   onOpenTrucksOnMap: () => void;
   onCreateNewTruck: () => void;
   onOpenStationPage: (id: string) => void;
-  onOpenStationOnMap: (id: string) => void;
   onOpenAdminStation: (id: string) => void;
   onOpenTruckOnMap: (id: string) => void;
   onOpenAdminTruck: (id: string) => void;
@@ -133,29 +131,13 @@ export default function SupplyPage({
                       )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => onOpenStationPage(st.id)}
-                        >
-                          Сводка
-                        </button>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => onOpenStationOnMap(st.id)}
-                        >
-                          Карта
-                        </button>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={() => onOpenAdminStation(st.id)}
-                        >
-                          Принять слив
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        onClick={() => onOpenAdminStation(st.id)}
+                      >
+                        Принять слив
+                      </button>
                     </td>
                   </tr>
                 ))}

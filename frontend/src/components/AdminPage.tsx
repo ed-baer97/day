@@ -231,10 +231,6 @@ export default function AdminPage({
     );
   }
 
-  const deliveryNeeds = [...enrichedCatalogStations]
-    .filter((item) => item.row.is_active)
-    .sort((a, b) => (a.fill ?? 101) - (b.fill ?? 101));
-
   return (
     <div className="dash admin">
       <div className="admin-shell">
@@ -333,7 +329,6 @@ export default function AdminPage({
           {tab === "supplies" && (
             <AdminSuppliesTab
               batches={batches}
-              deliveryNeeds={deliveryNeeds}
               batchCode={batchCode}
               setBatchCode={setBatchCode}
               batchGrade={batchGrade}
@@ -344,12 +339,6 @@ export default function AdminPage({
               setBatchNotes={setBatchNotes}
               batchSaving={batchSaving}
               onCreateBatch={() => void handleCreateBatch()}
-              onOpenStation={(id) => {
-                setTab("stations");
-                setStationId(id);
-                scrollAdminTop();
-              }}
-              scrollTop={scrollAdminTop}
             />
           )}
 

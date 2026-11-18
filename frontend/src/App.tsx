@@ -6,7 +6,6 @@ import { useCatalog } from "./catalog";
 import AdminPage from "./components/AdminPage";
 import Dashboard from "./components/Dashboard";
 import Landing from "./components/Landing";
-import BreadcrumbBar from "./layout/BreadcrumbBar";
 import Topbar, { type AppScreen, type NetworkStats } from "./layout/Topbar";
 import { isLowFill, usePublicLevels } from "./liveLevels";
 import MapScreen, { type MapSelection } from "./pages/MapScreen";
@@ -186,19 +185,6 @@ export default function App() {
 
   const screen: AppScreen = !admin && (page === "admin" || page === "supply") ? "dashboard" : page;
 
-  const activeContextStation = useMemo(() => {
-    const id =
-      screen === "dashboard"
-        ? dashStationId
-        : screen === "admin"
-          ? adminStationId
-          : screen === "map" && selection?.kind === "station"
-            ? selection.id
-            : null;
-    if (!id) return null;
-    return catalog.stations.find((row) => row.id === id) ?? null;
-  }, [screen, dashStationId, adminStationId, selection, catalog.stations]);
-
   function goHomeDashboard() {
     go({
       screen: "dashboard",
@@ -220,16 +206,11 @@ export default function App() {
         screen={screen}
         stations={stations}
         byCode={byCode}
-        mapPointsCount={mapPoints.length}
-        trucksCount={catalog.trucks.length}
-        networkStats={networkStats}
         theme={theme}
         onToggleTheme={toggle}
         onGoHomeDashboard={goHomeDashboard}
         onSelectPage={setPage}
         onOpenStationPage={openStationPage}
-        onOpenStationOnMap={openStationOnMap}
-        onOpenAdminStation={openAdminStation}
         onOpenAdminRoot={() => {
           go({ screen: "admin", adminTab: "stations", adminStationId: null, adminTruckId: null });
         }}
@@ -237,31 +218,6 @@ export default function App() {
           logout();
           setPage("landing");
         }}
-      />
-
-      <BreadcrumbBar
-        screen={screen}
-        isStationSide={isStationSide}
-        admin={admin}
-        activeContextStation={activeContextStation}
-        dashStationId={dashStationId}
-        adminStationId={adminStationId}
-        mapSelectedId={selection?.id}
-        onGoHomeDashboard={goHomeDashboard}
-        onClearSectionSelection={() => {
-          if (screen === "dashboard") go({ screen: "dashboard", dashStationId: null });
-          if (screen === "admin") {
-            go({
-              screen: "admin",
-              adminTab: route.adminTab,
-              adminStationId: null,
-              adminTruckId: null,
-            });
-          }
-        }}
-        onOpenStationPage={openStationPage}
-        onOpenStationOnMap={openStationOnMap}
-        onOpenAdminStation={openAdminStation}
       />
 
       {screen === "map" ? (
@@ -294,7 +250,6 @@ export default function App() {
             }}
             onCreateNewTruck={() => openAdminTruck("new")}
             onOpenStationPage={openStationPage}
-            onOpenStationOnMap={openStationOnMap}
             onOpenAdminStation={openAdminStation}
             onOpenTruckOnMap={openTruckOnMap}
             onOpenAdminTruck={openAdminTruck}
@@ -328,7 +283,6 @@ export default function App() {
             onOpenStation={setDashStationId}
             onOpenAdminStation={admin ? openAdminStation : undefined}
             onOpenMapStation={isStationSide ? undefined : openStationOnMap}
-            showOverviewCharts={isOwner}
           />
         </main>
       )}

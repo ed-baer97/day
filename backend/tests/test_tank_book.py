@@ -73,6 +73,44 @@ def test_tank_book_lifecycle_and_recompute():
     assert state.receipts_liters == 2000.0
 
 
+def test_level_only_simulation_follows_the_gauge():
+    """Без приёмки и отпуска следующий уровень симуляции не создаёт излишек."""
+    station_id = uuid4()
+    tank_id = uuid4()
+    book = TankBook(station_id=station_id, tank_id=tank_id)
+    now = datetime.now(timezone.utc)
+    apply_level_reading(
+        book,
+        LevelIngest(
+            station_id=station_id,
+            tank_id=tank_id,
+            actual_remainder_liters=1050.0,
+            recorded_at=now,
+            source_event_id="sim-1",
+        ),
+        calibration=None,
+        capacity_liters=21000.0,
+        heard_at=now,
+    )
+    apply_level_reading(
+        book,
+        LevelIngest(
+            station_id=station_id,
+            tank_id=tank_id,
+            actual_remainder_liters=9030.0,
+            recorded_at=now,
+            source_event_id="sim-2",
+        ),
+        calibration=None,
+        capacity_liters=21000.0,
+        heard_at=now,
+    )
+    assert book.opening_liters == 9030.0
+    assert book.calculated_remainder_liters == 9030.0
+    assert book.delta_liters == 0
+    assert book.balance_status == "ok"
+
+
 def test_volts_noise_filtering_and_calibration():
     station_id = uuid4()
     tank_id = uuid4()

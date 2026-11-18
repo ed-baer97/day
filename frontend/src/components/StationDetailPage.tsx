@@ -172,7 +172,7 @@ export default function StationDetailPage({
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {stations.length > 1 ? (
             <button type="button" className="btn secondary small" onClick={onBack}>
-              ← Все АГЗС ({stations.length})
+              ← Все АГЗС
             </button>
           ) : null}
           {onSelectStation && stations.length > 1 ? (
@@ -181,9 +181,10 @@ export default function StationDetailPage({
                 type="button"
                 className="btn secondary small"
                 title={`Предыдущая: ${prev.name}`}
+                aria-label="Предыдущая АГЗС"
                 onClick={() => onSelectStation(prev.id)}
               >
-                ‹ Пред.
+                ‹
               </button>
               <select
                 className="st-select"
@@ -208,9 +209,10 @@ export default function StationDetailPage({
                 type="button"
                 className="btn secondary small"
                 title={`Следующая: ${next.name}`}
+                aria-label="Следующая АГЗС"
                 onClick={() => onSelectStation(next.id)}
               >
-                След. ›
+                ›
               </button>
             </div>
           ) : null}
@@ -224,7 +226,7 @@ export default function StationDetailPage({
           ) : null}
           {onOpenAdmin ? (
             <button type="button" className="btn small" onClick={() => onOpenAdmin(station.id)}>
-              Настроить в админке ⚙
+              Администратор
             </button>
           ) : null}
         </div>
@@ -441,16 +443,7 @@ export default function StationDetailPage({
           ) : null}
 
           <section className="dash-card" style={{ marginBottom: 18 }}>
-            <div className="card-head-inline">
-              <h3>Сводный паспорт резервуаров и сверка остатков</h3>
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => setTab("tanks")}
-              >
-                Управление резервуарами и Shelly →
-              </button>
-            </div>
+            <h3>Сводный паспорт резервуаров и сверка остатков</h3>
             {devices.length === 0 && (!live || live.tanks.length === 0) ? (
               <p className="empty">К этой АГЗС ещё не подключены резервуары.</p>
             ) : (

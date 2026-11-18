@@ -279,18 +279,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
               <button type="button" className="btn" onClick={() => jump("levels")}>
                 Найти АГЗС и проверить остатки ({levels.length})
               </button>
-              <button type="button" className="btn secondary" onClick={() => jump("regions")}>
-                Сводка по районам ({regionStats.length})
-              </button>
-              {session ? (
-                <button type="button" className="btn secondary" onClick={onEnter}>
-                  Перейти в рабочий кабинет
-                </button>
-              ) : (
-                <button type="button" className="btn secondary" onClick={() => setAuthOpen(true)}>
-                  Вход для операторов и владельцев
-                </button>
-              )}
             </div>
           </div>
         </section>
@@ -456,6 +444,23 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
               />
               <select
                 className="level-select"
+                value={regionFilter}
+                aria-label="Район"
+                onChange={(e) => setRegionFilter(e.target.value)}
+              >
+                <option value="all">Все районы ({levels.length})</option>
+                {REGIONS.map((reg) => {
+                  const count = enrichedStations.filter((s) => s.region === reg).length;
+                  if (!count) return null;
+                  return (
+                    <option key={reg} value={reg}>
+                      {reg} ({count})
+                    </option>
+                  );
+                })}
+              </select>
+              <select
+                className="level-select"
                 value={availFilter}
                 aria-label="Фильтр наличия газа"
                 onChange={(e) => setAvailFilter(e.target.value as AvailFilter)}
@@ -498,44 +503,20 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                   Таблица
                 </button>
               </div>
-            </div>
-          </div>
-
-          <div className="region-pills" role="group" aria-label="Районы">
-            <button
-              type="button"
-              className={`filter-pill${regionFilter === "all" ? " active" : ""}`}
-              onClick={() => setRegionFilter("all")}
-            >
-              Все районы ({levels.length})
-            </button>
-            {REGIONS.map((reg) => {
-              const count = enrichedStations.filter((s) => s.region === reg).length;
-              if (!count) return null;
-              return (
+              {stationQuery || regionFilter !== "all" || availFilter !== "all" ? (
                 <button
-                  key={reg}
                   type="button"
-                  className={`filter-pill${regionFilter === reg ? " active" : ""}`}
-                  onClick={() => setRegionFilter(reg)}
+                  className="btn secondary small"
+                  onClick={() => {
+                    setStationQuery("");
+                    setRegionFilter("all");
+                    setAvailFilter("all");
+                  }}
                 >
-                  {reg} ({count})
+                  Сбросить фильтры
                 </button>
-              );
-            })}
-            {stationQuery || regionFilter !== "all" || availFilter !== "all" ? (
-              <button
-                type="button"
-                className="btn secondary small"
-                onClick={() => {
-                  setStationQuery("");
-                  setRegionFilter("all");
-                  setAvailFilter("all");
-                }}
-              >
-                Сбросить фильтры
-              </button>
-            ) : null}
+              ) : null}
+            </div>
           </div>
 
           {viewMode === "grid" ? (
@@ -644,7 +625,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                     <th>Свободно</th>
                     <th>Резервуары и связь</th>
                     <th>Последний замер</th>
-                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -683,18 +663,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                         <div className="dash-muted">емкостей: {station.tanks.length}</div>
                       </td>
                       <td>{live.measuredAt ? dateTime(live.measuredAt) : "—"}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDetailCode(station.code);
-                          }}
-                        >
-                          Паспорт →
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>

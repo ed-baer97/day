@@ -5,12 +5,10 @@ import { TRUCK_STATUS } from "./types";
 
 export default function TruckForm({
   initial,
-  onCancel,
   onSaved,
   onDeleted,
 }: {
   initial: CatalogTruck | null;
-  onCancel: () => void;
   onSaved: (saved: CatalogTruck) => void;
   onDeleted: () => void;
 }) {
@@ -134,9 +132,6 @@ export default function TruckForm({
             Удалить газовоз
           </button>
         )}
-        <button type="button" className="btn secondary small" onClick={onCancel}>
-          К списку
-        </button>
       </div>
     </form>
   );

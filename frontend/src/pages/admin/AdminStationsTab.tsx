@@ -173,7 +173,6 @@ export default function AdminStationsTab({
                           <th>Свободно</th>
                           <th>Датчик и резервуары</th>
                           <th>Статус</th>
-                          <th>Переход</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -222,33 +221,11 @@ export default function AdminStationsTab({
                                 {row.is_active ? "работает" : "скрыта"}
                               </span>
                             </td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <div style={{ display: "flex", gap: 4 }}>
-                                {onOpenStationDashboard ? (
-                                  <button
-                                    type="button"
-                                    className="btn secondary small"
-                                    onClick={() => onOpenStationDashboard(row.id)}
-                                  >
-                                    Сводка
-                                  </button>
-                                ) : null}
-                                {onOpenStationMap ? (
-                                  <button
-                                    type="button"
-                                    className="btn secondary small"
-                                    onClick={() => onOpenStationMap(row.id)}
-                                  >
-                                    Карта
-                                  </button>
-                                ) : null}
-                              </div>
-                            </td>
                           </tr>
                         ))}
                         {pagedStations.length === 0 && (
                           <tr>
-                            <td colSpan={7} className="dash-muted">
+                            <td colSpan={6} className="dash-muted">
                               По выбранному фильтру заправок не найдено.
                             </td>
                           </tr>
@@ -364,7 +341,6 @@ export default function AdminStationsTab({
                       <StationForm
                         key="new-station"
                         initial={null}
-                        onCancel={() => setStationId(null)}
                         onSaved={(saved) => {
                           setStationId(saved.id);
                           toast.ok(`Заправка ${saved.name} создана`);
@@ -423,7 +399,6 @@ export default function AdminStationsTab({
                         <StationForm
                           key={station.id}
                           initial={station}
-                          onCancel={() => setStationId(null)}
                           onSaved={(saved) => toast.ok(`Карточка ${saved.name} обновлена`)}
                           onDeleted={() => {
                             setStationId(null);

@@ -311,11 +311,7 @@
 }
 
 .st-row {
-  grid-template-columns: minmax(190px, 1.4fr) minmax(150px, 1fr) 0.9fr 0.9fr auto auto;
-}
-.st-row-actions {
-  display: flex;
-  gap: 6px;
+  grid-template-columns: minmax(190px, 1.4fr) minmax(150px, 1fr) 0.9fr 0.9fr auto 16px;
 }
 
 /* Плиточный режим и группировка по районам */

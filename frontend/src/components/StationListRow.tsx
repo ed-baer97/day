@@ -49,8 +49,6 @@ export default function StationListRow({
   spent,
   spentCaption,
   onOpen,
-  onMap,
-  onAdmin,
 }: {
   station: CatalogStation;
   region: string;
@@ -63,12 +61,10 @@ export default function StationListRow({
   spent: number | null;
   spentCaption: string;
   onOpen: () => void;
-  onMap?: () => void;
-  onAdmin?: () => void;
 }) {
   return (
     <li className="st-list-item">
-      <div className="st-row" onClick={onOpen}>
+      <button type="button" className="st-row" onClick={onOpen}>
         <div className="st-row-main">
           <strong>{station.name}</strong>
           <span>
@@ -92,22 +88,10 @@ export default function StationListRow({
             <span className="badge warn">не подключён</span>
           )}
         </div>
-        <div className="st-row-actions" onClick={(event) => event.stopPropagation()}>
-          <button type="button" className="btn secondary small" onClick={onOpen}>
-            Сводка
-          </button>
-          {onMap ? (
-            <button type="button" className="btn secondary small" onClick={onMap}>
-              Карта
-            </button>
-          ) : null}
-          {onAdmin ? (
-            <button type="button" className="btn secondary small" onClick={onAdmin}>
-              Админка
-            </button>
-          ) : null}
-        </div>
-      </div>
+        <span className="st-row-chevron" aria-hidden>
+          ›
+        </span>
+      </button>
     </li>
   );
 }
