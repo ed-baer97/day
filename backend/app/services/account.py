@@ -209,3 +209,7 @@ def authenticate_station_user(username: str, password: str):
 
 def list_level_readings(station_id: UUID, tank_id: UUID, **kwargs):
     return backend().list_level_readings(station_id, tank_id, **kwargs)
+
+
+def list_dispense_records(station_id: UUID, **kwargs):
+    return backend().list_dispense_records(station_id, **kwargs)

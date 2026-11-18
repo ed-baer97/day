@@ -164,6 +164,8 @@ def _cmd_listen(args: argparse.Namespace, settings: EdgeSettings) -> int:
     )
     step = 0
     try:
+        if addr < 1 or addr > 6:
+            raise ValueError(f"Адрес колонки должен быть в диапазоне 1..6, получено: {addr}")
         while args.count is None or step < args.count:
             step += 1
             res = link.poll_test(addr)
@@ -178,7 +180,11 @@ def _cmd_listen(args: argparse.Namespace, settings: EdgeSettings) -> int:
                     )
                 except IskraFrameError as exc:
                     print(f"[{step:04d}] RX RAW ({len(res.response_bytes)}B): {res.response_bytes.hex(' ').upper()} | {exc}")
-            time.sleep(settings.poll_interval_sec)
+            if args.count is None or step < args.count:
+                time.sleep(settings.poll_interval_sec)
+    except ValueError as exc:
+        print(f"Ошибка параметра: {exc}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         pass
     finally:
@@ -190,7 +196,13 @@ def _cmd_watch_fill(args: argparse.Namespace, settings: EdgeSettings) -> int:
     from agzs_edge.fill_watch import watch_fill
 
     addr = args.addr
-    link, _port, _baudrate, _effective_wait = _build_diagnostic_link(args, settings, layout=settings.layout)
+    checksum_arg = getattr(args, "checksum", None)
+    layout = replace(settings.layout, checksum_mode=checksum_arg) if checksum_arg else settings.layout
+    link, _port, _baudrate, _effective_wait = _build_diagnostic_link(args, settings, layout=layout)
+    if addr < 1 or addr > 6:
+        link.close()
+        print(f"Ошибка параметра: адрес колонки должен быть в диапазоне 1..6, получено: {addr}", file=sys.stderr)
+        return 2
     print(
         f"Наблюдение налива, адрес {addr}. Команда только «Тест». "
         f"База и VPS не изменяются. Остановите службу station-edge, иначе порт занят. Остановка по сигналу печатает итог."
@@ -208,11 +220,14 @@ def _cmd_watch_fill(args: argparse.Namespace, settings: EdgeSettings) -> int:
         report = watch_fill(
             link,
             addr,
-            layout=settings.layout,
+            layout=layout,
             max_seconds=args.seconds,
             idle_seconds=args.idle,
             on_sample=_show,
         )
+    except ValueError as exc:
+        print(f"Ошибка параметра: {exc}", file=sys.stderr)
+        return 2
     except RuntimeError as exc:
         print(f"ОШИБКА ПОРТА: {exc}")
         return 1
@@ -497,7 +512,11 @@ def _cmd_diagnose(args: argparse.Namespace, settings: EdgeSettings) -> int:
 
     from agzs_edge.diagnose import run_diagnose
 
-    report = run_diagnose(settings, address=args.addr)
+    try:
+        report = run_diagnose(settings, address=args.addr)
+    except ValueError as exc:
+        print(f"Ошибка параметра: {exc}", file=sys.stderr)
+        return 2
     print(report.render())
     return 0 if report.status in {"CONNECTED"} else 1
 
@@ -548,10 +567,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_watch = sub.add_parser("watch-fill", help="Считать один налив выбранного адреса без записи в базу")
     p_watch.add_argument("--port", default="", help="COM-порт")
+    p_watch.add_argument("--baudrate", type=int, default=None, help="Скорость порта (по умолчанию из .env)")
+    p_watch.add_argument(
+        "--checksum",
+        choices=["xor", "sum7", "sum8", "any"],
+        default=None,
+        help="Режим контрольной суммы BCC (по умолчанию из .env)",
+    )
     p_watch.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..6)")
     p_watch.add_argument("--seconds", type=float, default=900.0, help="Максимум секунд наблюдения")
     p_watch.add_argument("--idle", type=float, default=8.0, help="Сколько секунд тишины после налива считать концом")
     p_watch.add_argument("--timeout", type=float, default=0.8, help="Таймаут одного чтения")
+    p_watch.add_argument("--emulator", action="store_true", help="Использовать встроенный имитатор")
 
     p_serve = sub.add_parser("serve", help="Непрерывный опрос АСКА-02, запись в локальную БД и отправка на VPS")
     p_serve.add_argument("--port", default="", help="Переопределить COM-порт")

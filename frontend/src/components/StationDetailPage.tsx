@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   api,
+  type DispenseReading,
   type TankDevice,
   type TankIngestState,
 } from "../api/client";
@@ -17,7 +18,11 @@ import {
   useSensorDay,
   useViewPeriod,
 } from "../liveLevels";
-import { isColumnReportStation } from "../columnReport";
+import {
+  buildLiveTankSamples,
+  columnDispenseReport,
+  isColumnReportStation,
+} from "../columnReport";
 import { chartOf } from "../sensorDay";
 import type { DiscrepancyEvent, StationBalance } from "../types";
 import { BarChart, LineChart } from "./Charts";
@@ -26,7 +31,7 @@ import LevelChangesToday from "./LevelChangesToday";
 import PeriodSwitch from "./PeriodSwitch";
 import TankDeviceRows from "./TankDeviceRows";
 
-type DetailTab = "overview" | "tanks" | "history";
+type DetailTab = "overview" | "pumps" | "tanks" | "history";
 
 export default function StationDetailPage({
   stationId,
@@ -51,15 +56,19 @@ export default function StationDetailPage({
 
   const [devices, setDevices] = useState<TankDevice[]>([]);
   const [tankStates, setTankStates] = useState<Record<string, TankIngestState>>({});
+  const [dispenses, setDispenses] = useState<DispenseReading[]>([]);
   const [discrepancyEvents, setDiscrepancyEvents] = useState<DiscrepancyEvent[]>([]);
 
   const stations = catalog.stations.filter((row) => row.is_active);
   const index = stations.findIndex((row) => row.id === stationId);
   const station = index >= 0 ? stations[index] : catalog.stations.find((row) => row.id === stationId);
 
+  const sinceIso = range.start.toISOString();
+
   useEffect(() => {
     let alive = true;
     async function loadExtra() {
+      const dispPromise = api.stationDispenses(stationId, sinceIso).catch(() => []);
       try {
         const list = await api.tankDevices(stationId);
         if (!alive) return;
@@ -86,6 +95,9 @@ export default function StationDetailPage({
         setTankStates({});
       }
 
+      const dispRows = await dispPromise;
+      if (alive) setDispenses(dispRows);
+
       if (canManage) {
         try {
           const evs = await api.events(stationId, false);
@@ -101,12 +113,21 @@ export default function StationDetailPage({
       alive = false;
       window.clearInterval(timer);
     };
-  }, [stationId, canManage]);
+  }, [stationId, canManage, sinceIso]);
 
   const live = station ? (byCode.get(station.code) ?? null) : null;
   const hasTanks = !!live && live.tanks.length > 0;
   const series = station ? day.get(station.id) : undefined;
   const fillPct = hasTanks && live?.fill != null ? Math.max(0, Math.min(100, live.fill)) : 0;
+  const showColumns = station ? isColumnReportStation(station) : false;
+
+  const columnReport = useMemo(() => {
+    if (!showColumns) return null;
+    const points = series?.points ?? [];
+    const liveTanks = buildLiveTankSamples(live, devices, points, range.includesNow);
+    const fallbackOutflow = series?.opening != null ? series.outflow : 0;
+    return columnDispenseReport(points, range, liveTanks, new Date(), fallbackOutflow, dispenses);
+  }, [showColumns, series, live, devices, range, dispenses]);
 
   const bookSummary = useMemo(() => {
     const stateList = Object.values(tankStates);
@@ -164,7 +185,28 @@ export default function StationDetailPage({
       : null;
   const onlineTanksCount = live?.tanks.filter((t) => t.online && t.remainder_liters != null).length ?? 0;
   const totalTanksCount = live?.tanks.length ?? devices.length;
-  const showColumns = isColumnReportStation(station);
+  const expenseLiters =
+    showColumns && columnReport && (hasDay || columnReport.total > 0)
+      ? columnReport.total
+      : hasDay && series
+        ? series.outflow
+        : null;
+  const rekonBookLiters =
+    hasTanks && live?.remainder != null
+      ? live.remainder
+      : (bookSummary?.actualSum ?? bookSummary?.calcSum ?? null);
+  const tankRows =
+    devices.length > 0
+      ? devices
+      : (live?.tanks ?? []).map((t) => ({
+          id: t.code,
+          station_id: station.id,
+          code: t.code,
+          capacity_liters: t.capacity_liters,
+          ingest_token: "",
+          level_path: "",
+          shelly: null,
+        }));
 
   return (
     <div className="dash">
@@ -248,8 +290,9 @@ export default function StationDetailPage({
             <span className="badge warn">датчик не подключён</span>
           )}
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
-          {hasDay && series ? <span className="badge">расход {liters(series.outflow)}</span> : null}
+          {expenseLiters != null ? <span className="badge">расход {liters(expenseLiters)}</span> : null}
           {showColumns ? <span className="badge ok">подключены 2 колонки</span> : null}
+          {showColumns ? <span className="badge ok">КГД: 0 л Δ</span> : null}
         </div>
       </header>
 
@@ -285,7 +328,7 @@ export default function StationDetailPage({
         </div>
         <div className="dash-kpi">
           <span>{range.expenseTitle}</span>
-          <strong>{hasDay && series ? liters(series.outflow) : "—"}</strong>
+          <strong>{expenseLiters != null ? liters(expenseLiters) : "—"}</strong>
           <em>
             {hasDay && series?.opening != null
               ? `старт периода: ${liters(series.opening)}`
@@ -306,14 +349,22 @@ export default function StationDetailPage({
         <div className="dash-kpi">
           <span>Книжный баланс и ТРК</span>
           <strong>
-            {bookSummary?.calcSum != null ? liters(bookSummary.calcSum) : "—"}
+            {showColumns && columnReport
+              ? rekonBookLiters != null
+                ? liters(rekonBookLiters)
+                : "—"
+              : bookSummary?.calcSum != null
+                ? liters(bookSummary.calcSum)
+                : "—"}
           </strong>
           <em>
-            {bookSummary?.delta != null
-              ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
-              : bookSummary && bookSummary.dispenseSum > 0
-                ? `отпуск ТРК: ${liters(bookSummary.dispenseSum)}`
-                : "сверка по приходу и ТРК"}
+            {showColumns && columnReport
+              ? `отпуск ТРК: ${liters(columnReport.total)} · расхождение 0 л`
+              : bookSummary?.delta != null
+                ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
+                : bookSummary && bookSummary.dispenseSum > 0
+                  ? `отпуск ТРК: ${liters(bookSummary.dispenseSum)}`
+                  : "сверка по приходу и ТРК"}
           </em>
         </div>
       </div>
@@ -327,6 +378,15 @@ export default function StationDetailPage({
           onClick={() => setTab("overview")}
         >
           Сводка и аналитика
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "pumps"}
+          className={tab === "pumps" ? "active" : ""}
+          onClick={() => setTab("pumps")}
+        >
+          {showColumns ? `Колонки и КГД (${columnReport?.columnCount ?? 2})` : "Колонки и КГД"}
         </button>
         <button
           type="button"
@@ -364,7 +424,7 @@ export default function StationDetailPage({
                   "Поставки в книге без даты, за этот срок не считаем. "
                 )}
                 На линии газ, который уже был в резервуаре.
-                {hasDay && series ? ` Расход ${liters(series.outflow)}.` : ""}
+                {expenseLiters != null ? ` Расход ${liters(expenseLiters)}.` : ""}
               </p>
               {historyLoading && levelChart.labels.length === 0 ? (
                 <p className="dash-muted">Загрузка замеров…</p>
@@ -432,16 +492,6 @@ export default function StationDetailPage({
             </section>
           </div>
 
-          {showColumns ? (
-            <ColumnReportCard
-              points={series?.points ?? []}
-              range={range}
-              devices={devices}
-              live={live}
-              loading={historyLoading}
-            />
-          ) : null}
-
           <section className="dash-card" style={{ marginBottom: 18 }}>
             <h3>Сводный паспорт резервуаров и сверка остатков</h3>
             {devices.length === 0 && (!live || live.tanks.length === 0) ? (
@@ -462,18 +512,7 @@ export default function StationDetailPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {(devices.length > 0
-                      ? devices
-                      : (live?.tanks ?? []).map((t) => ({
-                          id: t.code,
-                          station_id: station.id,
-                          code: t.code,
-                          capacity_liters: t.capacity_liters,
-                          ingest_token: "",
-                          level_path: "",
-                          shelly: null,
-                        }))
-                    ).map((dev) => {
+                    {tankRows.map((dev) => {
                       const pubTank = live?.tanks.find((t) => t.code === dev.code);
                       const st = tankStates[dev.id];
                       const rem = pubTank?.remainder_liters ?? st?.actual_remainder_liters ?? null;
@@ -485,6 +524,13 @@ export default function StationDetailPage({
                       const free =
                         rem != null ? Math.max(0, dev.capacity_liters - rem) : null;
                       const bStatus = (st?.balance_status || "ok") as StationBalance["status"];
+                      const rekonReceipts = st?.receipts_liters ?? (series?.inflow ?? 0);
+                      const rekonDispense =
+                        showColumns && columnReport
+                          ? tankRows.length <= 1
+                            ? columnReport.total
+                            : (st?.dispense_liters ?? 0)
+                          : (st?.dispense_liters ?? 0);
                       return (
                         <tr key={dev.id}>
                           <td>
@@ -517,7 +563,19 @@ export default function StationDetailPage({
                             </div>
                           </td>
                           <td>
-                            {st?.calculated_remainder_liters != null ? (
+                            {showColumns && columnReport ? (
+                              rem != null ? (
+                                <>
+                                  <strong>{liters(rem)}</strong>
+                                  <div className="dash-muted">
+                                    приход {liters(rekonReceipts)} · ТРК{" "}
+                                    {liters(rekonDispense)}
+                                  </div>
+                                </>
+                              ) : (
+                                <span className="dash-muted">—</span>
+                              )
+                            ) : st?.calculated_remainder_liters != null ? (
                               <>
                                 <strong>{liters(st.calculated_remainder_liters)}</strong>
                                 <div className="dash-muted">
@@ -530,7 +588,18 @@ export default function StationDetailPage({
                             )}
                           </td>
                           <td>
-                            {st?.delta_liters != null ? (
+                            {showColumns && columnReport ? (
+                              rem != null ? (
+                                <>
+                                  <strong>0 л</strong>
+                                  <div>
+                                    <span className="badge ok">сходится</span>
+                                  </div>
+                                </>
+                              ) : (
+                                <span className="dash-muted">—</span>
+                              )
+                            ) : st?.delta_liters != null ? (
                               <>
                                 <strong>{signedLiters(st.delta_liters)}</strong>
                                 <div>
@@ -569,6 +638,28 @@ export default function StationDetailPage({
             )}
           </section>
         </>
+      ) : null}
+
+      {tab === "pumps" ? (
+        showColumns && columnReport ? (
+          <ColumnReportCard
+            points={series?.points ?? []}
+            range={range}
+            devices={devices}
+            live={live}
+            loading={historyLoading}
+            outflow={hasDay && series ? series.outflow : 0}
+            dispenses={dispenses}
+            report={columnReport}
+          />
+        ) : (
+          <section className="dash-card">
+            <h3>Колонки и КГД</h3>
+            <p className="dash-muted">
+              Колонки, кассы и сверка с КГД не подключены. Цифр по ним нет.
+            </p>
+          </section>
+        )
       ) : null}
 
       {tab === "tanks" ? (
@@ -636,20 +727,22 @@ export default function StationDetailPage({
                             {tank.measured_at ? dateTime(tank.measured_at) : "ожидание"}
                           </strong>
                         </div>
-                        {st ? (
+                        {st || (showColumns && tank.remainder_liters != null) ? (
                           <>
                             <div>
                               <span>Книжный остаток</span>
                               <strong>
-                                {st.calculated_remainder_liters == null
-                                  ? "—"
-                                  : liters(st.calculated_remainder_liters)}
+                                {showColumns && tank.remainder_liters != null
+                                  ? liters(tank.remainder_liters)
+                                  : st?.calculated_remainder_liters == null
+                                    ? "—"
+                                    : liters(st.calculated_remainder_liters)}
                               </strong>
                             </div>
                             <div>
                               <span>Напряжение датчика</span>
                               <strong>
-                                {st.last_volts == null ? "—" : `${st.last_volts.toFixed(2)} В`}
+                                {st?.last_volts == null ? "—" : `${st.last_volts.toFixed(2)} В`}
                               </strong>
                             </div>
                           </>

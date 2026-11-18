@@ -203,3 +203,138 @@ def test_install_kiosk_signal_handlers(monkeypatch) -> None:
     sigs = {sig for sig, _ in recorded}
     assert signal.SIGINT in sigs
     assert all(handler == signal.SIG_IGN for _, handler in recorded)
+
+
+def test_monitor_loop_and_edge_formatting(monkeypatch, tmp_path: Path, capsys) -> None:
+    """Живой цикл run_monitor_loop(once=False), пустой список колонок и сжатие больших сумм."""
+    from agzs_edge.monitor import _format_money, _format_price, run_monitor_loop
+
+    assert _format_money(12_345_678.90, "₸", width=12) == "12 345 679 ₸"
+    assert _format_price(1234.56, "₸", width=8) == "1234.56"
+
+    empty_settings = EdgeSettings(
+        db_path=tmp_path / "empty.db",
+        pump_addresses=(),
+        station_code="EMPTY",
+        monitor_refresh_sec=0.1,
+    )
+    snap = build_shift_snapshot(EdgeDatabase(empty_settings.db_path, read_only=True), empty_settings)
+    rendered = render_shift_dashboard(snap)
+    assert "Нет настроенных колонок" in rendered
+
+    sleep_calls = 0
+
+    def _fake_sleep(_sec: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr("agzs_edge.monitor.time.sleep", _fake_sleep)
+    rc = run_monitor_loop(empty_settings, once=False, refresh_sec=0.05, kiosk=True)
+    assert rc == 0
+    assert sleep_calls == 2
+    out = capsys.readouterr().out
+    assert "EMPTY" in out
+
+
+def test_config_case_insensitive_booleans_and_validations(monkeypatch, tmp_path: Path) -> None:
+    """Регистронезависимые булевы флаги, EdgeSettings.__post_init__ и валидации в config.py."""
+    import pytest
+
+    monkeypatch.setenv("AGZS_SAVE_RAW_FRAMES", "TRUE")
+    monkeypatch.setenv("AGZS_SYNC_ENABLED", "False")
+    monkeypatch.setenv("AGZS_READ_ONLY", "FALSE")
+    monkeypatch.setenv("AGZS_MONITOR_KIOSK", "Yes")
+    monkeypatch.setenv("AGZS_DB_PATH", str(tmp_path / "cfg.db"))
+    settings = EdgeSettings.from_env(tmp_path / "missing.env")
+    assert settings.save_raw_frames is True
+    assert settings.sync_enabled is False
+    assert settings.read_only is False
+    assert settings.monitor_kiosk is True
+
+    direct = EdgeSettings(auto_reset_on_stop=True, read_only=True)
+    assert direct.read_only is False
+
+    monkeypatch.setenv("AGZS_DISPENSER_MAP", "9:a2222222-2222-2222-2222-222222222201")
+    with pytest.raises(ValueError, match="1..6"):
+        EdgeSettings.from_env(tmp_path / "missing.env")
+    monkeypatch.delenv("AGZS_DISPENSER_MAP", raising=False)
+
+    monkeypatch.setenv("AGZS_POLL_INTERVAL_SEC", "-1")
+    with pytest.raises(ValueError, match="AGZS_POLL_INTERVAL_SEC"):
+        EdgeSettings.from_env(tmp_path / "missing.env")
+    monkeypatch.setenv("AGZS_POLL_INTERVAL_SEC", "0.5")
+
+    for bad_key, bad_val in [
+        ("AGZS_PUMP_ADDRESSES", "0"),
+        ("AGZS_PUMP_ADDRESSES", " , "),
+        ("AGZS_SERIAL_BAUDRATE", "0"),
+        ("AGZS_SERIAL_TIMEOUT_SEC", "0"),
+        ("AGZS_SOURCE_MODE", "unknown"),
+        ("AGZS_AUTO_RESET_DELAY_SEC", "-1"),
+        ("AGZS_ISKRA_CHECKSUM_MODE", "crc"),
+        ("AGZS_SYNC_INTERVAL_SEC", "-1"),
+        ("AGZS_SHIFT_START_HOUR", "25"),
+        ("AGZS_SHIFT_HOURS", "0"),
+        ("AGZS_MONITOR_REFRESH_SEC", "0"),
+    ]:
+        monkeypatch.setenv(bad_key, bad_val)
+        with pytest.raises(ValueError):
+            EdgeSettings.from_env(tmp_path / "missing.env")
+        monkeypatch.delenv(bad_key, raising=False)
+
+    assert len(settings.dispenser_uuid(5)) == 36
+    assert len(settings.dispenser_uuid(99)) == 36
+
+
+def test_cli_commands_end_to_end(monkeypatch, tmp_path: Path, capsys) -> None:
+    """Проверка CLI-команд main.py: diagnose, listen, watch-fill, buttons, set-dose, start, stop, set-price, console, status, flush."""
+    db_path = tmp_path / "cli_all.db"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"AGZS_DB_PATH={db_path}\nAGZS_POLL_INTERVAL_SEC=0\nAGZS_SYNC_ENABLED=1\n",
+        encoding="utf-8",
+    )
+    for k in (
+        "AGZS_DB_PATH",
+        "AGZS_POLL_INTERVAL_SEC",
+        "AGZS_SYNC_ENABLED",
+        "AGZS_SOURCE_MODE",
+        "AGZS_SERIAL_PORT",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    # 1. Управление УЗСГ-01 на имитаторе
+    assert main(["--env-file", str(env_file), "buttons", "--emulator", "--addr", "1", "--mode", "enable"]) == 0
+    assert main(["--env-file", str(env_file), "set-price", "--emulator", "--addr", "1", "--price", "78.50"]) == 0
+    assert main(["--env-file", str(env_file), "set-dose", "--emulator", "--addr", "1"]) == 2
+    assert main(["--env-file", str(env_file), "set-dose", "--emulator", "--addr", "1", "--liters", "10"]) == 0
+    assert main(["--env-file", str(env_file), "start", "--emulator", "--addr", "1", "--liters", "10"]) == 0
+    assert main(["--env-file", str(env_file), "stop", "--emulator", "--addr", "1", "--force"]) == 0
+
+    # 2. Интерактивный пульт оператора
+    cmds = iter(["t", "r", "df", "s", "x", "r", "p 74.00", "b lock", "c", "unknown", "q"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(cmds))
+    assert main(["--env-file", str(env_file), "console", "--emulator", "--addr", "1"]) == 0
+
+    # 3. listen, watch-fill и diagnose (+ невалидный --addr -> 2)
+    assert main(["--env-file", str(env_file), "listen", "--emulator", "--addr", "1", "--count", "2"]) == 0
+    assert main(["--env-file", str(env_file), "listen", "--emulator", "--addr", "9"]) == 2
+    assert main(["--env-file", str(env_file), "watch-fill", "--emulator", "--addr", "1", "--seconds", "0.02", "--idle", "0.01"]) == 0
+    assert main(["--env-file", str(env_file), "watch-fill", "--emulator", "--addr", "9"]) == 2
+    assert main(["--env-file", str(env_file), "diagnose", "--addr", "9"]) == 2
+
+    from agzs_edge.diagnose import DiagnoseReport
+
+    monkeypatch.setattr("agzs_edge.diagnose.run_diagnose", lambda s, address=1: DiagnoseReport(status="CONNECTED"))
+    assert main(["--env-file", str(env_file), "diagnose", "--port", "COM7", "--addr", "1"]) == 0
+
+    # 4. serve -> status --json -> flush
+    assert main(["--env-file", str(env_file), "serve", "--emulator", "--no-sync", "--cycles", "8"]) == 0
+    assert main(["--env-file", str(env_file), "status", "--json", "--limit", "5"]) == 0
+    status_out = capsys.readouterr().out
+    assert '"total_dispenses": 2' in status_out
+
+    monkeypatch.setattr("agzs_edge.sync.OutboxSyncWorker.flush_due", lambda self, limit=50: (2, 0))
+    assert main(["--env-file", str(env_file), "flush", "--limit", "50"]) == 0

@@ -157,3 +157,144 @@ def test_protocol_config_rejects_unknown(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGZS_SERIAL_PORT", "COM7")
     with pytest.raises(ValueError, match="iskra_172"):
         EdgeSettings.from_env(tmp_path / "missing.env")
+
+
+def test_diagnose_driver_error_when_port_missing(monkeypatch) -> None:
+    from agzs_edge.diagnose import run_diagnose
+
+    monkeypatch.setattr("agzs_edge.diagnose.list_available_serial_ports", lambda: [])
+    settings = EdgeSettings(serial_port="COM99", device_token="top-secret-tok")
+    report = run_diagnose(settings, address=1)
+
+    assert report.status == "DRIVER_ERROR"
+    assert report.access == "ERROR"
+    rendered = report.render()
+    assert "DRIVER_ERROR" in rendered
+    assert "Порт не найден в системе" in rendered
+    assert "top-secret-tok" not in rendered
+
+
+def test_diagnose_connected_no_response_mismatch_and_port_busy(monkeypatch) -> None:
+    from agzs_edge.diagnose import collect_usb_info, run_diagnose
+    from agzs_edge.serial_link import PollRawResult
+
+    monkeypatch.setattr(
+        "agzs_edge.diagnose.list_available_serial_ports",
+        lambda: [("COM7", "USB Serial Port (COM7)", "FTDIBUS\\VID_0403+PID_6001+SER=A5069RR4\\0000")],
+    )
+    valid_reply = build_test_response_frame(address=1, state_code=STATE_IDLE, price_digits=7200, volume_ml=0)
+
+    scenarios = [
+        (PollRawResult(1, build_test_command(1), valid_reply), "CONNECTED", "OK"),
+        (PollRawResult(1, build_test_command(1), b""), "NO_RESPONSE", "OK"),
+        (PollRawResult(1, build_test_command(1), b"\xAA\x55\x00"), "PROTOCOL_MISMATCH_SUSPECTED", "FAIL"),
+        (PollRawResult(1, build_test_command(1), b"", "Access is denied"), "PORT_BUSY", "OK"),
+        (PollRawResult(1, build_test_command(1), b"", "Unknown hardware fault"), "DRIVER_ERROR", "OK"),
+    ]
+
+    for fake_res, expected_status, expected_frame_val in scenarios:
+        class _StubLink:
+            def __init__(self, *args, **kwargs) -> None:
+                return
+
+            def poll_test(self, address: int, *, checksum_mode: str | None = None):
+                return fake_res
+
+            def close(self) -> None:
+                return
+
+        monkeypatch.setattr("agzs_edge.diagnose.SerialAskaLink", _StubLink)
+        settings = EdgeSettings(serial_port="com7", device_token="")
+        report = run_diagnose(settings, address=1)
+        assert report.status == expected_status
+        assert report.frame_validation == expected_frame_val
+        assert report.ftdi_detected is True
+        assert report.serial_number == "A5069RR4"
+        assert "VPS token: missing" in report.render()
+
+    # Проверка POSIX-ветки collect_usb_info без ошибок в driver
+    from agzs_edge.diagnose import DiagnoseReport
+
+    monkeypatch.setattr("agzs_edge.diagnose.os.name", "posix", raising=False)
+
+    def _fake_run(cmd: list[str]) -> str:
+        if cmd[0] == "lsusb":
+            return "Bus 001 Device 002: ID 0403:6001 Future Technology Devices International"
+        if cmd[0] == "bash":
+            return "ftdi_sio 65536 0"
+        if cmd[0] == "udevadm":
+            return "ID_SERIAL_SHORT=FT99999\nID_USB_DRIVER=ftdi_sio\n"
+        return "ERR:unexpected"
+
+    monkeypatch.setattr("agzs_edge.diagnose._run", _fake_run)
+    posix_rep = DiagnoseReport()
+    collect_usb_info(posix_rep, "/dev/ttyUSB0", ports=[])
+    assert posix_rep.ftdi_detected is True
+    assert posix_rep.driver == "ftdi_sio"
+    assert posix_rep.serial_number == "FT99999"
+
+
+def test_service_corrupted_frames_delayed_auto_reset_and_announce_vps(monkeypatch, tmp_path: Path) -> None:
+    """Покрытие ветвей StationEdgeService: битые кадры, отложенный авто-сброс 07 и _announce_vps."""
+    from agzs_edge.iskra import STATE_COMPLETED
+    from agzs_edge.serial_link import PollRawResult
+    from agzs_edge.sync import VpsSendResult
+
+    class _MockLink:
+        def __init__(self, responses: list[bytes]) -> None:
+            self.responses = list(responses)
+            self.commands: list[bytes] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            resp = self.responses.pop(0) if self.responses else b""
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.commands.append(request)
+            resp = self.responses.pop(0) if self.responses else b""
+            return PollRawResult(address=address, request_bytes=request, response_bytes=resp)
+
+    stop07 = build_test_response_frame(address=1, state_code=STATE_COMPLETED, price_digits=7200, volume_ml=0)
+    # 1) битый кадр, 2) 07 (запуск таймера авто-сброса), 3) 07 (истечение задержки -> сброс, но ответ на сброс битый)
+    link = _MockLink([b"\x01BAD_FRAME", stop07, stop07, b"\x01BAD_RESET"])
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "svc_extra.db",
+        save_raw_frames=True,
+        sync_enabled=True,
+        sync_interval_sec=60.0,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=2.0,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, link=link, db=db)
+
+    ticks = iter([10.0, 13.0, 16.0])
+    monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        "agzs_edge.service.probe_vps_link",
+        lambda url, tok, tank: VpsSendResult(ok=True, status_code=200, response_text='{"actual_remainder_liters": 4200}'),
+    )
+
+    svc._announce_vps()  # noqa: SLF001
+    svc.poll_cycle_once()  # битый кадр
+    svc.poll_cycle_once()  # 10.0 -> старт таймера задержки 2.0с
+    assert len(link.commands) == 0
+    svc.poll_cycle_once()  # 13.0 -> прошло 3.0с -> авто-сброс 0x37 (и битый ответ)
+    assert len(link.commands) == 1
+    assert svc.maybe_sync_outbox(force=False) == (0, 0)  # sync_interval_sec=60 ещё не прошёл
+
+    # Проверка _announce_vps при ошибке и KeyboardInterrupt в serve
+    monkeypatch.setattr(
+        "agzs_edge.service.probe_vps_link",
+        lambda url, tok, tank: VpsSendResult(ok=False, status_code=401, error_text="unauthorized"),
+    )
+    monkeypatch.setattr(svc, "poll_cycle_once", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    svc.serve(max_cycles=1)

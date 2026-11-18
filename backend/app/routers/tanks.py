@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.routers.stations import require_existing_station_access
 from app.schemas.auth import LevelReadingOut
 from app.schemas.station import (
+    DispenseReadingOut,
     TankDeviceCreate,
     TankDeviceOut,
     TankDeviceUpdate,
@@ -19,6 +20,7 @@ from app.services.account import (
     delete_tank_device,
     get_station,
     get_tank_device,
+    list_dispense_records,
     list_level_readings,
     list_station_tanks_out,
     list_tank_devices,
@@ -135,3 +137,16 @@ def list_device_levels(
         )
         for row in published_levels(rows, changes_only=changes_only)
     ]
+
+
+@router.get("/dispenses", response_model=list[DispenseReadingOut])
+def list_station_dispenses(
+    station_id: UUID,
+    principal: Principal = Depends(require_principal),
+    since: datetime | None = None,
+    limit: int = 500,
+) -> list[DispenseReadingOut]:
+    """Журнал завершённых наливов ТРК (УЗГС-01 / АСКА-02) по станции."""
+    require_existing_station_access(station_id, principal)
+    capped = max(1, min(limit, 5000))
+    return list_dispense_records(station_id, since=since, limit=capped)

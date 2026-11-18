@@ -100,3 +100,17 @@ class StationDetailOut(StationOut):
     active_trucks: list[dict] = Field(default_factory=list)
     balance_status: str = "unknown"
     calculated_vs_actual_delta: float | None = None
+
+
+class DispenseReadingOut(BaseModel):
+    id: UUID
+    station_id: UUID
+    tank_id: UUID | None = None
+    dispenser_id: UUID
+    pump_address: int | None = None
+    mode: str | None = None
+    volume_liters: float
+    price_kzt_per_liter: float | None = None
+    started_at: str
+    finished_at: str | None = None
+    external_txn_id: str | None = None

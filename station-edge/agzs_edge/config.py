@@ -28,7 +28,6 @@ def load_dotenv(path: Path) -> None:
 def _resolve_preferred_port(configured: str) -> str:
     """Предпочитает стабильный /dev/serial/by-id/ для FTDI, если он есть."""
     import glob
-    from pathlib import Path
 
     if configured.startswith("/dev/serial/by-id/"):
         return configured
@@ -38,6 +37,19 @@ def _resolve_preferred_port(configured: str) -> str:
     if Path(configured).exists() or configured.upper().startswith("COM"):
         return configured
     return configured
+
+
+def _parse_bool(raw: str | None, *, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    token = raw.strip().lower()
+    if not token:
+        return default
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _parse_addresses(raw: str) -> tuple[int, ...]:
@@ -64,6 +76,8 @@ def _parse_dispenser_map(raw: str, station_id: str) -> dict[int, str]:
             continue
         addr_str, disp_uuid = item.split(":", 1)
         addr = int(addr_str.strip())
+        if addr < 1 or addr > 6:
+            raise ValueError(f"Адрес колонки в AGZS_DISPENSER_MAP должен быть в диапазоне 1..6, получено: {addr}")
         UUID(disp_uuid.strip())  # валидация UUID
         mapping[addr] = disp_uuid.strip()
     # Для всех адресов 1..6 гарантируем детерминированный UUID, если он не задан явно
@@ -139,14 +153,24 @@ class EdgeSettings:
     currency_symbol: str = "₸"
     layout: FrameLayout = field(default_factory=FrameLayout)
 
+    def __post_init__(self) -> None:
+        if self.auto_reset_on_stop:
+            self.read_only = False
+
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "EdgeSettings":
         load_dotenv(dotenv_path or Path(".env"))
         serial_port = os.environ.get("AGZS_SERIAL_PORT", "COM7").strip() or "COM7"
         serial_baudrate = int(os.environ.get("AGZS_SERIAL_BAUDRATE", "9600").strip() or "9600")
+        if serial_baudrate <= 0:
+            raise ValueError("AGZS_SERIAL_BAUDRATE должен быть больше 0")
         serial_timeout_sec = float(os.environ.get("AGZS_SERIAL_TIMEOUT_SEC", "1.5").strip() or "1.5")
+        if serial_timeout_sec <= 0:
+            raise ValueError("AGZS_SERIAL_TIMEOUT_SEC должен быть больше 0")
         pump_addresses = _parse_addresses(os.environ.get("AGZS_PUMP_ADDRESSES", "1,2"))
         poll_interval_sec = float(os.environ.get("AGZS_POLL_INTERVAL_SEC", "0.5").strip() or "0.5")
+        if poll_interval_sec < 0:
+            raise ValueError("AGZS_POLL_INTERVAL_SEC должен быть >= 0")
         source_mode = os.environ.get("AGZS_SOURCE_MODE", "serial").strip().lower() or "serial"
         if source_mode not in {"serial", "emulator"}:
             raise ValueError("AGZS_SOURCE_MODE должен быть 'serial' или 'emulator'")
@@ -157,9 +181,11 @@ class EdgeSettings:
                 "AGZS_PROTOCOL: разрешён только iskra_172. "
                 "aska02_native не активирован — нет подтверждённой спецификации прошивки АСКА-02 07.2026"
             )
-        read_only = os.environ.get("AGZS_READ_ONLY", "1").strip().lower() not in {"0", "false", "no"}
-        auto_reset_on_stop = os.environ.get("AGZS_AUTO_RESET", "0").strip().lower() in {"1", "true", "yes"}
+        read_only = _parse_bool(os.environ.get("AGZS_READ_ONLY"), default=True)
+        auto_reset_on_stop = _parse_bool(os.environ.get("AGZS_AUTO_RESET"), default=False)
         auto_reset_delay_sec = float(os.environ.get("AGZS_AUTO_RESET_DELAY_SEC", "2.0").strip() or "2.0")
+        if auto_reset_delay_sec < 0:
+            raise ValueError("AGZS_AUTO_RESET_DELAY_SEC должен быть >= 0")
         if auto_reset_on_stop:
             read_only = False
 
@@ -168,7 +194,7 @@ class EdgeSettings:
             raise ValueError("AGZS_ISKRA_CHECKSUM_MODE должен быть xor, sum7, sum8 или any")
 
         db_path = Path(os.environ.get("AGZS_DB_PATH", "station_edge.db").strip() or "station_edge.db")
-        save_raw = os.environ.get("AGZS_SAVE_RAW_FRAMES", "0").strip() in {"1", "true", "yes"}
+        save_raw = _parse_bool(os.environ.get("AGZS_SAVE_RAW_FRAMES"), default=False)
         vps_base_url = (
             os.environ.get("AGZS_VPS_BASE_URL", "http://93.171.232.47").strip().rstrip("/")
             or "http://93.171.232.47"
@@ -185,8 +211,10 @@ class EdgeSettings:
             os.environ.get("AGZS_DISPENSER_MAP", ""),
             station_id,
         )
-        sync_enabled = os.environ.get("AGZS_SYNC_ENABLED", "1").strip() not in {"0", "false", "no"}
+        sync_enabled = _parse_bool(os.environ.get("AGZS_SYNC_ENABLED"), default=True)
         sync_interval_sec = float(os.environ.get("AGZS_SYNC_INTERVAL_SEC", "5.0").strip() or "5.0")
+        if sync_interval_sec < 0:
+            raise ValueError("AGZS_SYNC_INTERVAL_SEC должен быть >= 0")
 
         shift_start_hour = int(os.environ.get("AGZS_SHIFT_START_HOUR", "8").strip() or "8")
         if shift_start_hour < 0 or shift_start_hour > 23:
@@ -200,11 +228,7 @@ class EdgeSettings:
         if monitor_refresh_sec <= 0:
             raise ValueError("AGZS_MONITOR_REFRESH_SEC должен быть больше 0")
 
-        monitor_kiosk = os.environ.get("AGZS_MONITOR_KIOSK", "0").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        monitor_kiosk = _parse_bool(os.environ.get("AGZS_MONITOR_KIOSK"), default=False)
         currency_symbol = os.environ.get("AGZS_CURRENCY", "₸").strip() or "₸"
 
         layout = FrameLayout(checksum_mode=checksum_mode)

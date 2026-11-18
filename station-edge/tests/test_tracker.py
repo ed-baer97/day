@@ -151,3 +151,55 @@ def test_live_aska02_preserves_idle_price_when_dispensing_carries_volume_in_pric
     assert done.volume_liters == 9.0
     assert done.price_kzt_per_liter == 72.0
     assert done.error_code == "00"
+
+
+def test_cancelled_dose_set_does_not_leak_into_next_full_tank_fill() -> None:
+    """Набранная доза '01', сброшенная в '05' до пуска, не должна искажать следующий налив 'до полного'."""
+    tracker = PumpDispenseTracker(station_code="AKT-12")
+    t0 = datetime(2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc)
+
+    assert tracker.process_frame(_frame(1, STATE_DOSE_SET, 20000), observed_at=t0) is None
+    assert tracker.process_frame(_frame(1, STATE_IDLE, 0), observed_at=t0 + timedelta(seconds=2)) is None
+
+    # Следующий налив — режим «до полного» (растущий объём 0 -> 3500)
+    assert tracker.process_frame(_frame(1, STATE_DISPENSING, 0), observed_at=t0 + timedelta(seconds=5)) is None
+    assert tracker.process_frame(_frame(1, STATE_DISPENSING, 3500), observed_at=t0 + timedelta(seconds=8)) is None
+    done = tracker.process_frame(_frame(1, STATE_COMPLETED, 3500), observed_at=t0 + timedelta(seconds=10))
+    assert done is not None
+    assert done.mode == MODE_FULL_TANK
+    assert done.dispensed_ml == 3500
+
+
+def test_single_live_frame_03_then_idle_05_preserves_volume() -> None:
+    """Единственный пойманный живой кадр '03' (P92, 4500 мл) перед сбросом '05' (0 мл) не теряет 4500 мл."""
+    tracker = PumpDispenseTracker(station_code="AKT-12MKR")
+    t0 = datetime(2026, 11, 18, 11, 0, 0, tzinfo=timezone.utc)
+
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("05", "007200", "000000", 0x92)), observed_at=t0) is None
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("03", "090000", "004500", 0x92)), observed_at=t0 + timedelta(seconds=1)) is None
+
+    done = tracker.process_frame(
+        parse_iskra_frame(_live_frame("05", "007200", "000000", 0x92)),
+        observed_at=t0 + timedelta(seconds=2),
+    )
+    assert done is not None
+    assert done.mode == MODE_FULL_TANK
+    assert done.dispensed_ml == 4500
+    assert done.price_kzt_per_liter == 72.0
+
+
+def test_tracker_preserves_column_error_code_from_sost_byte19() -> None:
+    """Аппаратный код ошибки колонки 01..04 из Sost[19] сохраняется в CompletedDispense.error_code."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+
+    tracker = PumpDispenseTracker(station_code="AKT-12")
+    t0 = datetime(2026, 11, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("03", "007200", "002100", 0x8F)), observed_at=t0) is None
+
+    body = b"01" + bytes([CMD_TEST_ASCII, STX]) + b"090000" + b"002100" + bytes([0x50, 0x8F, 0xB2, ord("7"), ETX])
+    err_raw = bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+    done = tracker.process_frame(parse_iskra_frame(err_raw), observed_at=t0 + timedelta(seconds=3))
+    assert done is not None
+    assert done.dispensed_ml == 2100
+    assert done.error_code == "02"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,22 +78,65 @@ def _run(cmd: list[str]) -> str:
         return f"ERR:{exc}"
 
 
-def collect_usb_info(report: DiagnoseReport, port: str) -> None:
+def _extract_serial_from_hwid(hwid: str) -> str:
+    match = re.search(r"SER=([A-Za-z0-9_.-]+)", hwid, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    if "A5069RR4" in hwid.upper():
+        return "A5069RR4"
+    return ""
+
+
+def collect_usb_info(
+    report: DiagnoseReport,
+    port: str,
+    ports: list[tuple[str, str, str]] | None = None,
+) -> None:
+    port_rows = list_available_serial_ports() if ports is None else ports
+    matched = [
+        row
+        for row in port_rows
+        if row[0].upper() == port.upper() or (port and port in row[2])
+    ]
+    for _dev, desc, hwid in matched or port_rows:
+        combined = f"{desc} {hwid}".upper()
+        if "0403:6001" in combined or "FTDI" in combined or "A5069RR4" in combined:
+            report.ftdi_detected = True
+            if not report.serial_number:
+                report.serial_number = _extract_serial_from_hwid(hwid)
+            if os.name != "posix" and not report.driver:
+                report.driver = "FTDI"
+
+    if os.name != "posix":
+        return
+
     lsusb = _run(["lsusb"])
-    report.ftdi_detected = ("0403:6001" in lsusb) or ("FTDI" in lsusb.upper())
+    if not lsusb.startswith("ERR:"):
+        if ("0403:6001" in lsusb) or ("FTDI" in lsusb.upper()):
+            report.ftdi_detected = True
+        if not report.serial_number and "A5069RR4" in lsusb:
+            report.serial_number = "A5069RR4"
+
     mods = _run(["bash", "-lc", "lsmod | grep -E 'ftdi_sio|usbserial' || true"])
-    report.driver = "ftdi_sio+usbserial" if "ftdi_sio" in mods else mods.strip() or "unknown"
-    udev = _run(["udevadm", "info", "-q", "property", "-n", port])
-    for line in udev.splitlines():
-        if line.startswith("ID_SERIAL_SHORT="):
-            report.serial_number = line.split("=", 1)[1].strip()
-        if line.startswith("ID_USB_DRIVER="):
-            report.driver = line.split("=", 1)[1].strip() or report.driver
-    if not report.serial_number and "A5069RR4" in lsusb:
-        report.serial_number = "A5069RR4"
+    if not mods.startswith("ERR:") and "ftdi_sio" in mods:
+        report.driver = "ftdi_sio+usbserial"
+
+    udev_target = port if Path(port).exists() or port.startswith("/dev/") else "/dev/ttyUSB0"
+    udev = _run(["udevadm", "info", "-q", "property", "-n", udev_target])
+    if not udev.startswith("ERR:"):
+        for line in udev.splitlines():
+            if line.startswith("ID_SERIAL_SHORT=") and not report.serial_number:
+                report.serial_number = line.split("=", 1)[1].strip()
+            if line.startswith("ID_USB_DRIVER="):
+                val = line.split("=", 1)[1].strip()
+                if val:
+                    report.driver = val
 
 
 def run_diagnose(settings: EdgeSettings, *, address: int = 1) -> DiagnoseReport:
+    if address < 1 or address > 6:
+        raise ValueError(f"Адрес колонки должен быть в диапазоне 1..6, получено: {address}")
+
     report = DiagnoseReport(
         protocol=getattr(settings, "protocol", "iskra_172"),
         baudrate=settings.serial_baudrate,
@@ -99,10 +144,10 @@ def run_diagnose(settings: EdgeSettings, *, address: int = 1) -> DiagnoseReport:
     )
     port = resolve_preferred_port(settings.serial_port)
     report.port = port
-    collect_usb_info(report, port if Path(port).exists() or port.startswith("/dev/") else "/dev/ttyUSB0")
-
     ports = list_available_serial_ports()
-    if not any(p[0] == port or port in p[2] for p in ports) and not Path(port).exists():
+    collect_usb_info(report, port, ports=ports)
+
+    if not any(p[0].upper() == port.upper() or port in p[2] for p in ports) and not Path(port).exists():
         report.access = "ERROR"
         report.status = "DRIVER_ERROR"
         report.notes.append("Порт не найден в системе")
@@ -145,7 +190,11 @@ def run_diagnose(settings: EdgeSettings, *, address: int = 1) -> DiagnoseReport:
         report.last_tx_hex = res.request_bytes.hex(" ").upper()
         report.last_rx_hex = res.response_bytes.hex(" ").upper() if res.response_bytes else ""
         if res.error_message:
-            report.status = "PORT_BUSY" if "busy" in res.error_message.lower() or "Permission" in res.error_message else "DRIVER_ERROR"
+            err_lower = res.error_message.lower()
+            is_busy = any(
+                tok in err_lower for tok in ("busy", "permission", "access is denied", "отказано в доступе")
+            )
+            report.status = "PORT_BUSY" if is_busy else "DRIVER_ERROR"
             report.notes.append(res.error_message)
         elif not res.has_response:
             report.timeouts = 1

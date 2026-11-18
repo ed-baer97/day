@@ -259,3 +259,114 @@ def test_cli_emulator_commands_run_cleanly(capsys, tmp_path: Path, monkeypatch) 
     assert "1234.56" in out_cnt
 
     assert main(["serve", "--emulator", "--auto-reset", "--cycles", "8", "--no-sync"]) == 0
+
+
+def test_set_buttons_refuses_while_dispensing_and_read_counters_mass_mode() -> None:
+    """set_buttons_mode запрещён во время налива '03'; read_counters сбрасывает '07' и читает массу/плотность."""
+    link = EmulatorAskaLink(price_digits=7200)
+    ctrl = Uzsg01PsuController(link)
+
+    ctrl.start_pump(1, liters=1.5)
+    with pytest.raises(PsuControlError, match="налива"):
+        ctrl.set_buttons_mode(1, "enable")
+
+    # Имитатор завершает дозу 1.5 л (1500 мл): первый опрос в set_buttons_mode -> 500, затем 1000 и 1500 ('07')
+    f1 = ctrl.get_status(1)
+    assert f1.state_code == STATE_DISPENSING
+    assert f1.volume_ml == 1000
+    f2 = ctrl.get_status(1)
+    assert f2.state_code == STATE_COMPLETED
+    assert f2.volume_ml == 1500
+    assert f2.valve_open is False
+
+    # read_counters сам сбрасывает '07' -> '05' и читает показания в килограммах
+    mass_report = ctrl.read_counters(1, mass=True)
+    assert mass_report.mass_mode is True
+    assert mass_report.density_kg_m3 == pytest.approx(0.54)
+    assert mass_report.final_status.state_code == STATE_IDLE
+    assert "кг" in mass_report.render()
+
+
+def test_psu_controller_protocol_and_port_errors() -> None:
+    """Проверка ошибок COM-порта, пустого RX, битого кадра и чужого адреса в Uzsg01PsuController."""
+    from agzs_edge.iskra import build_test_response_frame
+
+    class _ErrLink:
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            return self.send_command(address, b"")
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"", error_message="COM error")
+
+    with pytest.raises(PsuControlError, match="Ошибка COM-порта"):
+        Uzsg01PsuController(_ErrLink()).get_status(1)
+
+    with pytest.raises(PsuControlError, match="RX=0 байт"):
+        Uzsg01PsuController(_ScriptedLink([b""])).get_status(1)
+
+    with pytest.raises(PsuControlError, match="Некорректный кадр"):
+        Uzsg01PsuController(_ScriptedLink([b"\x01BAD"])).get_status(1)
+
+    wrong_addr_reply = build_test_response_frame(address=2, state_code=STATE_IDLE, price_digits=7200, volume_ml=0)
+    with pytest.raises(PsuControlError, match="ожидалась #1"):
+        Uzsg01PsuController(_ScriptedLink([wrong_addr_reply])).get_status(1)
+
+
+def test_emulator_auto_reset_continues_across_multiple_cycles(tmp_path: Path) -> None:
+    """При serve с --auto-reset имитатор продолжает цикл наливов и после первого авто-сброса."""
+    settings = EdgeSettings(
+        source_mode="emulator",
+        pump_addresses=(1,),
+        poll_interval_sec=0.0,
+        db_path=tmp_path / "multi_cycles.db",
+        sync_enabled=False,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=0.0,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, db=db)
+    svc.serve(max_cycles=16)
+
+    info = db.summary()
+    assert info["total_dispenses"] == 2
+    assert info["total_dispensed_ml"] == 40000
+
+
+def test_psu_controller_guards_and_edge_cases() -> None:
+    """Граничные проверки Uzsg01PsuController: неверные параметры, запреты при наливе, старт из '07'."""
+    link = EmulatorAskaLink(price_digits=7200, initial_locked=True)
+    ctrl = Uzsg01PsuController(link)
+
+    with pytest.raises(ValueError, match="режим кнопок"):
+        ctrl.set_buttons_mode(1, "bad-mode")
+    with pytest.raises(ValueError, match="положительный"):
+        ctrl.preset_dose(1, liters=0)
+    with pytest.raises(ValueError, match="1..999999"):
+        ctrl.preset_dose(1, liters=1500)
+    with pytest.raises(ValueError, match="больше 0"):
+        ctrl.set_price(1, 0)
+    with pytest.raises(ValueError, match="вне диапазона"):
+        ctrl.set_price(1, 10000)
+
+    # Старт из блокировки '07' без параметров сам сбрасывает в '05', задаёт 999 л и запускает
+    started = ctrl.start_pump(1)
+    assert started.state_code == STATE_DISPENSING
+
+    # Запреты во время активного налива
+    with pytest.raises(PsuControlError):
+        ctrl.preset_dose(1, liters=5)
+    with pytest.raises(PsuControlError):
+        ctrl.set_price(1, 75.0)
+    with pytest.raises(PsuControlError):
+        ctrl.read_counters(1)
+
+    stopped = ctrl.stop_pump(1)
+    assert stopped.state_code == STATE_STOPPED
+    with pytest.raises(PsuControlError, match="невозможен"):
+        ctrl.stop_pump(1)

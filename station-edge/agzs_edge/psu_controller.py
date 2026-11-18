@@ -293,6 +293,9 @@ class Uzsg01PsuController:
         }
         if mode not in code_map:
             raise ValueError(f"Неизвестный режим кнопок {mode!r}; допустимы: {', '.join(code_map)}")
+        status = self.get_status(address)
+        if status.state_code == STATE_DISPENSING or status.valve_open:
+            raise PsuControlError(f"Нельзя менять режим кнопок во время налива на колонке #{address}.")
         req = build_param_command(
             address,
             code_map[mode],
@@ -429,6 +432,10 @@ class Uzsg01PsuController:
         status = self.get_status(address)
         if status.state_code == STATE_DISPENSING or status.valve_open:
             raise PsuControlError(f"Нельзя считывать счётчики во время налива на колонке #{address}.")
+        if status.state_code != STATE_IDLE:
+            reset_res = self.reset_column(address)
+            if not reset_res.unlocked:
+                raise PsuControlError(reset_res.message)
 
         status_ascii = "01" if mass else "00"
         mode = self._tx_checksum_mode()

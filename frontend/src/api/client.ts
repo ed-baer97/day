@@ -62,6 +62,20 @@ export interface LevelReading {
   delta_liters?: number | null;
 }
 
+export interface DispenseReading {
+  id: string;
+  station_id: string;
+  tank_id?: string | null;
+  dispenser_id: string;
+  pump_address?: number | null;
+  mode?: string | null;
+  volume_liters: number;
+  price_kzt_per_liter?: number | null;
+  started_at: string;
+  finished_at?: string | null;
+  external_txn_id?: string | null;
+}
+
 export interface TankIngestState {
   station_id: string;
   tank_id: string;
@@ -265,6 +279,13 @@ export const api = {
       ? `?since=${encodeURIComponent(since)}&changes_only=true&limit=${cap}`
       : `?changes_only=true&limit=${Math.min(cap, 200)}`;
     return getJson<LevelReading[]>(`/stations/${stationId}/devices/${tankId}/levels${query}`);
+  },
+  stationDispenses: (stationId: string, since?: string, limit = 500) => {
+    const cap = Math.max(1, Math.min(limit, 5000));
+    const query = since
+      ? `?since=${encodeURIComponent(since)}&limit=${cap}`
+      : `?limit=${cap}`;
+    return getJson<DispenseReading[]>(`/stations/${stationId}/dispenses${query}`);
   },
   calibrateTank: (
     body: {

@@ -200,3 +200,179 @@ def test_bulk_outbox_sync(tmp_path: Path) -> None:
     assert db.summary()["outbox_sent"] == 3
     assert db.summary()["outbox_pending"] == 0
 
+
+def test_bulk_outbox_sync_chunks_over_200_and_fallbacks_on_batch_error(tmp_path: Path) -> None:
+    """Очередь > 200 записей режется на чанки <= MAX_BATCH_SIZE; ошибка чанка откатывает на поштучную отправку."""
+    from datetime import timedelta
+
+    from agzs_edge.sync import MAX_BATCH_SIZE
+
+    db = EdgeDatabase(tmp_path / "chunk.db")
+    t0 = datetime(2026, 11, 18, 8, 0, 0, tzinfo=timezone.utc)
+    total_items = MAX_BATCH_SIZE + 5
+
+    for i in range(total_items):
+        disp = CompletedDispense(
+            external_txn_id=f"chunk-txn-{i}",
+            pump_address=1,
+            mode="dose",
+            preset_ml=5000,
+            dispensed_ml=5000,
+            volume_liters=5.0,
+            price_kzt_per_liter=72.0,
+            final_state_code="07",
+            error_code="00",
+            started_at=t0 + timedelta(seconds=i),
+            finished_at=t0 + timedelta(seconds=i),
+            last_raw_frame_hex="01 30 31",
+        )
+        db.record_completed_dispense(
+            disp,
+            station_id="a2222222-2222-2222-2222-222222222201",
+            dispenser_id="d2222222-2222-2222-2222-222222222201",
+            tank_id="b2222222-2222-2222-2222-222222222201",
+            now=t0,
+        )
+
+    batch_sizes: list[int] = []
+    single_txns: list[str] = []
+
+    def batch_sender(url: str, token: str, items: list[dict]) -> VpsSendResult:
+        batch_sizes.append(len(items))
+        if len(items) == MAX_BATCH_SIZE:
+            return VpsSendResult(ok=True, status_code=200, response_text='{"accepted_count": 200}')
+        return VpsSendResult(ok=False, status_code=500, error_text="HTTP 500: temporary")
+
+    def single_sender(url: str, token: str, payload_json: str) -> VpsSendResult:
+        txn = json.loads(payload_json)["external_txn_id"]
+        single_txns.append(txn)
+        if txn.endswith("-204"):
+            return VpsSendResult(ok=False, status_code=503, error_text="retry me")
+        return VpsSendResult(ok=True, status_code=200, response_text='{"accepted":true}')
+
+    worker = OutboxSyncWorker(
+        db,
+        vps_base_url="http://93.171.232.47",
+        device_token="tok",
+        sender=single_sender,
+        batch_sender=batch_sender,
+    )
+    sent, failed = worker.flush_due(limit=250, now=t0)
+    assert batch_sizes == [200, 5]
+    assert len(single_txns) == 5
+    assert sent == 204
+    assert failed == 1
+    assert db.summary()["outbox_sent"] == 204
+    assert db.summary()["outbox_pending"] == 1
+
+
+def test_http_vps_sync_helpers(monkeypatch) -> None:
+    """Проверка post_dispense_to_vps, post_dispenses_batch_to_vps и probe_vps_link."""
+    import io
+    import urllib.error
+
+    from agzs_edge.sync import post_dispense_to_vps, post_dispenses_batch_to_vps, probe_vps_link
+
+    # 1. Пустой tank_id -> ошибка без HTTP-вызова
+    empty_probe = probe_vps_link("http://example.com", "tok", "")
+    assert empty_probe.ok is False
+
+    class _FakeResp:
+        def __init__(self, body: str, status: int = 200) -> None:
+            self._body = body.encode("utf-8")
+            self.status = status
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return
+
+    captured_headers: dict[str, str] = {}
+
+    def _ok_urlopen(req, timeout=10.0):
+        captured_headers.update(dict(req.header_items()))
+        if req.full_url.endswith("/dispenses/batch"):
+            return _FakeResp('{"accepted_count": 2}')
+        if "/tanks/" in req.full_url:
+            return _FakeResp('{"actual_remainder_liters": 5000}')
+        return _FakeResp('{"accepted": true, "duplicate": false}')
+
+    monkeypatch.setattr("urllib.request.urlopen", _ok_urlopen)
+    res_probe = probe_vps_link("http://example.com", "tok-1", "tank-1")
+    assert res_probe.ok is True
+    assert captured_headers.get("X-device-token") == "tok-1"
+
+    res_single = post_dispense_to_vps("http://example.com", "tok-1", '{"external_txn_id":"1"}')
+    assert res_single.ok is True and res_single.duplicate is False
+
+    res_batch = post_dispenses_batch_to_vps("http://example.com", "tok-1", [{"external_txn_id": "1"}])
+    assert res_batch.ok is True
+
+    # 2. Сервер вернул accepted=false
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=10.0: _FakeResp('{"accepted": false, "reason": "bad"}'),
+    )
+    assert post_dispense_to_vps("http://example.com", "tok", "{}").ok is False
+    assert post_dispenses_batch_to_vps("http://example.com", "tok", [{}]).ok is False
+
+    # 3. HTTPError и сетевой сбой
+    def _http_err(req, timeout=10.0):
+        raise urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized", {}, io.BytesIO(b"invalid token")
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _http_err)
+    res_401 = post_dispense_to_vps("http://example.com", "bad", "{}")
+    assert res_401.ok is False and res_401.status_code == 401 and "invalid token" in res_401.error_text
+
+    def _net_err(req, timeout=10.0):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr("urllib.request.urlopen", _net_err)
+    res_net = post_dispense_to_vps("http://example.com", "tok", "{}")
+    assert res_net.ok is False and res_net.status_code == 0
+
+
+def test_storage_read_only_empty_sqlite_and_parse_iso_datetime(tmp_path: Path) -> None:
+    """read_only на пустом SQLite без таблиц, amount_kzt, mark_outbox_batch_sent([]) и parse_iso_datetime."""
+    import sqlite3
+
+    from agzs_edge.storage import DispenseRow, parse_iso_datetime
+
+    raw_db = tmp_path / "empty_tables.db"
+    sqlite3.connect(raw_db).close()
+
+    ro = EdgeDatabase(raw_db, read_only=True)
+    assert ro.list_dispenses() == []
+    assert ro.list_dispenses_between(datetime(2026, 1, 1, tzinfo=timezone.utc)) == []
+    assert ro.summary()["total_dispenses"] == 0
+
+    rw = EdgeDatabase(tmp_path / "rw.db")
+    rw.mark_outbox_batch_sent([])
+
+    row = DispenseRow(
+        id=1,
+        external_txn_id="t1",
+        pump_address=1,
+        mode="dose",
+        preset_ml=10000,
+        dispensed_ml=10000,
+        volume_liters=10.0,
+        price_kzt_per_liter=72.5,
+        final_state_code="07",
+        error_code="00",
+        started_at="2026-11-18T10:00:00Z",
+        finished_at="2026-11-18T10:01:00Z",
+        synced_to_vps=True,
+    )
+    assert row.amount_kzt == 725.0
+    assert parse_iso_datetime("") is None
+    assert parse_iso_datetime("not-a-date") is None
+    assert parse_iso_datetime("2026-11-18T10:00:00Z") == datetime(2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc)
+    assert parse_iso_datetime("2026-11-18T10:00:00") == datetime(2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc)
+

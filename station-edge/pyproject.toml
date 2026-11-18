@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agzs-edge"
 version = "0.1.0"
-description = "Станционный узел АГЗС: опрос УЗГС-01 через АСКА-02 (Искра 1.72, только чтение), локальная БД SQLite и отправка отпусков на VPS"
+description = "Станционный узел АГЗС: телеметрия и управление УЗГС-01 через АСКА-02 (Протокол v3.10 / Искра 1.72), локальная БД SQLite и отправка отпусков на VPS"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -26,3 +26,4 @@ include = ["agzs_edge*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"

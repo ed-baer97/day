@@ -364,23 +364,19 @@ def build_test_response_frame(
     if volume_ml < 0 or volume_ml > 999_999:
         raise ValueError("volume_ml должен помещаться в 6 десятичных цифр (0..999999)")
 
-    price_str = f"{int(price_digits):06d}" if isinstance(price_digits, int) else str(price_digits).zfill(6)
+    price_str = f"{int(price_digits):06d}" if isinstance(price_digits, int) and not isinstance(price_digits, bool) else str(price_digits).zfill(6)
     if len(price_str) != 6 or not price_str.isdigit():
         raise ValueError("Поле цены должно состоять из 6 цифр")
 
-    vol_str = f"{volume_ml:06d}"
-    body = (
-        f"{address:02d}".encode("ascii")
-        + bytes([CMD_TEST_ASCII, STX])
-        + price_str.encode("ascii")
-        + vol_str.encode("ascii")
-        + error_code.encode("ascii")
-        + state_code.encode("ascii")
-        + bytes([ETX])
+    frame = build_command_frame(
+        address,
+        CMD_TEST_ASCII,
+        price_digits=price_str,
+        volume_digits=volume_ml,
+        status_ascii=error_code,
+        sost_ascii=state_code,
+        checksum_mode=checksum_mode,
     )
-    mode = "xor" if checksum_mode == "any" else checksum_mode
-    bcc = compute_bcc(body, mode)
-    frame = bytes([SOH]) + body + bytes([bcc])
     assert len(frame) == EXPECTED_FRAME_LEN
     return frame
 
@@ -457,6 +453,17 @@ def _validate_frame_envelope(raw: bytes, cfg: FrameLayout) -> int:
     return address
 
 
+def _decode_sost_field(field: bytes) -> str:
+    """Нормализует 2-байтовое поле Sost (байты 19..20) по табл. 3.2.2 Протокола v3.10.
+
+    Байт 19 (Sost[19]) в битах 0..5 содержит код ошибки колонки (0x30..0x34),
+    а в битах 6..7 может содержать статусные флаги; байт 20 несёт состояние 01..07.
+    """
+    if len(field) == 2 and 0x30 <= (field[0] & 0x3F) <= 0x34 and 0x31 <= (field[1] & 0x7F) <= 0x37:
+        return f"0{chr(field[1] & 0x7F)}"
+    return field.decode("ascii")
+
+
 def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTelemetryFrame:
     """Разбирает и проверяет 23-байтный кадр ответа «Искра 1.72»."""
     cfg = layout or FrameLayout()
@@ -464,7 +471,7 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
 
     cmd_code = raw[cfg.cmd_offset]
     try:
-        state_code = raw[cfg.state_slice[0] : cfg.state_slice[1]].decode("ascii")
+        state_code = _decode_sost_field(raw[cfg.state_slice[0] : cfg.state_slice[1]])
         price_raw = raw[cfg.price_slice[0] : cfg.price_slice[1]].decode("ascii")
         volume_raw = raw[cfg.volume_slice[0] : cfg.volume_slice[1]].decode("ascii")
     except UnicodeDecodeError as exc:

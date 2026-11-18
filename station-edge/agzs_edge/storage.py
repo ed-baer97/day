@@ -63,7 +63,7 @@ def _to_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _parse_iso_utc(raw: str) -> datetime | None:
+def parse_iso_datetime(raw: str) -> datetime | None:
     text = raw.strip()
     if not text:
         return None
@@ -73,7 +73,14 @@ def _parse_iso_utc(raw: str) -> datetime | None:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
-    return _to_utc(parsed)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _parse_iso_utc(raw: str) -> datetime | None:
+    parsed = parse_iso_datetime(raw)
+    return None if parsed is None else parsed.astimezone(timezone.utc)
 
 
 def _row_to_dispense(row: sqlite3.Row) -> DispenseRow:
@@ -194,6 +201,12 @@ class EdgeDatabase:
                     note TEXT,
                     recorded_at TEXT NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS ix_dispenses_finished_at
+                    ON dispenses(finished_at);
+
+                CREATE INDEX IF NOT EXISTS ix_outbox_status_retry
+                    ON outbox_queue(status, next_retry_at);
                 """
             )
 
@@ -488,10 +501,19 @@ class EdgeDatabase:
             return []
         since_utc = _to_utc(since)
         until_utc = _to_utc(until) if until is not None else None
+        since_sql = (since_utc - timedelta(seconds=1)).isoformat()
+        where_clauses = ["datetime(d.finished_at) >= datetime(?)"]
+        params: list[object] = [since_sql]
+        if until_utc is not None:
+            until_sql = (until_utc + timedelta(seconds=1)).isoformat()
+            where_clauses.append("datetime(d.finished_at) <= datetime(?)")
+            params.append(until_sql)
+        where_sql = " AND ".join(where_clauses)
         try:
             with self._lock, self._session() as conn:
                 rows = conn.execute(
-                    f"{_SELECT_DISPENSES_BASE}\nORDER BY d.id DESC"
+                    f"{_SELECT_DISPENSES_BASE}\nWHERE {where_sql}\nORDER BY d.id DESC",
+                    params,
                 ).fetchall()
         except sqlite3.OperationalError as exc:
             if self._read_only and "no such table" in str(exc).lower():

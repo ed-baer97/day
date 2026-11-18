@@ -14,8 +14,9 @@ from app.domain.tank_book import (
     recompute_tank_book,
     summarize_station_tanks,
 )
-from app.schemas.ingest import LevelIngest
+from app.schemas.ingest import DispenseIngest, LevelIngest
 from app.schemas.station import TankOut
+from app.services import account, device_ingest
 from app.services.calibration import LevelCalibration
 from app.services.device_ingest import TankBook
 
@@ -183,3 +184,50 @@ def test_summarize_station_tanks():
     assert capacity == 25000.0
     assert delta == -500.0
     assert status == "shortage"
+
+
+def test_accept_dispense_and_list_dispense_records_roundtrip():
+    import json
+
+    device_ingest.reset_device_ingest()
+    station_id = uuid4()
+    tank_id = uuid4()
+    disp1_id = uuid4()
+    t0 = datetime(2026, 11, 18, 9, 15, 0, tzinfo=timezone.utc)
+
+    ack = account.accept_dispense(
+        DispenseIngest(
+            station_id=station_id,
+            dispenser_id=disp1_id,
+            tank_id=tank_id,
+            volume_liters=18.5,
+            started_at=t0,
+            finished_at=t0,
+            external_txn_id="aska02-akt12-p2-1",
+            raw_payload=json.dumps(
+                {
+                    "source": "aska_02_iskra_1_72",
+                    "pump_address": 2,
+                    "mode": "full_tank",
+                    "price_kzt_per_liter": 72.0,
+                }
+            ),
+        )
+    )
+    assert ack.duplicate is False
+
+    rows = account.list_dispense_records(station_id)
+    assert len(rows) == 1
+    assert rows[0].pump_address == 2
+    assert rows[0].mode == "full_tank"
+    assert rows[0].volume_liters == 18.5
+    assert rows[0].price_kzt_per_liter == 72.0
+
+    # Проверка сохранения/восстановления снимка памяти
+    snap = device_ingest.snapshot()
+    device_ingest.reset_device_ingest()
+    assert account.list_dispense_records(station_id) == []
+    device_ingest.restore_snapshot(snap)
+    restored = account.list_dispense_records(station_id)
+    assert len(restored) == 1
+    assert restored[0].external_txn_id == "aska02-akt12-p2-1"

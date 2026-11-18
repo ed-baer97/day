@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import threading
 from dataclasses import dataclass, field
@@ -33,10 +34,11 @@ from app.schemas.ingest import (
     ReceiptIngest,
     TankIngestState,
 )
-from app.schemas.station import TankOut
+from app.schemas.station import DispenseReadingOut, TankOut
 from app.services.calibration import LevelCalibration
 
 _MAX_SEEN = 10_000
+_MAX_STATION_DISPENSES = 2_000
 
 _lock = threading.Lock()
 _books: dict[tuple[UUID, UUID], "TankBook"] = {}
@@ -44,6 +46,7 @@ _seen: set[str] = set()
 _devices_by_token: dict[str, "TankDevice"] = {}
 _devices_by_tank: dict[UUID, "TankDevice"] = {}
 _devices_by_station: dict[UUID, list[UUID]] = {}
+_dispenses_by_station: dict[UUID, list[DispenseReadingOut]] = {}
 
 
 def _commit() -> None:
@@ -89,6 +92,7 @@ def reset_device_ingest() -> None:
         _devices_by_token.clear()
         _devices_by_tank.clear()
         _devices_by_station.clear()
+        _dispenses_by_station.clear()
     try:
         from app.services.public_board import invalidate_public_board_cache
 
@@ -453,22 +457,92 @@ def accept_level(body: LevelIngest) -> IngestAck:
     return ack
 
 
+def parse_dispense_meta(
+    dispenser_id: UUID,
+    raw_payload: str | None,
+) -> tuple[int, str | None, float | None]:
+    """Извлекает номер колонки (1..6), режим налива и цену из JSON raw_payload или dispenser_id."""
+    fallback_addr = 2 if dispenser_id.int % 2 == 0 else 1
+    if not raw_payload:
+        return fallback_addr, None, None
+    try:
+        meta = json.loads(raw_payload)
+    except (json.JSONDecodeError, TypeError):
+        return fallback_addr, None, None
+    if not isinstance(meta, dict):
+        return fallback_addr, None, None
+
+    raw_addr = meta.get("pump_address")
+    if isinstance(raw_addr, int) and not isinstance(raw_addr, bool) and 1 <= raw_addr <= 6:
+        pump_address = raw_addr
+    else:
+        pump_address = fallback_addr
+    mode = str(meta["mode"]) if meta.get("mode") is not None else None
+    raw_price = meta.get("price_kzt_per_liter")
+    price = float(raw_price) if isinstance(raw_price, (int, float)) and not isinstance(raw_price, bool) else None
+    return pump_address, mode, price
+
+
+def _utc_stamp(raw: str) -> datetime:
+    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def accept_dispense(body: DispenseIngest) -> IngestAck:
     key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
+    pump_address, mode, price = parse_dispense_meta(body.dispenser_id, body.raw_payload)
     with _lock:
         if key in _seen:
             if body.tank_id is None:
                 return IngestAck(accepted=True, message="duplicate", duplicate=True)
             return build_ingest_ack(_book(body.station_id, body.tank_id), message="duplicate", duplicate=True)
         _remember_seen(key)
+        entity_id = uuid4()
         if body.tank_id is None:
-            ack = IngestAck(accepted=True, message="dispense accepted", entity_id=uuid4())
+            ack = IngestAck(accepted=True, message="dispense accepted", entity_id=entity_id)
         else:
             book = _book(body.station_id, body.tank_id)
             apply_dispense_volume(book, body.volume_liters)
-            ack = build_ingest_ack(book, message="dispense accepted", entity_id=uuid4())
+            ack = build_ingest_ack(book, message="dispense accepted", entity_id=entity_id)
+        station_rows = _dispenses_by_station.setdefault(body.station_id, [])
+        station_rows.append(
+            DispenseReadingOut(
+                id=entity_id,
+                station_id=body.station_id,
+                tank_id=body.tank_id,
+                dispenser_id=body.dispenser_id,
+                pump_address=pump_address,
+                mode=mode,
+                volume_liters=body.volume_liters,
+                price_kzt_per_liter=price,
+                started_at=body.started_at.isoformat(),
+                finished_at=None if body.finished_at is None else body.finished_at.isoformat(),
+                external_txn_id=key,
+            )
+        )
+        if len(station_rows) > _MAX_STATION_DISPENSES:
+            del station_rows[: len(station_rows) - _MAX_STATION_DISPENSES]
     _commit()
     return ack
+
+
+def list_dispense_records(
+    station_id: UUID,
+    *,
+    since: datetime | None = None,
+    limit: int = 500,
+) -> list[DispenseReadingOut]:
+    since_utc = (
+        None
+        if since is None
+        else (since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc))
+    )
+    with _lock:
+        rows = list(_dispenses_by_station.get(station_id, ()))
+    if since_utc is not None:
+        rows = [row for row in rows if _utc_stamp(row.started_at) >= since_utc]
+    rows.sort(key=lambda row: _utc_stamp(row.started_at), reverse=True)
+    return rows[: max(1, limit)]
 
 
 def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
@@ -572,13 +646,23 @@ def snapshot() -> dict:
                 for book in _books.values()
             ],
             "seen": sorted(_seen),
+            "dispenses": [
+                item.model_dump(mode="json")
+                for rows in _dispenses_by_station.values()
+                for item in rows
+            ],
         }
 
 
 def restore_snapshot(data: dict) -> None:
-    if not any(key in data for key in ("devices", "books", "seen")):
+    if not any(key in data for key in ("devices", "books", "seen", "dispenses")):
         return
     with _lock:
+        if "dispenses" in data and isinstance(data["dispenses"], list):
+            _dispenses_by_station.clear()
+            for row in data["dispenses"]:
+                item = DispenseReadingOut.model_validate(row)
+                _dispenses_by_station.setdefault(item.station_id, []).append(item)
         if "devices" in data:
             _devices_by_token.clear()
             _devices_by_tank.clear()

@@ -39,10 +39,10 @@ from app.schemas.ingest import (
     ReceiptIngest,
     TankIngestState,
 )
-from app.schemas.station import TankOut
+from app.schemas.station import DispenseReadingOut, TankOut
 from app.services.calibration import LevelCalibration
 from app.services.catalog import TRUCK_STATUSES, StationCard, TruckCard
-from app.services.device_ingest import TankDevice
+from app.services.device_ingest import TankDevice, parse_dispense_meta
 from app.services.passwords import hash_password, verify_password
 from app.services.station_accounts import StationOwner
 
@@ -782,6 +782,39 @@ def list_level_readings(
             query = query.where(LevelReading.recorded_at >= stamp)
         order = LevelReading.recorded_at.desc() if newest_first else LevelReading.recorded_at.asc()
         return list(db.scalars(query.order_by(order).limit(limit)).all())
+
+
+def list_dispense_records(
+    station_id: UUID,
+    *,
+    since: datetime | None = None,
+    limit: int = 500,
+) -> list[DispenseReadingOut]:
+    with session() as db:
+        query = select(DispenseRecord).where(DispenseRecord.station_id == station_id)
+        if since is not None:
+            stamp = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
+            query = query.where(DispenseRecord.started_at >= stamp)
+        rows = list(db.scalars(query.order_by(DispenseRecord.started_at.desc()).limit(limit)).all())
+    result: list[DispenseReadingOut] = []
+    for row in rows:
+        pump_address, mode, price = parse_dispense_meta(row.dispenser_id, row.raw_payload)
+        result.append(
+            DispenseReadingOut(
+                id=row.id,
+                station_id=row.station_id,
+                tank_id=row.tank_id,
+                dispenser_id=row.dispenser_id,
+                pump_address=pump_address,
+                mode=mode,
+                volume_liters=row.volume_liters,
+                price_kzt_per_liter=price,
+                started_at=row.started_at.isoformat(),
+                finished_at=None if row.finished_at is None else row.finished_at.isoformat(),
+                external_txn_id=row.external_txn_id,
+            )
+        )
+    return result
 
 
 def _to_station_owner(rows: list[StationUser]) -> StationOwner:

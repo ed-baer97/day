@@ -2,10 +2,10 @@
 
 > [!NOTE]
 > Результаты автоматических проверок проекта (`d:\Проект\day`):
-> - **Backend (`pytest backend/tests`)**: `76 passed` (17 тестовых модулей, включая порт учёта, пакетный откат PostgreSQL и GPS газовоза).
-> - **Station Edge (`pytest station-edge/tests`)**: `45 passed in 5.26s` (все 8 тестовых модулей: Протокол v3.10 / Искра 1.72, контроллер БП без ПУ `Uzsg01PsuController`, авто-сброс `0x37`, трекер `dispensed_ml`, закрытие соединений SQLite WAL и `read_only=True`, пакетный Bulk Outbox Sync, `SerialAskaLink`, `fill_watch`, консольное табло смены `monitor.py` и устойчивость).
-> - **Backend + Station Edge (`python -m compileall backend station-edge -q`)**: `0 ошибок` синтаксиса/компиляции.
-> - **Frontend (`tsc --noEmit && vite build`)**: `PASSED` (66 модулей собрано, модульная архитектура CSS и компонентов).
+> - **Station Edge (`pytest -c station-edge/pyproject.toml --cov=agzs_edge station-edge/tests`)**: `64 passed in 5.49s` (покрытие `agzs_edge`: **92%**, все 8 тестовых модулей: Протокол v3.10 / Искра 1.72, контроллер БП без ПУ `Uzsg01PsuController`, авто-сброс `0x37`, трекер `dispensed_ml`, SQLite WAL + `read_only=True`, чанкированный Bulk Outbox Sync `MAX_BATCH_SIZE = 200`, `SerialAskaLink`, `fill_watch`, монитор смены `monitor.py`, кроссплатформенный `diagnose` и CLI).
+> - **Backend (`pytest backend/tests`)**: `78` тестов в коллекции (`26 passed` в офлайн unit-прогоне без `TestClient`: баланс, калибровка, книга резервуара, приём/выдача `DispenseReadingOut`, политика, журнал уровней, снимки памяти и скрипт Shelly).
+> - **Линтер и компиляция (`ruff check station-edge backend` + `python -m compileall backend station-edge -q`)**: `All checks passed!`, `0 ошибок` синтаксиса/компиляции.
+> - **Frontend (`tsc --noEmit && vite build`)**: `PASSED` (72 модуля собрано, модульная архитектура CSS и компонентов).
 
 ---
 
@@ -277,7 +277,7 @@ d:\Проект\day\
 │   │   │   ├── station.py                ├── TankOut, StationOut, StationCreateIn, StationUpdateIn,
 │   │   │   │                             │   TankDeviceCreateIn, TankDeviceUpdateIn, ShellyLinkIn,
 │   │   │   │                             │   ShellyDeviceOut, TankDeviceOut, TankLevelRowOut,
-│   │   │   │                             │   StationUserCreateIn, StationUserOut
+│   │   │   │                             │   DispenseReadingOut, StationUserCreateIn, StationUserOut
 │   │   │   ├── truck.py                  ├── TruckOut, TruckCreateIn, TruckUpdateIn, MapPoint, MapOverview
 │   │   │   ├── batch.py                  ├── TrailStep, BatchTrailOut
 │   │   │   ├── balance.py                ├── BalanceReconcileIn, BalanceSnapshotOut
@@ -293,7 +293,8 @@ d:\Проект\day\
 │   │   │   │                             │   get_station_card(), station_to_out()
 │   │   │   ├── tanks.py                  ├── list_tanks(), list_station_devices(),
 │   │   │   │                             │   create_station_device(), patch_station_device(),
-│   │   │   │                             │   remove_station_device(), list_device_levels(), device_to_out()
+│   │   │   │                             │   remove_station_device(), list_device_levels(),
+│   │   │   │                             │   list_station_dispenses(), device_to_out()
 │   │   │   ├── shelly.py                 ├── put_station_shelly(), delete_station_shelly()
 │   │   │   ├── station_owners.py         ├── list_station_logins(), create_station_login()
 │   │   │   ├── trucks.py                 ├── get_trucks(), post_truck(), patch_truck(), get_truck()
@@ -317,7 +318,7 @@ d:\Проект\day\
 │   │       │                             │   accept_dispense(), accept_dispenses_batch(),
 │   │       │                             │   accept_receipt(), bind_level(), bind_dispense(),
 │   │       │                             │   list_station_users(), authenticate_station_user(),
-│   │       │                             └── list_level_readings()
+│   │       │                             └── list_level_readings(), list_dispense_records()
 │   │       ├── memory_account.py         └── фасад памяти: те же имена, что у postgres_account
 │   │       ├── boot.py                   ├── boot_store(), persist_state()
 │   │       ├── calibration.py            ├── LevelCalibration (dataclass), round_volts(),
@@ -353,6 +354,7 @@ d:\Проект\day\
 │   │       │                             │   has_calibration(), set_calibration(), accept_level(),
 │   │       │                             │   accept_levels_batch(), accept_receipt(),
 │   │       │                             │   accept_dispense(), accept_dispenses_batch(),
+│   │       │                             │   parse_dispense_meta(), list_dispense_records(),
 │   │       │                             │   bind_level(), bind_dispense(), tank_state(),
 │   │       │                             │   snapshot(), restore_snapshot()
 │   │       ├── shelly.py                 ├── ShellyError (Exception), ShellySnapshot (dataclass),
@@ -370,6 +372,7 @@ d:\Проект\day\
 │   │                                         record_truck_position(), list_stations(),
 │   │                                         register_tank(), accept_level(), accept_dispense(),
 │   │                                         accept_receipt(), list_level_readings(),
+│   │                                         list_dispense_records(),
 │   │                                         create_station_user(), authenticate_station_user(),
 │   │                                         import_memory_snapshot()
 │   └── tests/
@@ -391,7 +394,7 @@ d:\Проект\day\
 │       ├── test_shelly.py                └── 9 тестов (snapshot, RPC, auto-voltmeter, link, cal, offline)
 │       ├── test_shelly_script.py         └── 3 теста (render_script placeholders, escaping, validation)
 │       ├── test_station_access.py        └── 5 тестов (RBAC station/owner/admin, multi-station)
-│       └── test_tank_book.py             └── 3 теста (книга резервуара, шум вольт, сводка станции)
+│       └── test_tank_book.py             └── 5 тестов (книга резервуара, шум вольт, сводка станции, DispenseReadingOut)
 │
 ├── station-edge/
 │   ├── README.md
@@ -405,12 +408,13 @@ d:\Проект\day\
 │   │   ├── __init__.py
 │   │   ├── __main__.py
 │   │   ├── config.py                     ├── FrameLayout (dataclass)
-│   │   │                                 ├── EdgeSettings (dataclass) [.from_env(), .dispenser_uuid(),
-│   │   │                                 │   auto_reset_on_stop, auto_reset_delay_sec,
+│   │   │                                 ├── EdgeSettings (dataclass) [.__post_init__(), .from_env(),
+│   │   │                                 │   .dispenser_uuid(), auto_reset_on_stop, auto_reset_delay_sec,
 │   │   │                                 │   shift_start_hour, shift_hours, monitor_refresh_sec,
 │   │   │                                 │   monitor_kiosk, currency_symbol]
 │   │   │                                 ├── load_dotenv()
 │   │   │                                 ├── _resolve_preferred_port()
+│   │   │                                 ├── _parse_bool()
 │   │   │                                 ├── _parse_addresses()
 │   │   │                                 └── _parse_dispenser_map()
 │   │   ├── iskra.py                      ├── CMD_*_ASCII (0x33..0x39), PARAM_PRICE_CODES (0.1..0.19)
@@ -428,7 +432,7 @@ d:\Проект\day\
 │   │   │                                 ├── build_stop_command(), build_param_command()
 │   │   │                                 ├── build_test_response_frame(), _read_error_field()
 │   │   │                                 ├── _decode_price(), _completed_volume_in_price_field()
-│   │   │                                 └── _validate_frame_envelope(), parse_iskra_frame()
+│   │   │                                 └── _validate_frame_envelope(), _decode_sost_field(), parse_iskra_frame()
 │   │   ├── psu_controller.py             ├── COLUMN_ERROR_DESCRIPTIONS, STATE_DESCRIPTIONS_RU
 │   │   │                                 ├── PsuControlError (RuntimeError)
 │   │   │                                 ├── ResetResult (dataclass)
@@ -438,6 +442,7 @@ d:\Проект\day\
 │   │   │                                     .set_buttons_mode(), .preset_dose(), .start_pump(),
 │   │   │                                     .stop_pump(), .set_price(), .read_counters()]
 │   │   ├── tracker.py                    ├── CompletedDispense (dataclass)
+│   │   │                                 ├── _frame_error_code()
 │   │   │                                 ├── _ActiveSession (dataclass)
 │   │   │                                 └── PumpDispenseTracker [.active_session(), .process_frame()]
 │   │   ├── serial_link.py                ├── PollRawResult (dataclass)
@@ -446,7 +451,7 @@ d:\Проект\day\
 │   │   │                                 ├── EmulatorAskaLink [.open(), .close(), .poll_test(), .send_command()]
 │   │   │                                 └── list_available_serial_ports()
 │   │   ├── storage.py                    ├── OutboxItem (dataclass), DispenseRow (dataclass) [.amount_kzt]
-│   │   │                                 ├── _to_utc(), _parse_iso_utc(), _row_to_dispense()
+│   │   │                                 ├── _to_utc(), parse_iso_datetime(), _parse_iso_utc(), _row_to_dispense()
 │   │   │                                 └── EdgeDatabase [._connect(), ._session(), ._init_schema(),
 │   │   │                                     ._empty_summary(), .update_live_state(), .mark_no_response(),
 │   │   │                                     .log_raw_frame(), .record_completed_dispense(),
@@ -455,12 +460,12 @@ d:\Проект\day\
 │   │   │                                     .list_dispenses(), .list_dispenses_between(), .summary()]
 │   │   ├── monitor.py                    ├── ShiftWindow (dataclass), PumpShiftSummary (dataclass)
 │   │   │                                 ├── ShiftDispenseEntry (dataclass), ShiftDashboardSnapshot (dataclass)
-│   │   │                                 ├── resolve_shift_window(), _parse_iso_datetime(),
-│   │   │                                 │   _format_local_time(), _state_label(), _mode_label(),
+│   │   │                                 ├── resolve_shift_window(), _format_local_time(),
+│   │   │                                 │   _state_label(), _mode_label(),
 │   │   │                                 │   _format_money(), _format_price()
 │   │   │                                 ├── build_shift_snapshot(), render_shift_dashboard()
 │   │   │                                 └── install_kiosk_signal_handlers(), run_monitor_loop()
-│   │   ├── sync.py                       ├── VpsSendResult (dataclass)
+│   │   ├── sync.py                       ├── MAX_BATCH_SIZE (200), VpsSendResult (dataclass)
 │   │   │                                 ├── _send_vps_request(), probe_vps_link()
 │   │   │                                 ├── post_dispense_to_vps(), post_dispenses_batch_to_vps()
 │   │   │                                 └── OutboxSyncWorker [.flush_due()]
@@ -470,7 +475,8 @@ d:\Проект\day\
 │   │   ├── fill_watch.py                 ├── FillSample (dataclass), FillWatchReport (dataclass) [.render()]
 │   │   │                                 └── _record_frame(), _idle_expired(), consume_frames(), watch_fill()
 │   │   ├── diagnose.py                   ├── DiagnoseReport (dataclass) [.render()]
-│   │   │                                 └── resolve_preferred_port(), collect_usb_info(), run_diagnose()
+│   │   │                                 └── resolve_preferred_port(), _extract_serial_from_hwid(),
+│   │   │                                     collect_usb_info(), run_diagnose()
 │   │   └── main.py                       ├── _setup_logging(), _describe_fields(), _build_diagnostic_link()
 │   │                                     ├── _build_psu_controller(), _run_psu_action()
 │   │                                     ├── _cmd_diagnose(), _cmd_probe(), _cmd_listen(), _cmd_watch_fill()
@@ -479,14 +485,14 @@ d:\Проект\day\
 │   │                                     ├── _cmd_console(), _cmd_status(), _cmd_monitor(), _cmd_flush()
 │   │                                     └── build_parser(), main()
 │   └── tests/
-│       ├── test_diagnose_and_resilience.py └── 9 тестов (кадр/BCC, обрыв RX, занятый порт, пустой RX не даёт газ=0)
-│       ├── test_fill_watch.py            └── 2 теста (счётчик налива watch_fill и разрыв середины налива '07')
-│       ├── test_iskra_protocol.py        └── 8 тестов (команда «Тест» 1..6, живые кадры P/D0/07, BCC, уставка 090000)
-│       ├── test_monitor.py               └── 4 теста (границы смены 12/24 ч, фильтрация смены, расчёт сумм, табло 80 симв., read-only без БД, CLI monitor --once, киоск-сигналы)
-│       ├── test_psu_controller.py        └── 8 тестов (разблокировка '07'->'05' 0x37, цикл 0x37/0x39/0x35/0x36, 0.11..0.19, авто-сброс, SQLite _session() без утечки FD, CLI)
+│       ├── test_diagnose_and_resilience.py └── 12 тестов (кадр/BCC, обрыв RX, занятый порт, пустой RX, diagnose CONNECTED/NO_RESPONSE/MISMATCH/PORT_BUSY/DRIVER_ERROR, сервис)
+│       ├── test_fill_watch.py            └── 3 теста (счётчик налива watch_fill, разрыв '07', idle_seconds и ошибки порта)
+│       ├── test_iskra_protocol.py        └── 10 тестов (команда «Тест» 1..6, живые кадры P/D0/07, коды ошибок Sost[19], BCC, валидация билдеров)
+│       ├── test_monitor.py               └── 7 тестов (смены 12/24 ч, фильтрация, табло 80 симв., read-only без БД, цикл киоска, config и сквозной CLI)
+│       ├── test_psu_controller.py        └── 12 тестов (разблокировка '07'->'05', цикл 0x34..0x39, 0.11..0.19, запреты при наливе, авто-сброс, _session() без утечки FD, CLI)
 │       ├── test_serial_link.py           └── 5 тестов (таймауты, шум до SOH, короткий ответ, probe --checksum all)
-│       ├── test_storage_sync.py          └── 4 теста (SQLite WAL, дедупликация, пакетный Bulk Outbox Sync на VPS)
-│       └── test_tracker.py               └── 5 тестов (обычная доза, «до полного», живые кадры и холостой пуск 090000)
+│       ├── test_storage_sync.py          └── 7 тестов (SQLite WAL, дедупликация, чанки >200 в OutboxSyncWorker, HTTP VPS sync, read_only на пустой БД)
+│       └── test_tracker.py               └── 8 тестов (обычная доза, «до полного», живые кадры, холостой пуск 090000, отмена дозы, ошибки Sost[19])
 │
 └── frontend/
     ├── index.html
@@ -496,11 +502,15 @@ d:\Проект\day\
     ├── tsconfig.node.json
     ├── vite.config.ts
     ├── vite.local.config.ts
+    ├── columnReport.check.ts             └── reading()
     ├── levelSource.check.ts              └── reading()
     └── src/
         ├── main.tsx
         ├── vite-env.d.ts
         ├── sources.ts                    └── SRC (источники данных интерфейса)
+        ├── columnReport.ts               ├── CONNECTED_COLUMNS, ColumnSeries, ColumnReport, LiveTankSample,
+        │                                 └── buildLiveTankSamples(), isColumnReportStation(),
+        │                                     bucketCaption(), columnDispenseReport()
         ├── types.ts                      └── MapPointKind, MapPoint, MapOverview, TruckDetail,
         │                                     LinkQuality, SensorStatus, Tank, StationDetail,
         │                                     FillEvent, PumpFiscal, FiscalStatus, PumpFiscalCheck,
@@ -562,14 +572,15 @@ d:\Проект\day\
         │       └── AdminSecurityTab.tsx  └── AdminSecurityTab() — матрица доступа и контур безопасности
         ├── api/
         │   └── client.ts                 ├── ShellyLink, PublicTank, PublicStation, TankDevice,
-        │                                 │   LevelReading, TankIngestState, IngestAck, BatchRecord,
-        │                                 │   BalanceSnapshot, CatalogStation,
+        │                                 │   LevelReading, DispenseReading, TankIngestState, IngestAck,
+        │                                 │   BatchRecord, BalanceSnapshot, CatalogStation,
         │                                 │   StationUser, CatalogTruck, StationDraft, TruckDraft,
         │                                 │   authHeader(), readError(), getJson(), sendJson(),
-        │                                 └── api (объект всех HTTP-вызовов)
+        │                                 └── api (объект всех HTTP-вызовов, включая stationDispenses())
         └── components/
             ├── AdminPage.tsx             ├── AdminPage() — оболочка вкладок, адрес /admin/...
             ├── Charts.tsx                ├── BarChart(), LineChart()
+            ├── ColumnReportCard.tsx      └── ColumnReportCard() — карточка и графики колонок/КГД
             ├── Dashboard.tsx             ├── Dashboard(), Overview()
             ├── StationListRow.tsx        ├── FillCell(), StationListRow()
             ├── Empty.tsx                 └── Empty()
@@ -625,7 +636,7 @@ d:\Проект\day\
 - [`auth.py`](file:///d:/Проект/day/backend/app/routers/auth.py) — вход и проверка текущей сессии (`/api/v1/auth/*`).
 - [`public.py`](file:///d:/Проект/day/backend/app/routers/public.py) — открытая витрина станций (`/api/v1/public/stations`, пакетная выборка без `N+1`).
 - [`stations.py`](file:///d:/Проект/day/backend/app/routers/stations.py) — CRUD паспортов АГЗС и сводка станции с расчётом баланса (`/api/v1/stations`).
-- [`tanks.py`](file:///d:/Проект/day/backend/app/routers/tanks.py) — резервуары, токены устройств и журнал уровней (`/api/v1/stations/{id}/tanks`, `/devices`, `/levels`).
+- [`tanks.py`](file:///d:/Проект/day/backend/app/routers/tanks.py) — резервуары, токены устройств, журнал уровней и наливы ТРК (`/api/v1/stations/{id}/tanks`, `/devices`, `/levels`, `/dispenses`).
 - [`shelly.py`](file:///d:/Проект/day/backend/app/routers/shelly.py) — привязка и отвязка сетевых датчиков Shelly (`/api/v1/stations/{id}/devices/{tank_id}/shelly`).
 - [`station_owners.py`](file:///d:/Проект/day/backend/app/routers/station_owners.py) — учётные записи владельцев АГЗС (`/api/v1/stations/{id}/users`).
 - [`trucks.py`](file:///d:/Проект/day/backend/app/routers/trucks.py) — реестр газовозов (`/api/v1/trucks`, поддерживается и в `memory`, и в `postgres`).
@@ -647,16 +658,16 @@ d:\Проект\day\
 ---
 
 ### 3.2. Станционный узел АСКА-02 + БП + УЗГС-01 (`station-edge/`)
-- [`station-edge/agzs_edge/config.py`](file:///d:/Проект/day/station-edge/agzs_edge/config.py) — [`FrameLayout`](file:///d:/Проект/day/station-edge/agzs_edge/config.py#L78-L109) (калибруемая таблица смещений 23-байтного кадра Искра 1.72) и [`EdgeSettings`](file:///d:/Проект/day/station-edge/agzs_edge/config.py#L113-L248) (настройки COM-порта `COM7`/`/dev/serial/by-id/...`, адресов `1..6`, авто-сброса `auto_reset_on_stop`/`auto_reset_delay_sec`, смены и монитора `shift_start_hour`/`shift_hours`/`monitor_refresh_sec`/`monitor_kiosk`/`currency_symbol`, локальной БД SQLite и привязки к VPS).
-- [`station-edge/agzs_edge/iskra.py`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py) — полная реализация Протокола v3.10 («Искра 1.72»): команды `0x33..0x39` ([`build_command_frame()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L212-L240), [`build_test_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L243-L253), [`build_reset_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L256-L266), [`build_set_dose_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L269-L288), [`build_start_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L291-L301), [`build_stop_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L304-L314), [`build_param_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L317-L341)), проверка КС ([`compute_bcc()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L163-L180), [`verify_frame_checksum()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L183-L196)) и разбор 23-байтного ответа ([`IskraTelemetryFrame`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L68-L160), [`parse_iskra_frame()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L460-L506) с расшифровкой байтов `Status` 17/18 и `Sost` 19, и защитой от ложного списания уставки `090000`).
-- [`station-edge/agzs_edge/psu_controller.py`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py) — программный пульт [`Uzsg01PsuController`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py#L199-L520) и форматтер [`format_detailed_status()`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py#L146-L196) для работы через Блок питания без Пульта управления: диагностика блокировки в `'07'`, сброс `0x37` (`reset_column()`), включение/блокировка кнопок на ГРК `0.16..0.18` (`set_buttons_mode()`), задание дозы `0x39` (`preset_dose()`), ПУСК `0x35` (`start_pump()`), ОСТАНОВ `0x36` (`stop_pump()`), установка цены `0.15` (`set_price()`), чтение счётчиков и параметров ТПР `0.11`, `0.19`, `0.12`, `0.14` (`read_counters()`).
-- [`station-edge/agzs_edge/tracker.py`](file:///d:/Проект/day/station-edge/agzs_edge/tracker.py) — конечный автомат налива [`PumpDispenseTracker`](file:///d:/Проект/day/station-edge/agzs_edge/tracker.py#L68-L248), вычисляющий `dispensed_ml` при обычной дозе (убывание остатка: `preset_ml - current_ml`) и при наливе «до полного» (прямое накопление миллилитров).
-- [`station-edge/agzs_edge/serial_link.py`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py) — кроссплатформенный драйвер [`SerialAskaLink`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py#L64-L184) для FTDI FT232R (`9600 8N1`, `poll_test()` и `send_command()`) и имитатор [`EmulatorAskaLink`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py#L186-L485).
-- [`station-edge/agzs_edge/storage.py`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py) — потокобезопасная локальная база [`EdgeDatabase`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L108-L546) на SQLite (WAL) с режимом только чтения (`read_only=True`, `PRAGMA query_only=ON`), контекстным менеджером [`_session()`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L131-L141) без утечки дескрипторов и выборкой за смену [`list_dispenses_between()`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L481-L511): таблицы `dispenses`, `outbox_queue`, `pump_live_state`, `raw_frames`.
-- [`station-edge/agzs_edge/monitor.py`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py) и [`station-edge/station-edge-monitor.service`](file:///d:/Проект/day/station-edge/station-edge-monitor.service) — консольное табло статистики по колонкам за смену для Linux `/dev/tty1` без GUI и без входа под паролем администратора: расчёт границ смены ([`resolve_shift_window()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L89-L122)), агрегация колонок и заправок ([`build_shift_snapshot()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L188-L297)), форматирование 80-символьного дашборда ([`render_shift_dashboard()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L325-L448)), блокировка прерываний в режиме киоска ([`install_kiosk_signal_handlers()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L451-L459)) и цикл обновления экрана ([`run_monitor_loop()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L462-L500)).
-- [`station-edge/agzs_edge/sync.py`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py) — [`OutboxSyncWorker`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L147-L219), [`probe_vps_link()`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L69-L89), [`post_dispense_to_vps()`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L92-L125) и [`post_dispenses_batch_to_vps()`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L128-L144) для идемпотентной доставки завершённых заправок на VPS.
-- [`station-edge/agzs_edge/fill_watch.py`](file:///d:/Проект/day/station-edge/agzs_edge/fill_watch.py) и [`station-edge/agzs_edge/diagnose.py`](file:///d:/Проект/day/station-edge/agzs_edge/diagnose.py) — наблюдение одиночного налива ([`watch_fill()`](file:///d:/Проект/day/station-edge/agzs_edge/fill_watch.py#L124-L175)) и аппаратная диагностика USB/FTDI/COM/TX-RX ([`run_diagnose()`](file:///d:/Проект/day/station-edge/agzs_edge/diagnose.py#L94-L178)).
-- [`station-edge/agzs_edge/service.py`](file:///d:/Проект/day/station-edge/agzs_edge/service.py) и [`station-edge/agzs_edge/main.py`](file:///d:/Проект/day/station-edge/agzs_edge/main.py) — демон [`StationEdgeService`](file:///d:/Проект/day/station-edge/agzs_edge/service.py#L37-L257) с автоматическим сбросом [`_maybe_auto_reset()`](file:///d:/Проект/day/station-edge/agzs_edge/service.py#L148-L191) и полный набор CLI-команд (`diagnose`, `probe`, `listen`, `watch-fill`, `serve`, `unlock`/`reset`, `buttons`, `set-dose`, `start`, `stop`, `set-price`, `counters`, `console`, `status`, `monitor`, `flush`).
+- [`station-edge/agzs_edge/config.py`](file:///d:/Проект/day/station-edge/agzs_edge/config.py) — [`FrameLayout`](file:///d:/Проект/day/station-edge/agzs_edge/config.py#L92-L123) (калибруемая таблица смещений 23-байтного кадра Искра 1.72), [`_parse_bool()`](file:///d:/Проект/day/station-edge/agzs_edge/config.py#L42-L52) и [`EdgeSettings`](file:///d:/Проект/day/station-edge/agzs_edge/config.py#L127-L272) (валидация адресов/интервалов, `auto_reset_on_stop` → `read_only=False` в `__post_init__`, настройки COM-порта `COM7`/`/dev/serial/by-id/...`, смены и монитора, локальной БД SQLite и привязки к VPS).
+- [`station-edge/agzs_edge/iskra.py`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py) — полная реализация Протокола v3.10 («Искра 1.72»): команды `0x33..0x39` ([`build_command_frame()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L212-L240), [`build_test_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L243-L253), [`build_reset_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L256-L266), [`build_set_dose_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L269-L288), [`build_start_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L291-L301), [`build_stop_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L304-L314), [`build_param_command()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L317-L341)), проверка КС ([`compute_bcc()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L163-L180), [`verify_frame_checksum()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L183-L196)) и разбор 23-байтного ответа ([`IskraTelemetryFrame`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L68-L160), [`_decode_sost_field()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L456-L464), [`parse_iskra_frame()`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py#L467-L513) с расшифровкой байтов `Status` 17/18 и `Sost` 19, и защитой от ложного списания уставки `090000`).
+- [`station-edge/agzs_edge/psu_controller.py`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py) — программный пульт [`Uzsg01PsuController`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py#L199-L527) и форматтер [`format_detailed_status()`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py#L146-L196) для работы через Блок питания без Пульта управления: диагностика блокировки в `'07'`, сброс `0x37` (`reset_column()`), управление кнопками на ГРК `0.16..0.18` с блокировкой во время налива (`set_buttons_mode()`), задание дозы `0x39` (`preset_dose()`), ПУСК `0x35` (`start_pump()`), ОСТАНОВ `0x36` (`stop_pump()`), установка цены `0.15` (`set_price()`), чтение счётчиков и параметров ТПР `0.11`, `0.19`, `0.12`, `0.14` с автосбросом из `'07'` (`read_counters()`).
+- [`station-edge/agzs_edge/tracker.py`](file:///d:/Проект/day/station-edge/agzs_edge/tracker.py) — конечный автомат налива [`PumpDispenseTracker`](file:///d:/Проект/day/station-edge/agzs_edge/tracker.py#L76-L263), вычисляющий `dispensed_ml` при обычной дозе (`preset_ml - current_ml`) и «до полного» (включая живые кадры с флагом `P..`, очистку отменённой уставки дозы при переходе в `'05'` и сохранение аппаратного кода ошибки колонки через [`_frame_error_code()`](file:///d:/Проект/day/station-edge/agzs_edge/tracker.py#L53-L58)).
+- [`station-edge/agzs_edge/serial_link.py`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py) — кроссплатформенный драйвер [`SerialAskaLink`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py#L65-L184) для FTDI FT232R (`9600 8N1`, `poll_test()` и `send_command()`) и имитатор [`EmulatorAskaLink`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py#L187-L510) с завершением дозы и поддержкой повторных демо-циклов при авто-сбросе `0x37`.
+- [`station-edge/agzs_edge/storage.py`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py) — потокобезопасная локальная база [`EdgeDatabase`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L115-L568) на SQLite (WAL) с режимом только чтения (`read_only=True`, `PRAGMA query_only=ON`), индексами по `finished_at` и `outbox_queue`, общим парсером [`parse_iso_datetime()`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L66-L78), контекстным менеджером `_session()` без утечки дескрипторов и SQL-предфильтрацией в `list_dispenses_between()`.
+- [`station-edge/agzs_edge/monitor.py`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py) и [`station-edge/station-edge-monitor.service`](file:///d:/Проект/day/station-edge/station-edge-monitor.service) — консольное табло статистики по колонкам за смену для Linux `/dev/tty1` без GUI и без входа под паролем администратора: расчёт границ смены ([`resolve_shift_window()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L89-L122)), агрегация колонок и заправок ([`build_shift_snapshot()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L173-L282)), форматирование 80-символьного дашборда ([`render_shift_dashboard()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L310-L433)), блокировка прерываний в режиме киоска ([`install_kiosk_signal_handlers()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L436-L444)) и цикл обновления экрана ([`run_monitor_loop()`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py#L447-L485)).
+- [`station-edge/agzs_edge/sync.py`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py) — [`OutboxSyncWorker`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L164-L237) с пакетным чанкингом по `MAX_BATCH_SIZE = 200` и поштучным откатом при сбое чанка, [`probe_vps_link()`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L73-L93), [`post_dispense_to_vps()`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L96-L129) и [`post_dispenses_batch_to_vps()`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py#L132-L161) для идемпотентной доставки завершённых заправок на VPS.
+- [`station-edge/agzs_edge/fill_watch.py`](file:///d:/Проект/day/station-edge/agzs_edge/fill_watch.py) и [`station-edge/agzs_edge/diagnose.py`](file:///d:/Проект/day/station-edge/agzs_edge/diagnose.py) — наблюдение одиночного налива ([`watch_fill()`](file:///d:/Проект/day/station-edge/agzs_edge/fill_watch.py#L124-L175)) и кроссплатформенная аппаратная диагностика USB/FTDI/COM/TX-RX ([`collect_usb_info()`](file:///d:/Проект/day/station-edge/agzs_edge/diagnose.py#L90-L133), [`run_diagnose()`](file:///d:/Проект/day/station-edge/agzs_edge/diagnose.py#L136-L227)).
+- [`station-edge/agzs_edge/service.py`](file:///d:/Проект/day/station-edge/agzs_edge/service.py) и [`station-edge/agzs_edge/main.py`](file:///d:/Проект/day/station-edge/agzs_edge/main.py) — демон [`StationEdgeService`](file:///d:/Проект/day/station-edge/agzs_edge/service.py#L37-L257) с автоматическим сбросом `_maybe_auto_reset()` и полный набор CLI-команд (`diagnose`, `probe`, `listen`, `watch-fill` с `--emulator`/`--baudrate`/`--checksum`, `serve`, `unlock`/`reset`, `buttons`, `set-dose`, `start`, `stop`, `set-price`, `counters`, `console`, `status`, `monitor`, `flush`).
 
 ---
 
@@ -711,6 +722,16 @@ d:\Проект\day\
 - **Очистка мусорного и дублирующего кода**: удалены дублирующий черновой пакет `station-edge/aska310/`, временный `capture_raw.py`, сырые дампы `docs/`, отладочные логи `captures/`, алиас `station_edge/`, а также устаревшие обёртки отладки нулевого ответа (`agzs_edge/diagnostics/aska02_analyzer.py`, `agzs_edge/aska_compat.py`, `ASKA-02-REPORT.md`).
 
 #### 6. Выполнено: экранный монитор статистики по колонкам за смену (`/dev/tty1` без GUI и без пароля)
-- **Новый модуль ([`monitor.py`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py)) и CLI-команда `monitor` ([`main.py`](file:///d:/Проект/day/station-edge/agzs_edge/main.py#L466-L491))**: выводит на консоль 80-символьное табло со статистикой по каждой колонке (№ колонки, статус ТРК, время, цена, число наливов, объём, сумма), журналом последних наливов за смену и строкой `ИТОГО ЗА СМЕНУ`.
-- **Выборка за смену в режиме только чтения ([`storage.py`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L108-L141), [`list_dispenses_between()`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L481-L511))**: `EdgeDatabase(..., read_only=True)` включает `PRAGMA query_only=ON`, не создаёт БД при её отсутствии и безопасно читает `station_edge.db` параллельно со службой `serve`.
+- **Новый модуль ([`monitor.py`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py)) и CLI-команда `monitor` ([`main.py`](file:///d:/Проект/day/station-edge/agzs_edge/main.py#L481-L506))**: выводит на консоль 80-символьное табло со статистикой по каждой колонке (№ колонки, статус ТРК, время, цена, число наливов, объём, сумма), журналом последних наливов за смену и строкой `ИТОГО ЗА СМЕНУ`.
+- **Выборка за смену в режиме только чтения ([`storage.py`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L115-L148), [`list_dispenses_between()`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py#L494-L533))**: `EdgeDatabase(..., read_only=True)` включает `PRAGMA query_only=ON`, не создаёт БД при её отсутствии и безопасно читает `station_edge.db` параллельно со службой `serve`.
 - **Автозапуск без входа администратора ([`station-edge-monitor.service`](file:///d:/Проект/day/station-edge/station-edge-monitor.service))**: вытесняет `getty@tty1.service`, работает от бесправного системного пользователя `station-edge` без командной оболочки, применяет крупный консольный шрифт (`setfont`), отключает гашение экрана (`setterm -blank 0 -powerdown 0`) и запускает `monitor --kiosk` с блокировкой прерываний с клавиатуры (`SIGINT`, `SIGQUIT`, `SIGTSTP`).
+
+#### 7. Выполнено: рефакторинг станционного узла `station-edge` и расширение тестового покрытия до 92% (64 теста)
+- **Конфигурация и валидация ([`config.py`](file:///d:/Проект/day/station-edge/agzs_edge/config.py))**: добавлен регистронезависимый парсер булевых флагов `_parse_bool()`, синхронизация `auto_reset_on_stop` → `read_only=False` в `EdgeSettings.__post_init__()`, проверка диапазона адресов `1..6` в `_parse_dispenser_map()` и числовых параметров в `from_env()`.
+- **Протокол v3.10 и трекер налива ([`iskra.py`](file:///d:/Проект/day/station-edge/agzs_edge/iskra.py), [`tracker.py`](file:///d:/Проект/day/station-edge/agzs_edge/tracker.py))**: добавлен `_decode_sost_field()` для корректного чтения кодов ошибок колонки `01..04` в байте `Sost[19]` (включая старшие биты), делегирована сборка кадра из `build_test_response_frame()` в `build_command_frame()`, исправлена очистка отменённой уставки дозы при `'01' -> '05'`, обеспечено определение живых кадров `P..` в `_detect_initial_mode()` и сохранение аппаратной ошибки колонки через `_frame_error_code()`.
+- **Пульт БП без ПУ и имитатор ([`psu_controller.py`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py), [`serial_link.py`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py))**: добавлен запрет `set_buttons_mode()` во время активного налива `'03'`, автосброс из `'07'` перед `read_counters()`, а в `EmulatorAskaLink` — корректное завершение дозы в `'07'` и сброс шага демо-расписания без блокировки повторных наливов при `serve --auto-reset`.
+- **SQLite, синхронизация VPS и диагностика ([`storage.py`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py), [`monitor.py`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py), [`sync.py`](file:///d:/Проект/day/station-edge/agzs_edge/sync.py), [`diagnose.py`](file:///d:/Проект/day/station-edge/agzs_edge/diagnose.py), [`main.py`](file:///d:/Проект/day/station-edge/agzs_edge/main.py))**: унифицирован `parse_iso_datetime()`, добавлены индексы SQLite и SQL-предфильтрация в `list_dispenses_between()`, чанкинг по `MAX_BATCH_SIZE = 200` с поштучным откатом в `OutboxSyncWorker.flush_due()`, кроссплатформенный сбор USB/FTDI из `pyserial` в `diagnose.py` и обработка невалидного `--addr` (код `2`) с поддержкой `--emulator`/`--baudrate`/`--checksum` для `watch-fill`.
+- **Покрытие тестами**: все 8 модулей `station-edge/tests/` расширены с 45 до 64 тестов (общее покрытие `agzs_edge`: **92%**).
+- **Выравнивание `systemd` и интеграция реальных наливов на сайте**:
+  - В [`station-edge.service`](file:///d:/Проект/day/station-edge/station-edge.service) задан пользователь `station-edge` (`Group=dialout`, `SupplementaryGroups=tty`) для единых прав с [`station-edge-monitor.service`](file:///d:/Проект/day/station-edge/station-edge-monitor.service).
+  - В бэкенде добавлен эндпоинт `GET /api/v1/stations/{station_id}/dispenses` (`DispenseReadingOut`, `list_dispense_records()` в `device_ingest.py` и `postgres_account.py`), а на фронтенде (`client.ts`, `columnReport.ts`, `ColumnReportCard.tsx`, `StationDetailPage.tsx`) вкладка «Колонки и КГД» отображает реальные наливы от `station-edge` (`source: "edge"`) с автоматическим fallback на расчёт по уровнемеру (`source: "level"`).

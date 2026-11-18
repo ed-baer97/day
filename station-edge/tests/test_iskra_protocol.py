@@ -135,3 +135,98 @@ def test_parse_rejects_wrong_length_or_bad_checksum() -> None:
     parsed = parse_iskra_frame(raw_sum8, layout_sum8)
     assert parsed.address == 3
     assert parsed.volume_ml == 7700
+
+
+def test_parse_column_error_codes_in_sost_byte19_and_detailed_status() -> None:
+    """Байт 19 Sost с кодами ошибок 01..04 (в т.ч. с установленным битом 7) корректно разбирается."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, STX, compute_bcc
+    from agzs_edge.psu_controller import format_detailed_status
+
+    for err_num, sost19 in [(1, 0x31), (2, 0x32), (3, 0xB3), (4, 0xB4)]:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + b"007200"
+            + b"001500"
+            + bytes([0x50, 0x8E])
+            + bytes([sost19, ord("7")])
+            + bytes([ETX])
+        )
+        raw = bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+        frame = parse_iskra_frame(raw)
+        assert frame.state_code == "07"
+        assert frame.column_error_code == err_num
+        assert frame.has_protocol_alarm is True
+        details = format_detailed_status(frame)
+        assert f"Ошибка 0{err_num}" in details
+
+
+def test_command_builders_and_bcc_validation() -> None:
+    """Проверка валидации параметров в build_command_frame, build_set_dose_command, build_param_command, compute_bcc."""
+    from agzs_edge.iskra import (
+        CMD_TEST_ASCII,
+        build_command_frame,
+        build_param_command,
+        build_set_dose_command,
+        compute_bcc,
+    )
+
+    assert compute_bcc(b"ABC", "sum7") == (sum(b"ABC") & 0x7F)
+    assert compute_bcc(b"ABC", "sum8") == (sum(b"ABC") & 0xFF)
+    with pytest.raises(ValueError, match="режим"):
+        compute_bcc(b"ABC", "crc16")
+
+    with pytest.raises(ValueError):
+        build_command_frame(1, 300)
+    with pytest.raises(ValueError):
+        build_command_frame(1, CMD_TEST_ASCII, status_ascii="0")
+    with pytest.raises(ValueError):
+        build_command_frame(1, CMD_TEST_ASCII, price_digits=1_000_000)
+    with pytest.raises(ValueError):
+        build_command_frame(1, CMD_TEST_ASCII, price_digits="BAD1234")
+
+    with pytest.raises(ValueError):
+        build_set_dose_command(1, 0)
+    with pytest.raises(ValueError):
+        build_set_dose_command(1, 1_000_000)
+
+    cmd_custom = build_param_command(1, "123456", volume_digits=500)
+    assert cmd_custom[5:11] == b"123456"
+    with pytest.raises(ValueError, match="код параметра"):
+        build_param_command(1, "9.99")
+
+    # Неверные маркеры SOH / STX / ETX / не-ASCII поля
+    good = bytearray(build_test_response_frame(address=1, state_code="05", price_digits=7200, volume_ml=0))
+    bad_soh = bytearray(good)
+    bad_soh[0] = 0x00
+    with pytest.raises(IskraFrameError, match="SOH"):
+        parse_iskra_frame(bytes(bad_soh))
+
+    bad_etx = bytearray(good)
+    bad_etx[21] = 0x00
+    with pytest.raises(IskraFrameError, match="ETX"):
+        parse_iskra_frame(bytes(bad_etx))
+
+    bad_stx = bytearray(good)
+    bad_stx[4] = 0x00
+    bad_stx[-1] = compute_bcc(bytes(bad_stx[1:22]), "xor")
+    with pytest.raises(IskraFrameError, match="STX"):
+        parse_iskra_frame(bytes(bad_stx))
+
+    bad_addr = bytearray(good)
+    bad_addr[1:3] = b"09"
+    bad_addr[-1] = compute_bcc(bytes(bad_addr[1:22]), "xor")
+    with pytest.raises(IskraFrameError, match="диапазона"):
+        parse_iskra_frame(bytes(bad_addr))
+
+    bad_price = bytearray(good)
+    bad_price[5:11] = b"ABCDEF"
+    bad_price[-1] = compute_bcc(bytes(bad_price[1:22]), "xor")
+    with pytest.raises(IskraFrameError, match="цены"):
+        parse_iskra_frame(bytes(bad_price))
+
+    bad_vol = bytearray(good)
+    bad_vol[11:17] = b"XYZ123"
+    bad_vol[-1] = compute_bcc(bytes(bad_vol[1:22]), "xor")
+    with pytest.raises(IskraFrameError, match="объёма"):
+        parse_iskra_frame(bytes(bad_vol))

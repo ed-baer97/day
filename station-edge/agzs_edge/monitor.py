@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 
 from agzs_edge.config import EdgeSettings
 from agzs_edge.psu_controller import STATE_DESCRIPTIONS_RU
-from agzs_edge.storage import DispenseRow, EdgeDatabase
+from agzs_edge.storage import DispenseRow, EdgeDatabase, parse_iso_datetime
 
 _SHORT_STATE_RU: dict[str, str] = {
     "01": "Доза задана",
@@ -122,23 +122,8 @@ def resolve_shift_window(
     return ShiftWindow(start=start, end=end, label=label)
 
 
-def _parse_iso_datetime(raw: str) -> datetime | None:
-    text = raw.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
 def _format_local_time(raw: str, tz: tzinfo | None = None) -> str:
-    parsed = _parse_iso_datetime(raw)
+    parsed = parse_iso_datetime(raw)
     if parsed is None:
         return "—"
     target_tz = tz or _local_tz()

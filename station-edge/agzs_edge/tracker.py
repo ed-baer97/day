@@ -50,6 +50,14 @@ class CompletedDispense:
     last_raw_frame_hex: str
 
 
+def _frame_error_code(frame: IskraTelemetryFrame) -> str:
+    if frame.error_code != "00":
+        return frame.error_code
+    if frame.column_error_code > 0:
+        return f"{frame.column_error_code:02d}"
+    return "00"
+
+
 @dataclass
 class _ActiveSession:
     pump_address: int
@@ -108,6 +116,9 @@ class PumpDispenseTracker:
             # На пульте УЗГС-01 набрали дозу перед пуском (например, 20 000 мл)
             self._staged_preset_ml[addr] = frame.volume_ml
             return
+        if frame.state_code in {STATE_IDLE, STATE_ERROR, STATE_COMPLETED, STATE_STOPPED}:
+            self._staged_preset_ml.pop(addr, None)
+            return
         if not frame.is_dispensing:
             return
 
@@ -126,7 +137,7 @@ class PumpDispenseTracker:
                 else self._last_price_by_addr.get(addr, 0.0)
             ),
             last_state_code=frame.state_code,
-            last_error_code=frame.error_code,
+            last_error_code=_frame_error_code(frame),
             last_raw_frame_hex=frame.raw_hex,
         )
 
@@ -134,6 +145,8 @@ class PumpDispenseTracker:
         staged_preset = self._staged_preset_ml.pop(addr, None)
         if staged_preset is not None and staged_preset > 0 and frame.volume_ml <= staged_preset:
             return MODE_DOSE, staged_preset, max(0, staged_preset - frame.volume_ml)
+        if frame.flags_raw.startswith("P"):
+            return MODE_FULL_TANK, None, frame.volume_ml
         if frame.flags_raw == "01":
             return MODE_DOSE, frame.volume_ml, 0
         if frame.flags_raw == "02":
@@ -176,6 +189,7 @@ class PumpDispenseTracker:
         started_epoch_ms = int(finished_session.started_at.timestamp() * 1000)
         txn_id = f"aska02-{self._station_code.lower()}-p{addr}-{started_epoch_ms}-{seq}"
 
+        final_err = _frame_error_code(frame)
         return CompletedDispense(
             external_txn_id=txn_id,
             pump_address=addr,
@@ -185,7 +199,7 @@ class PumpDispenseTracker:
             volume_liters=round(finished_session.current_dispensed_ml / 1000.0, 3),
             price_kzt_per_liter=finished_session.price_kzt_per_liter,
             final_state_code=frame.state_code,
-            error_code=frame.error_code if frame.error_code != "00" else finished_session.last_error_code,
+            error_code=final_err if final_err != "00" else finished_session.last_error_code,
             started_at=finished_session.started_at,
             finished_at=now,
             last_raw_frame_hex=frame.raw_hex,
@@ -195,8 +209,9 @@ class PumpDispenseTracker:
         if frame.price_kzt_per_liter > 0:
             session.price_kzt_per_liter = frame.price_kzt_per_liter
         session.last_state_code = frame.state_code
-        if frame.error_code != "00":
-            session.last_error_code = frame.error_code
+        err_code = _frame_error_code(frame)
+        if err_code != "00":
+            session.last_error_code = err_code
         session.last_raw_frame_hex = frame.raw_hex
 
         if not frame.is_dispensing:

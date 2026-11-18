@@ -29,6 +29,7 @@ from agzs_edge.iskra import (
     STATE_IDLE,
     STATE_STOPPED,
     STX,
+    build_command_frame,
     build_test_command,
     build_test_response_frame,
     compute_bcc,
@@ -324,13 +325,37 @@ class EmulatorAskaLink:
     def send_command(self, address: int, request: bytes) -> PollRawResult:
         """Эмулирует ответ колонки УЗСГ-01 на команды Протокола v3.10."""
         cmd = request[3]
+        if (
+            cmd == CMD_RESET_ASCII
+            and address in self._step_by_addr
+            and address not in self._controlled_state
+            and not self._initial_locked
+        ):
+            self._step_by_addr[address] = 0
+            mode = "xor" if self.layout.checksum_mode == "any" else self.layout.checksum_mode
+            reply = build_command_frame(
+                address,
+                CMD_RESET_ASCII,
+                price_digits=self.price_digits,
+                volume_digits=0,
+                status_ascii="00",
+                sost_ascii=STATE_IDLE,
+                checksum_mode=mode,
+            )
+            return PollRawResult(address=address, request_bytes=request, response_bytes=reply)
+
         state = self._get_state(address)
         if cmd == CMD_TEST_ASCII:
             if state["state_code"] == STATE_DISPENSING:
                 dose = int(state["dose_ml"])
                 disp = int(state["dispensed_ml"])
-                if dose > 0 and disp + 500 < dose:
-                    state["dispensed_ml"] = disp + 500
+                if dose > 0:
+                    if disp + 500 < dose:
+                        state["dispensed_ml"] = disp + 500
+                    else:
+                        state["dispensed_ml"] = dose
+                        state["state_code"] = STATE_COMPLETED
+                        state["valve_open"] = False
             return PollRawResult(
                 address=address,
                 request_bytes=request,

@@ -20,6 +20,7 @@ from typing import Callable
 from agzs_edge.storage import EdgeDatabase, OutboxItem
 
 logger = logging.getLogger(__name__)
+MAX_BATCH_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -42,8 +43,11 @@ def _send_vps_request(
     timeout_sec: float = 10.0,
 ) -> VpsSendResult:
     """Выполняет HTTP-запрос к VPS и возвращает унифицированный VpsSendResult."""
+    del accept_json
     url = base_url.rstrip("/") + path
-    headers: dict[str, str] = {"Accept": "application/json"} if accept_json else {"Content-Type": "application/json"}
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if body_text is not None:
+        headers["Content-Type"] = "application/json"
     if device_token:
         headers["X-Device-Token"] = device_token
     data = None if body_text is None else body_text.encode("utf-8")
@@ -134,7 +138,7 @@ def post_dispenses_batch_to_vps(
 ) -> VpsSendResult:
     """Выполняет пакетный HTTP POST `/api/v1/ingest/dispenses/batch` на центральный VPS."""
     payload = json.dumps({"items": items}, ensure_ascii=False)
-    return _send_vps_request(
+    result = _send_vps_request(
         base_url,
         "/api/v1/ingest/dispenses/batch",
         device_token,
@@ -142,6 +146,19 @@ def post_dispenses_batch_to_vps(
         body_text=payload,
         timeout_sec=timeout_sec,
     )
+    if not result.ok:
+        return result
+    try:
+        body = json.loads(result.response_text)
+    except json.JSONDecodeError:
+        body = {}
+    if isinstance(body, dict) and body.get("accepted") is False:
+        return VpsSendResult(
+            ok=False,
+            status_code=result.status_code,
+            error_text=f"Сервер отклонил пакет: {result.response_text}",
+        )
+    return result
 
 
 class OutboxSyncWorker:
@@ -169,51 +186,52 @@ class OutboxSyncWorker:
     def flush_due(self, *, limit: int = 25, now: datetime | None = None) -> tuple[int, int]:
         """Пытается отправить все готовые к отправке записи из `outbox_queue`.
 
-        Если готовых записей больше одной, сначала пробует пакетную отправку (Bulk Ingest).
-        При сбое откатывается к поштучной отправке с индивидуальным retry-бэкоффом.
-        Возвращает кортеж `(sent_count, failed_count)`.
+        Если готовых записей больше одной, сначала пробует пакетную отправку (Bulk Ingest)
+        чанками до `MAX_BATCH_SIZE` (200 записей). При сбое чанка откатывается к поштучной отправке
+        с индивидуальным retry-бэкоффом. Возвращает кортеж `(sent_count, failed_count)`.
         """
         items: list[OutboxItem] = self.db.fetch_due_outbox(limit=limit, now=now)
         if not items:
             return 0, 0
 
-        # Попытка быстрой пакетной отправки, если записей несколько
-        if len(items) > 1:
-            try:
-                parsed = [json.loads(it.payload_json) for it in items]
-                batch_res = self._batch_sender(self.vps_base_url, self.device_token, parsed)
-                if batch_res.ok:
-                    self.db.mark_outbox_batch_sent(
-                        [(it.external_txn_id, batch_res.response_text) for it in items]
-                    )
-                    logger.info("Пакет из %d наливов успешно доставлен на VPS в 1 запросе", len(items))
-                    return len(items), 0
-                else:
-                    logger.warning("Пакетная отправка отклонена (%s), переход на поштучную", batch_res.error_text)
-            except Exception as exc:
-                logger.warning("Ошибка пакетной отправки (%s), переход на поштучную", exc)
-
         sent_count = 0
         failed_count = 0
 
-        for item in items:
-            result = self._sender(self.vps_base_url, self.device_token, item.payload_json)
-            if result.ok:
-                self.db.mark_outbox_sent(item.external_txn_id, result.response_text)
-                sent_count += 1
-                logger.info(
-                    "Пакет %s доставлен на VPS (%s)",
-                    item.external_txn_id,
-                    "дубликат проигнорирован" if result.duplicate else "принят",
-                )
-            else:
-                self.db.mark_outbox_failed(item.external_txn_id, result.error_text, now=now)
-                failed_count += 1
-                logger.warning(
-                    "Не удалось отправить пакет %s (попытка %d): %s",
-                    item.external_txn_id,
-                    item.attempts + 1,
-                    result.error_text,
-                )
+        for start in range(0, len(items), MAX_BATCH_SIZE):
+            chunk = items[start : start + MAX_BATCH_SIZE]
+            if len(chunk) > 1:
+                try:
+                    parsed = [json.loads(it.payload_json) for it in chunk]
+                    batch_res = self._batch_sender(self.vps_base_url, self.device_token, parsed)
+                    if batch_res.ok:
+                        self.db.mark_outbox_batch_sent(
+                            [(it.external_txn_id, batch_res.response_text) for it in chunk]
+                        )
+                        sent_count += len(chunk)
+                        logger.info("Пакет из %d наливов успешно доставлен на VPS в 1 запросе", len(chunk))
+                        continue
+                    logger.warning("Пакетная отправка отклонена (%s), переход на поштучную", batch_res.error_text)
+                except Exception as exc:
+                    logger.warning("Ошибка пакетной отправки (%s), переход на поштучную", exc)
+
+            for item in chunk:
+                result = self._sender(self.vps_base_url, self.device_token, item.payload_json)
+                if result.ok:
+                    self.db.mark_outbox_sent(item.external_txn_id, result.response_text)
+                    sent_count += 1
+                    logger.info(
+                        "Пакет %s доставлен на VPS (%s)",
+                        item.external_txn_id,
+                        "дубликат проигнорирован" if result.duplicate else "принят",
+                    )
+                else:
+                    self.db.mark_outbox_failed(item.external_txn_id, result.error_text, now=now)
+                    failed_count += 1
+                    logger.warning(
+                        "Не удалось отправить пакет %s (попытка %d): %s",
+                        item.external_txn_id,
+                        item.attempts + 1,
+                        result.error_text,
+                    )
 
         return sent_count, failed_count
