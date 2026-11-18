@@ -13,6 +13,7 @@ from app.auth import (
     revoke_token,
 )
 from app.config import get_settings
+from app.domain.errors import ValidationError
 from app.main import create_app
 from app.services.shelly_link import normalize_host
 
@@ -74,7 +75,7 @@ def test_rate_limit_blocks_brute_force():
 
 def test_ssrf_hosts_rejected():
     for forbidden in ("localhost", "127.0.0.1", "169.254.169.254", "0.0.0.0", "db:5432"):
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(ValidationError) as exc:
             normalize_host(forbidden)
         assert exc.value.status_code == 422
     assert normalize_host("192.168.0.104") == "192.168.0.104"

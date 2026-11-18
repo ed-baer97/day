@@ -2,6 +2,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { isAdmin } from "./access";
 import { api, type CatalogStation, type CatalogTruck, type StationDraft, type TruckDraft } from "./api/client";
 import { useAuth } from "./auth";
+import { messageOf } from "./errors";
+
+export { messageOf };
 
 type CatalogApi = {
   stations: CatalogStation[];
@@ -16,17 +19,6 @@ type CatalogApi = {
 };
 
 const CatalogContext = createContext<CatalogApi | null>(null);
-
-export function messageOf(err: unknown): string {
-  if (!(err instanceof Error) || !err.message) return "Сервер не ответил";
-  try {
-    const parsed = JSON.parse(err.message) as { detail?: unknown };
-    if (typeof parsed.detail === "string") return parsed.detail;
-  } catch {
-    /* ответ не JSON */
-  }
-  return err.message;
-}
 
 export function CatalogProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();

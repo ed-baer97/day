@@ -3,6 +3,7 @@ import { isAdmin } from "../access";
 import { api, type ShellyLink, type TankDevice } from "../api/client";
 import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
+import { messageOf } from "../errors";
 import { liters } from "../format";
 import { tankSensorBadge, tankSensorLabel, usePublicLevels } from "../liveLevels";
 import { useToast } from "./Toast";
@@ -20,17 +21,6 @@ type Row = {
   manualLiters: string;
   receiptLiters: string;
 };
-
-function messageOf(err: unknown): string {
-  if (!(err instanceof Error) || !err.message) return "Не удалось сохранить";
-  try {
-    const parsed = JSON.parse(err.message) as { detail?: unknown };
-    if (typeof parsed.detail === "string") return parsed.detail;
-  } catch {
-    /* ответ не JSON */
-  }
-  return err.message;
-}
 
 function ingestUrl(path: string) {
   if (path.startsWith("http")) return path;
@@ -69,7 +59,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       .catch((err) => {
         if (!live) return;
         setRows([]);
-        setError(messageOf(err));
+        setError(messageOf(err, "Не удалось сохранить"));
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -117,7 +107,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       setCapacity("");
       toast.ok(`Резервуар ${created.code} добавлен`);
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -151,7 +141,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       );
       toast.ok(`Резервуар ${row.code} сохранён`);
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -165,7 +155,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       setRows((current) => current.filter((item) => item.id !== row.id));
       toast.ok(`Резервуар ${row.code} удалён`);
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -190,7 +180,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
         )
       );
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -215,7 +205,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
         )
       );
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -243,7 +233,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       });
       toast.ok(`Калибровка ${row.code} сохранена (${z} В … ${f} В)`);
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -266,7 +256,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       });
       toast.ok(`Замер остатка ${row.code}: ${Math.round(lit)} л опубликован`);
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }
@@ -302,7 +292,7 @@ export default function TankDeviceRows({ stationId }: { stationId: string }) {
       );
       toast.ok(`Приход ${Math.round(lit)} л принят на ${row.code}`);
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, "Не удалось сохранить"));
     } finally {
       setSavingId(null);
     }

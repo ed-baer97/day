@@ -6,11 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Response
 
 from app.auth import Principal, require_admin, require_principal
-from app.config import get_settings
-from app.routers.stations import require_existing_station_access
-from app.schemas.auth import LevelReadingOut
+from app.routers.deps import device_to_out, require_existing_station_access
 from app.schemas.station import (
     DispenseReadingOut,
+    LevelReadingOut,
     TankDeviceCreate,
     TankDeviceOut,
     TankDeviceUpdate,
@@ -27,25 +26,9 @@ from app.services.account import (
     register_tank,
     update_tank_device,
 )
-from app.services.device_ingest import TankDevice
 from app.services.level_journal import published_levels
-from app.services.shelly_link import shelly_view
 
 router = APIRouter(prefix="/stations/{station_id}", tags=["tanks"])
-
-
-def device_to_out(device: TankDevice) -> TankDeviceOut:
-    settings = get_settings()
-    return TankDeviceOut(
-        id=device.tank_id,
-        station_id=device.station_id,
-        code=device.code,
-        capacity_liters=device.capacity_liters,
-        ingest_token=device.token,
-        level_path=settings.ingest_level_path,
-        ingest_url=settings.ingest_level_url,
-        shelly=shelly_view(device.tank_id),
-    )
 
 
 @router.get("/tanks", response_model=list[TankOut])

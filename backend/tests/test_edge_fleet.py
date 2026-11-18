@@ -1,15 +1,21 @@
 """Тесты централизованного управления релизами (3 кольца: ring0, ring1, ring2) и телеметрии парка АГЗС."""
 
+import hmac
+
 import pytest
 
+from app.auth import require_admin
+from app.config import get_settings
+from app.domain.errors import ValidationError
 from app.routers.ingest import (
     get_edge_fleet,
     get_edge_release,
     post_edge_heartbeat,
     put_edge_release,
+    router as ingest_router,
 )
 from app.schemas.ingest import EdgeHeartbeatIn, EdgeReleaseManifest
-from app.services.edge_fleet import reset_edge_fleet
+from app.services.edge_fleet import reset_edge_fleet, sign_release_manifest
 
 
 @pytest.fixture(autouse=True)
@@ -152,3 +158,67 @@ def test_three_ring_rollout_and_fleet_heartbeat():
     assert by_code["AKT-R1-1"].up_to_date is True
     assert by_code["AKT-R2-099"].up_to_date is False
     assert by_code["AKT-R2-099"].target_version == "0.2.0"
+
+
+def test_edge_release_signing_and_admin_route_guard(monkeypatch):
+    # 1. Проверяем, что PUT /edge/release и GET /edge/fleet защищены именно require_admin (а не require_device)
+    by_path_method = {
+        (route.path, tuple(sorted(route.methods))): [dep.call for dep in route.dependant.dependencies]
+        for route in ingest_router.routes
+    }
+    assert require_admin in by_path_method[("/ingest/edge/release", ("PUT",))]
+    assert require_admin in by_path_method[("/ingest/edge/fleet", ("GET",))]
+    assert require_admin not in by_path_method[("/ingest/edge/release", ("GET",))]
+    assert require_admin not in by_path_method[("/ingest/edge/heartbeat", ("POST",))]
+
+    # 2. Проверяем HMAC-SHA256 подпись релиза при заданном EDGE_RELEASE_SIGNING_KEY
+    monkeypatch.setenv("EDGE_RELEASE_SIGNING_KEY", "fleet-secret-key")
+    get_settings.cache_clear()
+    try:
+        sha = "d" * 64
+        auto_signed = put_edge_release(
+            EdgeReleaseManifest(
+                version="0.4.0",
+                artifact_url="https://cdn.example.com/agzs_edge-0.4.0-py3-none-any.whl",
+                sha256=sha,
+                channel="ring0",
+                min_version="0.2.0",
+            ),
+            _="admin",
+        )
+        expected = sign_release_manifest("0.4.0", sha, "0.2.0", "fleet-secret-key")
+        assert auto_signed.signature is not None
+        assert hmac.compare_digest(auto_signed.signature, expected)
+
+        fetched = get_edge_release(channel="ring0", _=None)
+        assert fetched.signature == expected
+
+        # Поддельная подпись отклоняется с 422 ValidationError
+        with pytest.raises(ValidationError) as exc:
+            put_edge_release(
+                EdgeReleaseManifest(
+                    version="0.4.1",
+                    artifact_url="https://cdn.example.com/agzs_edge-0.4.1-py3-none-any.whl",
+                    sha256=sha,
+                    channel="ring0",
+                    signature="0" * 64,
+                ),
+                _="admin",
+            )
+        assert exc.value.status_code == 422
+
+        # Корректная внешняя подпись принимается
+        ext_sig = sign_release_manifest("0.4.2", sha, None, "fleet-secret-key")
+        published = put_edge_release(
+            EdgeReleaseManifest(
+                version="0.4.2",
+                artifact_url="https://cdn.example.com/agzs_edge-0.4.2-py3-none-any.whl",
+                sha256=sha,
+                channel="ring2",
+                signature=ext_sig.upper(),
+            ),
+            _="admin",
+        )
+        assert published.signature == ext_sig
+    finally:
+        get_settings.cache_clear()

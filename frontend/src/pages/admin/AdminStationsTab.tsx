@@ -4,7 +4,8 @@ import LevelChangesToday from "../../components/LevelChangesToday";
 import StationOwnerCard from "../../components/StationOwnerCard";
 import TankDeviceRows from "../../components/TankDeviceRows";
 import { dateTime, liters, REGIONS } from "../../format";
-import { isLowFill, LOW_FILL_PERCENT, SensorStatus } from "../../liveLevels";
+import { isLowFill, LOW_FILL_PERCENT, SensorStatusBadge } from "../../liveLevels";
+import { SAFE_FILL_PERCENT } from "../../policy";
 import StationForm from "./StationForm";
 import type { EnrichedStation } from "./types";
 
@@ -208,7 +209,7 @@ export default function AdminStationsTab({
                             </td>
                             <td>
                               {live && live.tanks.length > 0 ? (
-                                <SensorStatus level={live} />
+                                <SensorStatusBadge level={live} />
                               ) : (
                                 <span className="badge warn">не подключён</span>
                               )}
@@ -377,7 +378,7 @@ export default function AdminStationsTab({
                               {stationEnriched.free == null ? "—" : liters(stationEnriched.free)}
                             </strong>
                             <em>
-                              до 85%:{" "}
+                              до {SAFE_FILL_PERCENT}%:{" "}
                               {stationEnriched.safeRefill == null
                                 ? "—"
                                 : liters(stationEnriched.safeRefill)}

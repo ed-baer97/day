@@ -5,9 +5,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.auth import require_admin, require_principal
 from app.config import get_settings
+from app.domain.errors import DomainError
 from app.routers import (
     auth,
     balance,
@@ -23,8 +25,7 @@ from app.routers import (
     trucks,
 )
 from app.schemas.common import HealthOut
-from app.services.boot import import_state_if_empty, run_migrations
-from app.services.memory_state import restore
+from app.services.boot import import_state_if_empty, restore_memory_state, run_migrations
 from app.services.shelly_link import shelly_poller
 
 
@@ -41,7 +42,7 @@ async def lifespan(_app: FastAPI):
             run_migrations()
             import_state_if_empty()
         else:
-            restore()
+            restore_memory_state()
         shelly_poller.start()
     try:
         yield
@@ -57,6 +58,11 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         lifespan=lifespan,
     )
+
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(_request: Request, exc: DomainError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,

@@ -164,6 +164,8 @@ class EdgeSettings:
     update_idle_quiet_sec: float = 60.0
     lock_buttons_on_update: bool = True
     pump_buttons_mode: str = "enable"
+    release_signing_key: str = ""
+    require_release_signature: bool = False
     layout: FrameLayout = field(default_factory=FrameLayout)
 
     def __post_init__(self) -> None:
@@ -256,6 +258,10 @@ class EdgeSettings:
         pump_buttons_mode = os.environ.get("AGZS_PUMP_BUTTONS_MODE", "enable").strip().lower() or "enable"
         if pump_buttons_mode not in {"lock-reset", "enable"}:
             raise ValueError("AGZS_PUMP_BUTTONS_MODE должен быть 'lock-reset' или 'enable'")
+        release_signing_key = os.environ.get("AGZS_RELEASE_SIGNING_KEY", "").strip()
+        require_release_signature = _parse_bool(
+            os.environ.get("AGZS_REQUIRE_RELEASE_SIGNATURE"), default=False
+        )
 
         layout = FrameLayout(checksum_mode=checksum_mode)
         # Предпочитаем стабильный by-id на Linux, если порт задан как ttyUSB*
@@ -294,6 +300,8 @@ class EdgeSettings:
             update_idle_quiet_sec=update_idle_quiet_sec,
             lock_buttons_on_update=lock_buttons_on_update,
             pump_buttons_mode=pump_buttons_mode,
+            release_signing_key=release_signing_key,
+            require_release_signature=require_release_signature,
             layout=layout,
         )
 

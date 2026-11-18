@@ -1,6 +1,5 @@
 """Discrepancy / anomaly events from balance reconciliation."""
 
-import enum
 import uuid
 from datetime import datetime
 
@@ -9,20 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-
-
-class DiscrepancyType(str, enum.Enum):
-    shortage = "shortage"
-    surplus = "surplus"
-    measurement_error = "measurement_error"
-    unregistered_receipt = "unregistered_receipt"
-    unregistered_dispense = "unregistered_dispense"
-
-
-class DiscrepancySeverity(str, enum.Enum):
-    info = "info"
-    warning = "warning"
-    critical = "critical"
+from app.domain.balance import DiscrepancySeverity, DiscrepancyType
 
 
 class DiscrepancyEvent(Base):

@@ -1,17 +1,14 @@
-"""Порт учёта. Роутеры вызывают только его.
-
-Режим memory или postgres выбирается здесь один раз на вызов.
-"""
+"""Порт учёта и общая сервисная оркестрация над адаптерами (memory / postgres)."""
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
-from fastapi import HTTPException
-
-from app.domain.errors import CalibrationRequired
+from app.config import get_settings
+from app.domain.entities import StationCard, StationOwner, TankDevice, TruckCard
+from app.domain.errors import ForbiddenError, NotFoundError, ValidationError
 from app.schemas.ingest import (
     CalibrationIn,
     DispenseBatchAck,
@@ -23,27 +20,58 @@ from app.schemas.ingest import (
     TankIngestState,
 )
 from app.schemas.station import TankOut
-from app.services.catalog import StationCard, TruckCard
-from app.services.device_ingest import TankDevice
+from app.services import account_mode
+from app.services.account_helpers import (
+    clean_optional_text,
+    clean_owner_username,
+    gps_event_key,
+    is_gps_seen,
+    remember_gps,
+    require_calibration_points,
+    require_non_empty,
+    require_station_and_tank,
+    require_truck_status,
+)
+from app.services.board_cache import invalidate_public_board_cache
+
+TankDeletedHook = Callable[[UUID], None]
+CalibrationHook = Callable[[UUID], bool]
+
+_TANK_DELETED_HOOKS: list[TankDeletedHook] = []
+_CALIBRATION_HOOKS: list[CalibrationHook] = []
+
+
+def register_tank_deleted_hook(hook: TankDeletedHook) -> None:
+    if hook not in _TANK_DELETED_HOOKS:
+        _TANK_DELETED_HOOKS.append(hook)
+
+
+def register_calibration_hook(hook: CalibrationHook) -> None:
+    if hook not in _CALIBRATION_HOOKS:
+        _CALIBRATION_HOOKS.append(hook)
+
+
+def _notify_tank_deleted(tank_id: UUID) -> None:
+    for hook in _TANK_DELETED_HOOKS:
+        hook(tank_id)
+
+
+def _notify_calibrated(tank_id: UUID) -> bool:
+    applied = False
+    for hook in _CALIBRATION_HOOKS:
+        if hook(tank_id):
+            applied = True
+    return applied
 
 
 def backend() -> Any:
-    from app.services.account_mode import use_postgres
-
-    if use_postgres():
+    if account_mode.use_postgres():
         from app.services import postgres_account
 
         return postgres_account
     from app.services import memory_account
 
     return memory_account
-
-
-def _levels(call):
-    try:
-        return call()
-    except CalibrationRequired as exc:
-        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 def list_stations() -> list[StationCard]:
@@ -54,16 +82,61 @@ def get_station(station_id: UUID) -> StationCard:
     return backend().get_station(station_id)
 
 
-def create_station(**kwargs) -> StationCard:
-    return backend().create_station(**kwargs)
+def create_station(
+    *,
+    code: str,
+    name: str,
+    address: str | None,
+    lat: float,
+    lon: float,
+    is_active: bool,
+) -> StationCard:
+    cleaned_code = require_non_empty(code, "код заправки")
+    cleaned_name = require_non_empty(name, "название заправки")
+    station = backend().create_station(
+        code=cleaned_code,
+        name=cleaned_name,
+        address=clean_optional_text(address),
+        lat=lat,
+        lon=lon,
+        is_active=is_active,
+    )
+    invalidate_public_board_cache()
+    return station
 
 
-def update_station(station_id: UUID, **kwargs) -> StationCard:
-    return backend().update_station(station_id, **kwargs)
+def update_station(
+    station_id: UUID,
+    *,
+    code: str | None = None,
+    name: str | None = None,
+    address: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    is_active: bool | None = None,
+    address_set: bool = False,
+) -> StationCard:
+    cleaned_code = None if code is None else require_non_empty(code, "код заправки")
+    cleaned_name = None if name is None else require_non_empty(name, "название заправки")
+    station = backend().update_station(
+        station_id,
+        code=cleaned_code,
+        name=cleaned_name,
+        address=clean_optional_text(address) if address_set else None,
+        lat=lat,
+        lon=lon,
+        is_active=is_active,
+        address_set=address_set,
+    )
+    invalidate_public_board_cache()
+    return station
 
 
 def delete_station(station_id: UUID) -> None:
-    backend().delete_station(station_id)
+    deleted_tank_ids = backend().delete_station(station_id) or []
+    for tank_id in deleted_tank_ids:
+        _notify_tank_deleted(tank_id)
+    invalidate_public_board_cache()
 
 
 def list_trucks() -> list[TruckCard]:
@@ -74,12 +147,54 @@ def get_truck(truck_id: UUID) -> TruckCard:
     return backend().get_truck(truck_id)
 
 
-def create_truck(**kwargs) -> TruckCard:
-    return backend().create_truck(**kwargs)
+def create_truck(
+    *,
+    plate_number: str,
+    capacity_liters: float,
+    carrier_name: str | None,
+    status: str,
+    lat: float | None,
+    lon: float | None,
+) -> TruckCard:
+    plate = require_non_empty(plate_number, "номер газовоза")
+    valid_status = require_truck_status(status)
+    return backend().create_truck(
+        plate_number=plate,
+        capacity_liters=capacity_liters,
+        carrier_name=clean_optional_text(carrier_name),
+        status=valid_status,
+        lat=lat,
+        lon=lon,
+    )
 
 
-def update_truck(truck_id: UUID, **kwargs) -> TruckCard:
-    return backend().update_truck(truck_id, **kwargs)
+def update_truck(
+    truck_id: UUID,
+    *,
+    plate_number: str | None = None,
+    capacity_liters: float | None = None,
+    carrier_name: str | None = None,
+    status: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    carrier_set: bool = False,
+    lat_set: bool = False,
+    lon_set: bool = False,
+) -> TruckCard:
+    plate = None if plate_number is None else require_non_empty(plate_number, "номер газовоза")
+    valid_status = None if status is None else require_truck_status(status)
+    return backend().update_truck(
+        truck_id,
+        plate_number=plate,
+        capacity_liters=capacity_liters,
+        carrier_name=clean_optional_text(carrier_name) if carrier_set else None,
+        status=valid_status,
+        lat=lat,
+        lon=lon,
+        carrier_set=carrier_set,
+        lat_set=lat_set,
+        lon_set=lon_set,
+    )
 
 
 def delete_truck(truck_id: UUID) -> None:
@@ -94,16 +209,16 @@ def record_truck_position(
     recorded_at: datetime,
     source_event_id: str | None,
 ) -> IngestAck:
-    return backend().record_truck_position(
-        truck_id,
-        lat=lat,
-        lon=lon,
-        recorded_at=recorded_at,
-        source_event_id=source_event_id,
-    )
+    """Пишет координату газовоза. Повтор того же ключа в этом процессе координату не двигает."""
+    key = gps_event_key(truck_id, recorded_at, source_event_id)
+    if is_gps_seen(key):
+        return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=truck_id)
+    backend().update_truck(truck_id, lat=lat, lon=lon, lat_set=True, lon_set=True)
+    remember_gps(key)
+    return IngestAck(accepted=True, message="gps accepted", entity_id=truck_id)
 
 
-def list_active_stations_with_tanks():
+def list_active_stations_with_tanks() -> list[tuple[StationCard, list[TankOut]]]:
     return backend().list_active_stations_with_tanks()
 
 
@@ -124,15 +239,26 @@ def tank_by_token(token: str | None) -> TankDevice | None:
 
 
 def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDevice:
-    return backend().register_tank(station_id, code, capacity_liters)
+    cleaned = require_non_empty(code, "код резервуара")
+    store = backend()
+    store.get_station(station_id)
+    device = store.register_tank(station_id, cleaned, capacity_liters)
+    invalidate_public_board_cache()
+    return device
 
 
 def update_tank_device(station_id: UUID, tank_id: UUID, **kwargs) -> TankDevice:
-    return backend().update_tank_device(station_id, tank_id, **kwargs)
+    if kwargs.get("code") is not None:
+        kwargs["code"] = require_non_empty(str(kwargs["code"]), "код резервуара")
+    device = backend().update_tank_device(station_id, tank_id, **kwargs)
+    invalidate_public_board_cache()
+    return device
 
 
 def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
     backend().delete_tank_device(station_id, tank_id)
+    _notify_tank_deleted(tank_id)
+    invalidate_public_board_cache()
 
 
 def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
@@ -140,10 +266,21 @@ def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
 
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
-    return backend().set_calibration(body)
+    station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id, "укажите резервуар")
+    require_calibration_points(body.low_volts, body.high_volts)
+    store = backend()
+    state = store.set_calibration(body.model_copy(update={"station_id": station_id, "tank_id": tank_id}))
+    invalidate_public_board_cache()
+    if _notify_calibrated(tank_id):
+        invalidate_public_board_cache()
+        try:
+            state = store.tank_state(tank_id)
+        except NotFoundError:
+            pass
+    return state
 
 
-def tank_remainder(tank_id: UUID):
+def tank_remainder(tank_id: UUID) -> tuple[float | None, datetime | None]:
     return backend().tank_remainder(tank_id)
 
 
@@ -152,58 +289,115 @@ def tank_state(tank_id: UUID) -> TankIngestState:
 
 
 def accept_level(body: LevelIngest) -> IngestAck:
-    return _levels(lambda: backend().accept_level(body))
+    require_station_and_tank(body.station_id, body.tank_id)
+    ack = backend().accept_level(body)
+    if not ack.duplicate and ack.message != "level unchanged":
+        invalidate_public_board_cache()
+    return ack
 
 
 def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
-    return _levels(lambda: backend().accept_levels_batch(items))
+    for item in items:
+        require_station_and_tank(item.station_id, item.tank_id)
+    ack = backend().accept_levels_batch(items)
+    if any((not r.duplicate and r.message != "level unchanged") for r in ack.results):
+        invalidate_public_board_cache()
+    return ack
 
 
 def accept_dispense(body: DispenseIngest) -> IngestAck:
-    return backend().accept_dispense(body)
+    ack = backend().accept_dispense(body)
+    if not ack.duplicate:
+        invalidate_public_board_cache()
+    return ack
 
 
 def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
-    return backend().accept_dispenses_batch(items)
+    ack = backend().accept_dispenses_batch(items)
+    if ack.accepted_count > 0:
+        invalidate_public_board_cache()
+    return ack
 
 
 def accept_receipt(body: ReceiptIngest) -> IngestAck:
-    return backend().accept_receipt(body)
+    require_station_and_tank(body.station_id, body.tank_id)
+    ack = backend().accept_receipt(body)
+    if not ack.duplicate:
+        invalidate_public_board_cache()
+    return ack
+
+
+def _assert_device_scope(
+    device: TankDevice,
+    station_id: UUID | None,
+    tank_id: UUID | None,
+) -> None:
+    if station_id is not None and station_id != device.station_id:
+        raise ForbiddenError("токен принадлежит другой заправке")
+    if tank_id is not None and tank_id != device.tank_id:
+        raise ForbiddenError("токен принадлежит другому резервуару")
 
 
 def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
-    from app.services.device_ingest import bind_level as impl
-
-    return impl(body, token)
+    device = tank_by_token(token)
+    if device is not None:
+        _assert_device_scope(device, body.station_id, body.tank_id)
+        return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
+    require_station_and_tank(body.station_id, body.tank_id)
+    return body
 
 
 def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
-    from app.services.device_ingest import bind_calibration as impl
-
-    return impl(body, token)
+    device = tank_by_token(token)
+    if device is not None:
+        _assert_device_scope(device, body.station_id, body.tank_id)
+        return body.model_copy(
+            update={
+                "station_id": device.station_id,
+                "tank_id": device.tank_id,
+                "capacity_liters": device.capacity_liters,
+            }
+        )
+    require_station_and_tank(body.station_id, body.tank_id)
+    if body.capacity_liters is None:
+        raise ValidationError("укажите объём резервуара на карточке")
+    return body
 
 
 def bind_dispense(body: DispenseIngest, token: str | None) -> DispenseIngest:
-    from app.services.device_ingest import bind_dispense as impl
-
-    return impl(body, token)
+    device = tank_by_token(token)
+    if device is not None:
+        _assert_device_scope(device, body.station_id, body.tank_id)
+        return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
+    return body
 
 
 def bind_receipt(body: ReceiptIngest, token: str | None) -> ReceiptIngest:
-    from app.services.device_ingest import bind_receipt as impl
-
-    return impl(body, token)
-
-
-def list_station_users(station_id: UUID):
-    return backend().list_station_users(station_id)
+    device = tank_by_token(token)
+    if device is not None:
+        _assert_device_scope(device, body.station_id, body.tank_id)
+        return body.model_copy(update={"station_id": device.station_id, "tank_id": device.tank_id})
+    return body
 
 
-def create_station_user(station_id: UUID, username: str, password: str):
-    return backend().create_station_user(station_id, username, password)
+def list_station_users(station_id: UUID) -> list[StationOwner]:
+    store = backend()
+    store.get_station(station_id)
+    return store.list_station_users(station_id)
 
 
-def authenticate_station_user(username: str, password: str):
+def create_station_user(station_id: UUID, username: str, password: str) -> StationOwner:
+    cleaned = clean_owner_username(
+        username,
+        get_settings().admin_username,
+        empty_detail="укажите логин владельца",
+    )
+    store = backend()
+    store.get_station(station_id)
+    return store.create_station_user(station_id, cleaned, password)
+
+
+def authenticate_station_user(username: str, password: str) -> StationOwner | None:
     return backend().authenticate_station_user(username, password)
 
 
@@ -213,3 +407,47 @@ def list_level_readings(station_id: UUID, tank_id: UUID, **kwargs):
 
 def list_dispense_records(station_id: UUID, **kwargs):
     return backend().list_dispense_records(station_id, **kwargs)
+
+
+__all__ = [
+    "accept_dispense",
+    "accept_dispenses_batch",
+    "accept_level",
+    "accept_levels_batch",
+    "accept_receipt",
+    "authenticate_station_user",
+    "backend",
+    "bind_calibration",
+    "bind_dispense",
+    "bind_level",
+    "bind_receipt",
+    "create_station",
+    "create_station_user",
+    "create_truck",
+    "delete_station",
+    "delete_tank_device",
+    "delete_truck",
+    "get_station",
+    "get_tank_device",
+    "get_truck",
+    "has_calibration",
+    "list_active_stations_with_tanks",
+    "list_dispense_records",
+    "list_level_readings",
+    "list_station_tanks_out",
+    "list_station_users",
+    "list_stations",
+    "list_tank_devices",
+    "list_trucks",
+    "record_truck_position",
+    "register_calibration_hook",
+    "register_tank",
+    "register_tank_deleted_hook",
+    "set_calibration",
+    "tank_by_token",
+    "tank_remainder",
+    "tank_state",
+    "update_station",
+    "update_tank_device",
+    "update_truck",
+]

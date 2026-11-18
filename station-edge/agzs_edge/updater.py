@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -21,6 +22,8 @@ from typing import Callable
 
 from agzs_edge import __version__
 from agzs_edge.config import EdgeSettings
+from agzs_edge.psu_controller import send_buttons_param_to_pumps
+from agzs_edge.serial_link import build_link
 from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import send_vps_request
 
@@ -40,6 +43,7 @@ class ReleaseManifest:
     channel: str = "stable"
     min_version: str | None = None
     notes: str = ""
+    signature: str | None = None
     update_required: bool = False
 
 
@@ -66,6 +70,8 @@ class UpdateProgressState:
     message: str
     artifact_url: str = ""
     sha256: str = ""
+    min_version: str = ""
+    signature: str = ""
     artifact_path: str = ""
     previous_wheel: str = ""
     interrupted_count: int = 0
@@ -98,6 +104,8 @@ def read_update_state(settings: EdgeSettings) -> UpdateProgressState | None:
             message=str(raw.get("message") or ""),
             artifact_url=str(raw.get("artifact_url") or ""),
             sha256=str(raw.get("sha256") or ""),
+            min_version=str(raw.get("min_version") or ""),
+            signature=str(raw.get("signature") or ""),
             artifact_path=str(raw.get("artifact_path") or ""),
             previous_wheel=str(raw.get("previous_wheel") or ""),
             interrupted_count=int(raw.get("interrupted_count", 0) or 0),
@@ -123,6 +131,8 @@ def write_update_state(settings: EdgeSettings, state: UpdateProgressState) -> No
             message=state.message,
             artifact_url=state.artifact_url,
             sha256=state.sha256,
+            min_version=state.min_version,
+            signature=state.signature,
             artifact_path=state.artifact_path,
             previous_wheel=state.previous_wheel,
             interrupted_count=state.interrupted_count,
@@ -178,6 +188,41 @@ def verify_sha256(file_path: Path, expected_sha256: str) -> bool:
     return compute_sha256(file_path) == expected
 
 
+def canonical_release_payload(version: str, sha256: str, min_version: str | None) -> bytes:
+    """Каноническая строка для проверки HMAC-SHA256 подписи релиза station-edge."""
+    return f"{version.strip()}\n{sha256.strip().lower()}\n{(min_version or '').strip()}".encode("utf-8")
+
+
+def sign_release_manifest(
+    version: str,
+    sha256: str,
+    min_version: str | None,
+    signing_key: str,
+) -> str:
+    """Вычисляет HMAC-SHA256 (hex lowercase) для манифеста релиза station-edge."""
+    return hmac.new(
+        signing_key.strip().encode("utf-8"),
+        canonical_release_payload(version, sha256, min_version),
+        hashlib.sha256,
+    ).hexdigest().lower()
+
+
+def verify_release_signature(
+    version: str,
+    sha256: str,
+    min_version: str | None,
+    signature: str | None,
+    signing_key: str,
+) -> bool:
+    """Проверяет HMAC-SHA256 подпись манифеста релиза (constant-time сравнение)."""
+    sig = (signature or "").strip().lower()
+    key = signing_key.strip()
+    if not sig or not key:
+        return False
+    expected = sign_release_manifest(version, sha256, min_version, key)
+    return hmac.compare_digest(sig, expected)
+
+
 def fetch_release_manifest(
     vps_base_url: str,
     device_token: str,
@@ -211,6 +256,7 @@ def fetch_release_manifest(
     artifact_url = str(data.get("artifact_url") or "")
     if artifact_url.startswith("/"):
         artifact_url = f"{vps_base_url.rstrip('/')}{artifact_url}"
+    raw_sig = data.get("signature")
     return ReleaseManifest(
         version=str(data["version"]),
         artifact_url=artifact_url,
@@ -218,6 +264,7 @@ def fetch_release_manifest(
         channel=str(data.get("channel") or channel),
         min_version=data.get("min_version"),
         notes=str(data.get("notes") or ""),
+        signature=str(raw_sig) if raw_sig is not None else None,
         update_required=bool(data.get("update_required", False)),
     )
 
@@ -407,8 +454,6 @@ class EdgeUpdater:
         ptr.write_text(str(wheel_path), encoding="utf-8")
 
     def _send_buttons_param(self, param_code: str) -> bool:
-        from agzs_edge.service import build_link, send_buttons_param_to_pumps
-
         link = build_link(self.settings)
         try:
             _succeeded, errors = send_buttons_param_to_pumps(
@@ -427,6 +472,27 @@ class EdgeUpdater:
             with contextlib.suppress(Exception):
                 link.close()
 
+    def _signature_required(self) -> bool:
+        return bool(self.settings.release_signing_key.strip() or self.settings.require_release_signature)
+
+    def _has_valid_signature(
+        self,
+        *,
+        version: str,
+        sha256: str,
+        min_version: str | None,
+        signature: str | None,
+    ) -> bool:
+        if not self._signature_required():
+            return True
+        return verify_release_signature(
+            version,
+            sha256,
+            min_version,
+            signature,
+            self.settings.release_signing_key,
+        )
+
     def _write_progress(
         self,
         *,
@@ -435,6 +501,8 @@ class EdgeUpdater:
         channel: str,
         artifact_url: str = "",
         sha256: str = "",
+        min_version: str = "",
+        signature: str = "",
         artifact_path: str = "",
         previous_wheel: str = "",
         interrupted_count: int = 0,
@@ -453,6 +521,8 @@ class EdgeUpdater:
                 message=banner_msg,
                 artifact_url=artifact_url,
                 sha256=sha256,
+                min_version=min_version,
+                signature=signature,
                 artifact_path=artifact_path,
                 previous_wheel=previous_wheel,
                 interrupted_count=interrupted_count,
@@ -577,6 +647,8 @@ class EdgeUpdater:
         channel: str,
         artifact_url: str,
         sha256: str,
+        min_version: str = "",
+        signature: str = "",
         previous_wheel: Path | None,
         restart_cmd: str,
         interrupted_count: int = 0,
@@ -589,6 +661,8 @@ class EdgeUpdater:
             channel=channel,
             artifact_url=artifact_url,
             sha256=sha256,
+            min_version=min_version,
+            signature=signature,
             artifact_path=str(wheel_path),
             previous_wheel=prev_str,
             interrupted_count=interrupted_count,
@@ -605,6 +679,8 @@ class EdgeUpdater:
                     channel=channel,
                     artifact_url=artifact_url,
                     sha256=sha256,
+                    min_version=min_version,
+                    signature=signature,
                     artifact_path=str(wheel_path),
                     previous_wheel=prev_str,
                     interrupted_count=interrupted_count,
@@ -650,6 +726,8 @@ class EdgeUpdater:
             channel=prev_state.channel or self.settings.update_channel,
             artifact_url=prev_state.artifact_url,
             sha256=prev_state.sha256,
+            min_version=prev_state.min_version,
+            signature=prev_state.signature,
             artifact_path=prev_state.artifact_path,
             previous_wheel=prev_state.previous_wheel,
             interrupted_count=next_interrupted,
@@ -659,6 +737,19 @@ class EdgeUpdater:
         prev_wheel = self._read_previous_wheel(fallback_path=prev_state.previous_wheel)
 
         if local_pkg is not None and prev_state.sha256 and verify_sha256(local_pkg, prev_state.sha256):
+            if not self._has_valid_signature(
+                version=prev_state.target_version,
+                sha256=prev_state.sha256,
+                min_version=prev_state.min_version or None,
+                signature=prev_state.signature or None,
+            ):
+                local_pkg.unlink(missing_ok=True)
+                return self._fail_update(
+                    "Недействительная или отсутствует подпись релиза (HMAC-SHA256)",
+                    target_version=prev_state.target_version,
+                    clear_interrupted=True,
+                )
+
             if prev_state.target_version and not is_newer_version(
                 self.current_version, prev_state.target_version
             ):
@@ -699,6 +790,8 @@ class EdgeUpdater:
                 channel=prev_state.channel or self.settings.update_channel,
                 artifact_url=prev_state.artifact_url,
                 sha256=prev_state.sha256,
+                min_version=prev_state.min_version,
+                signature=prev_state.signature,
                 previous_wheel=prev_wheel,
                 restart_cmd=restart_cmd,
                 interrupted_count=next_interrupted,
@@ -776,6 +869,18 @@ class EdgeUpdater:
                 clear_interrupted=has_interrupted,
             )
 
+        if not self._has_valid_signature(
+            version=manifest.version,
+            sha256=manifest.sha256,
+            min_version=manifest.min_version,
+            signature=manifest.signature,
+        ):
+            return self._fail_update(
+                "Недействительная или отсутствует подпись релиза (HMAC-SHA256)",
+                target_version=manifest.version,
+                clear_interrupted=has_interrupted,
+            )
+
         if check_only:
             return UpdateResult(
                 status="update_available",
@@ -836,6 +941,8 @@ class EdgeUpdater:
             channel=manifest.channel,
             artifact_url=manifest.artifact_url,
             sha256=manifest.sha256,
+            min_version=manifest.min_version or "",
+            signature=manifest.signature or "",
             previous_wheel=previous_wheel,
             restart_cmd=restart_cmd,
             interrupted_count=interrupted_count,

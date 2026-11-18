@@ -135,6 +135,7 @@ class EdgeReleaseManifest(BaseModel):
     channel: str = Field(default="stable", pattern="^(stable|canary|ring0|ring1|ring2)$")
     min_version: str | None = Field(default=None, max_length=64)
     notes: str = Field(default="", max_length=1024)
+    signature: str | None = Field(default=None, max_length=128)
 
 
 class EdgeReleaseOut(EdgeReleaseManifest):

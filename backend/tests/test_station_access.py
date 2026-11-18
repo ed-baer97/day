@@ -190,3 +190,76 @@ def test_login_response_includes_role(monkeypatch):
     body = ok.json()
     assert body["role"] == ROLE_ADMIN
     assert body["station_id"] is None
+
+
+def test_edge_release_and_fleet_require_admin_over_http(monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("AUTH_SECRET", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "lpg-admin")
+    monkeypatch.setenv("INGEST_TOKEN", "device-secret")
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+
+    admin_token = client.post("/api/v1/auth/login", json={"username": "admin", "password": "lpg-admin"}).json()["token"]
+    admin_h = {"Authorization": f"Bearer {admin_token}"}
+    created = client.post(
+        f"/api/v1/stations/{STATION}/devices",
+        json={"code": "R-EDGE", "capacity_liters": 10000},
+        headers=admin_h,
+    )
+    assert created.status_code == 201
+    tank_token = created.json()["ingest_token"]
+
+    payload = {
+        "version": "0.9.9",
+        "artifact_url": "https://cdn.example.com/agzs_edge-0.9.9-py3-none-any.whl",
+        "sha256": "c" * 64,
+        "channel": "ring0",
+    }
+    # Токен датчика/Shelly или INGEST_TOKEN НЕ может публиковать релизы и читать сводку парка
+    assert client.put("/api/v1/ingest/edge/release", json=payload).status_code == 401
+    assert (
+        client.put(
+            "/api/v1/ingest/edge/release",
+            json=payload,
+            headers={"X-Device-Token": tank_token},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.put(
+            "/api/v1/ingest/edge/release",
+            json=payload,
+            headers={"X-Device-Token": "device-secret"},
+        ).status_code
+        == 401
+    )
+    assert client.get("/api/v1/ingest/edge/fleet", headers={"X-Device-Token": tank_token}).status_code == 401
+
+    station_token = issue_token("aktau12", "test-secret", role=ROLE_STATION, station_id=__import__("uuid").UUID(STATION))
+    assert (
+        client.put(
+            "/api/v1/ingest/edge/release",
+            json=payload,
+            headers={"Authorization": f"Bearer {station_token}"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get(
+            "/api/v1/ingest/edge/fleet",
+            headers={"Authorization": f"Bearer {station_token}"},
+        ).status_code
+        == 403
+    )
+
+    assert client.put("/api/v1/ingest/edge/release", json=payload, headers=admin_h).status_code == 200
+    assert client.get("/api/v1/ingest/edge/fleet", headers=admin_h).status_code == 200
+
+    # А сама станция с X-Device-Token по-прежнему может забирать свой целевой релиз
+    rel = client.get(
+        "/api/v1/ingest/edge/release?channel=stable",
+        headers={"X-Device-Token": tank_token},
+    )
+    assert rel.status_code == 200

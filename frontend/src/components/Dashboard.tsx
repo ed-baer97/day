@@ -4,7 +4,7 @@ import { dateTime, liters, REGIONS, shortStationName, stationRegion } from "../f
 import {
   isLowFill,
   LOW_FILL_PERCENT,
-  SensorStatus,
+  SensorStatusBadge,
   usePublicLevels,
   useSensorDay,
   useViewPeriod,
@@ -591,7 +591,7 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
                 </div>
                 <div className="st-grid-footer">
                   {row.hasTanks && row.live ? (
-                    <SensorStatus level={row.live} />
+                    <SensorStatusBadge level={row.live} />
                   ) : (
                     <span className="badge warn">датчик не подключён</span>
                   )}

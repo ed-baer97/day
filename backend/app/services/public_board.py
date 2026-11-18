@@ -6,27 +6,17 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from datetime import datetime, timezone
 
 from app.config import get_settings
+from app.domain.calibration import remainder_fill_percent
 from app.schemas.public import PublicStationOut, PublicTankOut
 from app.services.account import list_active_stations_with_tanks
-from app.services.calibration import remainder_fill_percent
-
-_cache_lock = threading.Lock()
-_cached_rows: list[PublicStationOut] | None = None
-_cached_at: float = 0.0
-_CACHE_TTL_SEC: float = 2.5
-
-
-def invalidate_public_board_cache() -> None:
-    """Сбрасывает кэш витрины при поступлении свежих замеров."""
-    global _cached_rows, _cached_at
-    with _cache_lock:
-        _cached_rows = None
-        _cached_at = 0.0
+from app.services.board_cache import (
+    get_cached_board,
+    invalidate_public_board_cache,
+    set_cached_board,
+)
 
 
 def sensor_online(measured_at: datetime | None, *, now: datetime | None = None) -> bool:
@@ -39,12 +29,9 @@ def sensor_online(measured_at: datetime | None, *, now: datetime | None = None) 
 
 
 def list_public_stations() -> list[PublicStationOut]:
-    global _cached_rows, _cached_at
-    now_mono = time.monotonic()
-
-    with _cache_lock:
-        if _cached_rows is not None and (now_mono - _cached_at) < _CACHE_TTL_SEC:
-            return _cached_rows
+    cached = get_cached_board()
+    if cached is not None:
+        return cached
 
     now = datetime.now(timezone.utc)
     pairs = list_active_stations_with_tanks()
@@ -73,8 +60,12 @@ def list_public_stations() -> list[PublicStationOut]:
             )
         )
 
-    with _cache_lock:
-        _cached_rows = rows
-        _cached_at = now_mono
-
+    set_cached_board(rows)
     return rows
+
+
+__all__ = [
+    "invalidate_public_board_cache",
+    "list_public_stations",
+    "sensor_online",
+]

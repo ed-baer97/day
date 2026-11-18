@@ -12,65 +12,19 @@ from datetime import datetime, timezone
 from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
     STATE_COMPLETED,
-    STATE_IDLE,
     IskraFrameError,
     IskraTelemetryFrame,
-    build_param_command,
     build_reset_command,
     parse_iskra_frame,
 )
-from agzs_edge.serial_link import AskaLink, EmulatorAskaLink, SerialAskaLink
+from agzs_edge.psu_controller import send_buttons_param_to_pumps
+from agzs_edge.serial_link import AskaLink, build_link
 from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import OutboxSyncWorker, probe_vps_link
 from agzs_edge.tracker import CompletedDispense, PumpDispenseTracker
 from agzs_edge.updater import read_update_state
 
 logger = logging.getLogger(__name__)
-
-
-def build_link(settings: EdgeSettings) -> AskaLink:
-    if settings.source_mode == "emulator":
-        return EmulatorAskaLink(layout=settings.layout)
-    return SerialAskaLink(
-        port=settings.serial_port,
-        baudrate=settings.serial_baudrate,
-        timeout_sec=settings.serial_timeout_sec,
-        layout=settings.layout,
-    )
-
-
-def send_buttons_param_to_pumps(
-    link: AskaLink,
-    addresses: tuple[int, ...],
-    param_code: str,
-    *,
-    checksum_mode: str,
-    last_frames: dict[int, IskraTelemetryFrame] | None = None,
-) -> tuple[list[int], list[tuple[int, str]]]:
-    """Отправляет команду режима кнопок (0.16/0.17/0.18) на список адресов колонок."""
-    succeeded: list[int] = []
-    errors: list[tuple[int, str]] = []
-    for address in addresses:
-        frame = last_frames.get(address) if last_frames else None
-        if frame is not None and (frame.is_dispensing or frame.valve_open):
-            errors.append((address, "колонка выполняет налив"))
-            continue
-        if frame is not None and frame.state_code != STATE_IDLE:
-            reset_req = build_reset_command(address, checksum_mode=checksum_mode)
-            reset_res = link.send_command(address, reset_req)
-            if reset_res.error_message:
-                errors.append((address, reset_res.error_message))
-                continue
-        req = build_param_command(address, param_code, volume_digits=0, checksum_mode=checksum_mode)
-        res = link.send_command(address, req)
-        if res.error_message:
-            errors.append((address, res.error_message))
-            continue
-        if param_code == "0.16":
-            reset_req = build_reset_command(address, checksum_mode=checksum_mode)
-            link.send_command(address, reset_req)
-        succeeded.append(address)
-    return succeeded, errors
 
 
 class StationEdgeService:

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogStation } from "../api/client";
 import Logo from "../components/Logo";
 import { liters, stationRegion } from "../format";
-import { isLowFill, type LiveLevel, SensorStatus } from "../liveLevels";
+import { isLowFill, type LiveLevel, SensorStatusBadge } from "../liveLevels";
 import type { AdminSession } from "../session";
 
 export type AppScreen = "landing" | "map" | "dashboard" | "admin" | "supply";
@@ -196,7 +196,7 @@ export default function Topbar({
                       </div>
                       <div className="quick-jumper-badges">
                         {hasLive && live ? (
-                          <SensorStatus level={live} />
+                          <SensorStatusBadge level={live} />
                         ) : (
                           <span className="badge warn">нет датчика</span>
                         )}

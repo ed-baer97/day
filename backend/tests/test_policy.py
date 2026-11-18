@@ -10,6 +10,7 @@ from app.domain.policy import (
     LITER_NOISE,
     POLICY_PATH,
     POLL_SECONDS,
+    SAFE_FILL_PERCENT,
     SENSOR_STALE_SECONDS,
 )
 from app.services.calibration import LEVEL_STEP_VOLTS as calibration_step
@@ -24,6 +25,7 @@ def test_policy_file_is_the_only_copy():
     assert LEVEL_STEP_VOLTS == raw["level_step_volts"]
     assert calibration_step == LEVEL_STEP_VOLTS
     assert LITER_NOISE == raw["liter_noise"]
+    assert SAFE_FILL_PERCENT == raw["safe_fill_percent"]
     assert POLL_SECONDS == raw["poll_seconds"]
     assert SENSOR_STALE_SECONDS == raw["sensor_stale_seconds"]
     assert Settings.model_fields["sensor_stale_seconds"].default == SENSOR_STALE_SECONDS

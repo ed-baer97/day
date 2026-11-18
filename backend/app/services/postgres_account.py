@@ -13,18 +13,22 @@ import secrets
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.config import get_settings
 from app.database import SessionLocal
+from app.domain.calibration import LevelCalibration
+from app.domain.entities import StationCard, StationOwner, TankDevice, TruckCard
+from app.domain.errors import ConflictError, NotFoundError
 from app.domain.tank_book import (
     apply_dispense_volume,
     apply_level_reading,
     apply_receipt_volume,
     build_ingest_ack,
     build_tank_ingest_state,
+    recompute_tank_book,
 )
 from app.models.dispenser import DispenseRecord, ReceiptRecord
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
@@ -40,16 +44,27 @@ from app.schemas.ingest import (
     TankIngestState,
 )
 from app.schemas.station import DispenseReadingOut, TankOut
-from app.services.calibration import LevelCalibration
-from app.services.catalog import TRUCK_STATUSES, StationCard, TruckCard
-from app.services.device_ingest import TankDevice, parse_dispense_meta
+from app.services.account_helpers import (
+    ack_to_schema,
+    batch_counts,
+    build_dispense_out,
+    build_tank_out,
+    clean_optional_text,
+    clean_owner_username,
+    dispense_event_key,
+    extract_book_fields,
+    level_event_key,
+    receipt_event_key,
+    require_calibration_points,
+    require_non_empty,
+    require_owner_password,
+    require_station_and_tank,
+    require_truck_status,
+    state_to_schema,
+)
 from app.services.passwords import hash_password, verify_password
-from app.services.station_accounts import StationOwner
 
 logger = logging.getLogger(__name__)
-
-_seen_gps: set[str] = set()
-_MAX_SEEN_GPS = 10_000
 
 
 def session() -> Session:
@@ -91,17 +106,12 @@ def _device(row: Tank) -> TankDevice:
 
 
 def _tank_out(row: Tank) -> TankOut:
-    calc = row.calculated_remainder_liters
-    if calc is None:
-        calc = row.actual_remainder_liters
-    return TankOut(
-        id=row.id,
+    return build_tank_out(
+        tank_id=row.id,
         code=row.code,
         capacity_liters=row.capacity_liters,
-        has_electronic_sensor=True,
         actual_remainder_liters=row.actual_remainder_liters,
-        calculated_remainder_liters=calc,
-        level_source="electronic",
+        calculated_remainder_liters=row.calculated_remainder_liters,
         last_measured_at=row.last_measured_at,
     )
 
@@ -119,11 +129,13 @@ def _calibration(row: Tank) -> LevelCalibration | None:
 
 
 def _state(row: Tank) -> TankIngestState:
-    return build_tank_ingest_state(
-        row,
-        station_id=row.station_id,
-        tank_id=row.id,
-        calibrated=_calibration(row) is not None,
+    return state_to_schema(
+        build_tank_ingest_state(
+            row,
+            station_id=row.station_id,
+            tank_id=row.id,
+            calibrated=_calibration(row) is not None,
+        )
     )
 
 
@@ -154,7 +166,7 @@ def get_station(station_id: UUID) -> StationCard:
     with session() as db:
         row = db.get(Station, station_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         return _card(row)
 
 
@@ -167,20 +179,16 @@ def create_station(
     lon: float,
     is_active: bool,
 ) -> StationCard:
-    cleaned_code = code.strip()
-    cleaned_name = name.strip()
-    if not cleaned_code:
-        raise HTTPException(status_code=422, detail="укажите код заправки")
-    if not cleaned_name:
-        raise HTTPException(status_code=422, detail="укажите название заправки")
+    cleaned_code = require_non_empty(code, "код заправки")
+    cleaned_name = require_non_empty(name, "название заправки")
     with session() as db:
         if db.scalar(select(Station).where(Station.code == cleaned_code)):
-            raise HTTPException(status_code=409, detail="заправка с таким кодом уже есть")
+            raise ConflictError("заправка с таким кодом уже есть")
         row = Station(
             id=uuid4(),
             code=cleaned_code,
             name=cleaned_name,
-            address=(address or "").strip() or None,
+            address=clean_optional_text(address),
             lat=lat,
             lon=lon,
             is_active=is_active,
@@ -205,22 +213,17 @@ def update_station(
     with session() as db:
         row = db.get(Station, station_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         if code is not None:
-            cleaned = code.strip()
-            if not cleaned:
-                raise HTTPException(status_code=422, detail="укажите код заправки")
+            cleaned = require_non_empty(code, "код заправки")
             other = db.scalar(select(Station).where(Station.code == cleaned, Station.id != station_id))
             if other is not None:
-                raise HTTPException(status_code=409, detail="заправка с таким кодом уже есть")
+                raise ConflictError("заправка с таким кодом уже есть")
             row.code = cleaned
         if name is not None:
-            cleaned_name = name.strip()
-            if not cleaned_name:
-                raise HTTPException(status_code=422, detail="укажите название заправки")
-            row.name = cleaned_name
+            row.name = require_non_empty(name, "название заправки")
         if address_set:
-            row.address = (address or "").strip() or None
+            row.address = clean_optional_text(address)
         if lat is not None:
             row.lat = lat
         if lon is not None:
@@ -232,13 +235,19 @@ def update_station(
         return _card(row)
 
 
-def delete_station(station_id: UUID) -> None:
+def delete_station(station_id: UUID) -> list[UUID]:
     with session() as db:
-        row = db.get(Station, station_id)
+        row = db.scalar(
+            select(Station)
+            .where(Station.id == station_id)
+            .options(selectinload(Station.tanks))
+        )
         if row is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
+        tank_ids = [tank.id for tank in row.tanks]
         db.delete(row)
         db.commit()
+        return tank_ids
 
 
 def list_trucks() -> list[TruckCard]:
@@ -251,7 +260,7 @@ def get_truck(truck_id: UUID) -> TruckCard:
     with session() as db:
         row = db.get(Truck, truck_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Truck not found")
+            raise NotFoundError("Truck not found")
         return _truck_card(row)
 
 
@@ -264,20 +273,17 @@ def create_truck(
     lat: float | None,
     lon: float | None,
 ) -> TruckCard:
-    plate = plate_number.strip()
-    if not plate:
-        raise HTTPException(status_code=422, detail="укажите номер газовоза")
-    if status not in TRUCK_STATUSES:
-        raise HTTPException(status_code=422, detail="неизвестный статус газовоза")
+    plate = require_non_empty(plate_number, "номер газовоза")
+    valid_status = require_truck_status(status)
     with session() as db:
         if db.scalar(select(Truck).where(Truck.plate_number == plate)):
-            raise HTTPException(status_code=409, detail="газовоз с таким номером уже есть")
+            raise ConflictError("газовоз с таким номером уже есть")
         row = Truck(
             id=uuid4(),
             plate_number=plate,
             capacity_liters=capacity_liters,
-            carrier_name=(carrier_name or "").strip() or None,
-            status=status,
+            carrier_name=clean_optional_text(carrier_name),
+            status=valid_status,
             lat=lat,
             lon=lon,
         )
@@ -303,23 +309,19 @@ def update_truck(
     with session() as db:
         row = db.get(Truck, truck_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Truck not found")
+            raise NotFoundError("Truck not found")
         if plate_number is not None:
-            plate = plate_number.strip()
-            if not plate:
-                raise HTTPException(status_code=422, detail="укажите номер газовоза")
+            plate = require_non_empty(plate_number, "номер газовоза")
             other = db.scalar(select(Truck).where(Truck.plate_number == plate, Truck.id != truck_id))
             if other is not None:
-                raise HTTPException(status_code=409, detail="газовоз с таким номером уже есть")
+                raise ConflictError("газовоз с таким номером уже есть")
             row.plate_number = plate
         if capacity_liters is not None:
             row.capacity_liters = capacity_liters
         if carrier_set:
-            row.carrier_name = (carrier_name or "").strip() or None
+            row.carrier_name = clean_optional_text(carrier_name)
         if status is not None:
-            if status not in TRUCK_STATUSES:
-                raise HTTPException(status_code=422, detail="неизвестный статус газовоза")
-            row.status = status
+            row.status = require_truck_status(status)
         if lat_set:
             row.lat = lat
         if lon_set:
@@ -333,7 +335,7 @@ def delete_truck(truck_id: UUID) -> None:
     with session() as db:
         row = db.get(Truck, truck_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="Truck not found")
+            raise NotFoundError("Truck not found")
         db.delete(row)
         db.commit()
 
@@ -355,7 +357,7 @@ def get_tank_device(station_id: UUID, tank_id: UUID) -> TankDevice:
     with session() as db:
         row = db.get(Tank, tank_id)
         if row is None or row.station_id != station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+            raise NotFoundError("резервуар не найден")
         return _device(row)
 
 
@@ -368,15 +370,13 @@ def tank_by_token(token: str | None) -> TankDevice | None:
 
 
 def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDevice:
-    cleaned = code.strip()
-    if not cleaned:
-        raise HTTPException(status_code=422, detail="укажите код резервуара")
+    cleaned = require_non_empty(code, "код резервуара")
     with session() as db:
         if db.get(Station, station_id) is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         exists = db.scalar(select(Tank).where(Tank.station_id == station_id, Tank.code == cleaned))
         if exists is not None:
-            raise HTTPException(status_code=409, detail="резервуар с таким кодом уже есть")
+            raise ConflictError("резервуар с таким кодом уже есть")
         row = Tank(
             id=uuid4(),
             station_id=station_id,
@@ -406,16 +406,14 @@ def update_tank_device(
     with session() as db:
         row = db.get(Tank, tank_id)
         if row is None or row.station_id != station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+            raise NotFoundError("резервуар не найден")
         if code is not None:
-            cleaned = code.strip()
-            if not cleaned:
-                raise HTTPException(status_code=422, detail="укажите код резервуара")
+            cleaned = require_non_empty(code, "код резервуара")
             other = db.scalar(
                 select(Tank).where(Tank.station_id == station_id, Tank.code == cleaned, Tank.id != tank_id)
             )
             if other is not None:
-                raise HTTPException(status_code=409, detail="резервуар с таким кодом уже есть")
+                raise ConflictError("резервуар с таким кодом уже есть")
             row.code = cleaned
         if capacity_liters is not None:
             row.capacity_liters = capacity_liters
@@ -428,7 +426,7 @@ def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
     with session() as db:
         row = db.get(Tank, tank_id)
         if row is None or row.station_id != station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+            raise NotFoundError("резервуар не найден")
         db.delete(row)
         db.commit()
 
@@ -440,14 +438,12 @@ def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
 
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
-    if body.station_id is None or body.tank_id is None:
-        raise HTTPException(status_code=422, detail="укажите резервуар")
-    if body.low_volts == body.high_volts:
-        raise HTTPException(status_code=422, detail="точки калибровки совпадают по напряжению")
+    station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id, "укажите резервуар")
+    require_calibration_points(body.low_volts, body.high_volts)
     with session() as db:
-        row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
-        if row is None or row.station_id != body.station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+        row = db.scalar(select(Tank).where(Tank.id == tank_id).with_for_update())
+        if row is None or row.station_id != station_id:
+            raise NotFoundError("резервуар не найден")
         row.cal_low_volts = body.low_volts
         row.cal_low_percent = body.low_percent
         row.cal_high_volts = body.high_volts
@@ -456,11 +452,7 @@ def set_calibration(body: CalibrationIn) -> TankIngestState:
             row.capacity_liters = body.capacity_liters
         db.commit()
         db.refresh(row)
-        state = _state(row)
-    from app.services.device_ingest import _poll_linked_shelly
-
-    _poll_linked_shelly(body.tank_id)
-    return state
+        return _state(row)
 
 
 def tank_remainder(tank_id: UUID) -> tuple[float | None, datetime | None]:
@@ -475,7 +467,7 @@ def tank_state(tank_id: UUID) -> TankIngestState:
     with session() as db:
         row = db.get(Tank, tank_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="резервуар ещё не присылал данные")
+            raise NotFoundError("резервуар ещё не присылал данные")
         return _state(row)
 
 
@@ -493,18 +485,14 @@ def _insert_once(db: Session, row: object, existing):
 
 
 def _accept_level(db: Session, body: LevelIngest) -> IngestAck:
-    if body.station_id is None or body.tank_id is None:
-        raise HTTPException(
-            status_code=422,
-            detail="укажите резервуар токеном или полями station_id и tank_id",
-        )
-    key = body.source_event_id or f"level:{body.tank_id}:{body.recorded_at.isoformat()}"
-    row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
-    if row is None or row.station_id != body.station_id:
-        raise HTTPException(status_code=404, detail="резервуар не найден")
+    station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id)
+    key = level_event_key(tank_id, body.recorded_at, body.source_event_id)
+    row = db.scalar(select(Tank).where(Tank.id == tank_id).with_for_update())
+    if row is None or row.station_id != station_id:
+        raise NotFoundError("резервуар не найден")
     existing = db.scalar(select(LevelReading).where(LevelReading.source_event_id == key))
     if existing is not None:
-        return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
+        return ack_to_schema(build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id))
 
     calibration = _calibration(row)
     heard_at = datetime.now(timezone.utc)
@@ -537,20 +525,22 @@ def _accept_level(db: Session, body: LevelIngest) -> IngestAck:
         nested.rollback()
         db.refresh(row)
         duplicate = db.scalar(select(LevelReading).where(LevelReading.source_event_id == key))
-        return build_ingest_ack(
-            row,
-            message="duplicate",
-            duplicate=True,
-            entity_id=None if duplicate is None else duplicate.id,
+        return ack_to_schema(
+            build_ingest_ack(
+                row,
+                message="duplicate",
+                duplicate=True,
+                entity_id=None if duplicate is None else duplicate.id,
+            )
         )
     nested.commit()
     if not changed:
-        return build_ingest_ack(row, message="level unchanged")
-    return build_ingest_ack(row, message="level accepted", entity_id=entity_id)
+        return ack_to_schema(build_ingest_ack(row, message="level unchanged"))
+    return ack_to_schema(build_ingest_ack(row, message="level accepted", entity_id=entity_id))
 
 
 def _accept_dispense(db: Session, body: DispenseIngest) -> IngestAck:
-    key = body.external_txn_id or f"dispense:{body.dispenser_id}:{body.started_at.isoformat()}"
+    key = dispense_event_key(body.dispenser_id, body.started_at, body.external_txn_id)
     existing = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
     if body.tank_id is None:
         if existing is not None:
@@ -582,9 +572,9 @@ def _accept_dispense(db: Session, body: DispenseIngest) -> IngestAck:
 
     row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
     if row is None or row.station_id != body.station_id:
-        raise HTTPException(status_code=404, detail="резервуар не найден")
+        raise NotFoundError("резервуар не найден")
     if existing is not None:
-        return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
+        return ack_to_schema(build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id))
 
     entity_id = uuid4()
     nested = db.begin_nested()
@@ -608,14 +598,16 @@ def _accept_dispense(db: Session, body: DispenseIngest) -> IngestAck:
         nested.rollback()
         db.refresh(row)
         duplicate = db.scalar(select(DispenseRecord).where(DispenseRecord.external_txn_id == key))
-        return build_ingest_ack(
-            row,
-            message="duplicate",
-            duplicate=True,
-            entity_id=None if duplicate is None else duplicate.id,
+        return ack_to_schema(
+            build_ingest_ack(
+                row,
+                message="duplicate",
+                duplicate=True,
+                entity_id=None if duplicate is None else duplicate.id,
+            )
         )
     nested.commit()
-    return build_ingest_ack(row, message="dispense accepted", entity_id=entity_id)
+    return ack_to_schema(build_ingest_ack(row, message="dispense accepted", entity_id=entity_id))
 
 
 def _commit(db: Session, ack: IngestAck) -> IngestAck:
@@ -641,20 +633,6 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
             raise
 
 
-def _batch_counts(results: list[IngestAck], volumes: list[float] | None = None) -> tuple[int, int, float]:
-    accepted = 0
-    duplicates = 0
-    total = 0.0
-    for index, ack in enumerate(results):
-        if ack.duplicate:
-            duplicates += 1
-            continue
-        accepted += 1
-        if volumes is not None:
-            total += volumes[index]
-    return accepted, duplicates, total
-
-
 def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
     """Один commit на пакет. Ошибка посередине откатывает уже принятые строки пакета."""
     with session() as db:
@@ -666,7 +644,7 @@ def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
         except Exception:
             db.rollback()
             raise
-    accepted, duplicates, total_volume = _batch_counts(results, [item.volume_liters for item in items])
+    accepted, duplicates, total_volume = batch_counts(results, [item.volume_liters for item in items])
     return DispenseBatchAck(
         accepted_count=accepted,
         duplicates_count=duplicates,
@@ -686,7 +664,7 @@ def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
         except Exception:
             db.rollback()
             raise
-    accepted, duplicates, _ = _batch_counts(results)
+    accepted, duplicates, _ = batch_counts(results)
     return LevelBatchAck(
         accepted_count=accepted,
         duplicates_count=duplicates,
@@ -694,21 +672,16 @@ def accept_levels_batch(items: list[LevelIngest]) -> LevelBatchAck:
     )
 
 
-
 def accept_receipt(body: ReceiptIngest) -> IngestAck:
-    if body.station_id is None or body.tank_id is None:
-        raise HTTPException(
-            status_code=422,
-            detail="укажите резервуар токеном или полями station_id и tank_id",
-        )
-    key = body.source_event_id or f"receipt:{body.tank_id}:{body.recorded_at.isoformat()}"
+    station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id)
+    key = receipt_event_key(tank_id, body.recorded_at, body.source_event_id)
     with session() as db:
-        row = db.scalar(select(Tank).where(Tank.id == body.tank_id).with_for_update())
-        if row is None or row.station_id != body.station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+        row = db.scalar(select(Tank).where(Tank.id == tank_id).with_for_update())
+        if row is None or row.station_id != station_id:
+            raise NotFoundError("резервуар не найден")
         existing = db.scalar(select(ReceiptRecord).where(ReceiptRecord.source_event_id == key))
         if existing is not None:
-            return build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id)
+            return ack_to_schema(build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id))
 
         apply_receipt_volume(row, body.volume_liters)
         entity_id = uuid4()
@@ -726,42 +699,19 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
             db.commit()
         except IntegrityError:
             db.rollback()
-            row = db.get(Tank, body.tank_id)
+            row = db.get(Tank, tank_id)
             dup = db.scalar(select(ReceiptRecord).where(ReceiptRecord.source_event_id == key))
             assert row is not None
-            return build_ingest_ack(
-                row,
-                message="duplicate",
-                duplicate=True,
-                entity_id=None if dup is None else dup.id,
+            return ack_to_schema(
+                build_ingest_ack(
+                    row,
+                    message="duplicate",
+                    duplicate=True,
+                    entity_id=None if dup is None else dup.id,
+                )
             )
         db.refresh(row)
-        return build_ingest_ack(row, message="receipt accepted", entity_id=entity_id)
-
-
-def record_truck_position(
-    truck_id: UUID,
-    *,
-    lat: float,
-    lon: float,
-    recorded_at: datetime,
-    source_event_id: str | None,
-) -> IngestAck:
-    """Пишет координату газовоза. Повтор того же ключа в этом процессе координату не двигает."""
-    key = source_event_id or f"gps:{truck_id}:{recorded_at.isoformat()}"
-    if key in _seen_gps:
-        return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=truck_id)
-    with session() as db:
-        row = db.get(Truck, truck_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="Truck not found")
-        row.lat = lat
-        row.lon = lon
-        db.commit()
-    if len(_seen_gps) >= _MAX_SEEN_GPS:
-        _seen_gps.clear()
-    _seen_gps.add(key)
-    return IngestAck(accepted=True, message="gps accepted", entity_id=truck_id)
+        return ack_to_schema(build_ingest_ack(row, message="receipt accepted", entity_id=entity_id))
 
 
 def list_level_readings(
@@ -775,7 +725,7 @@ def list_level_readings(
     with session() as db:
         row = db.get(Tank, tank_id)
         if row is None or row.station_id != station_id:
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+            raise NotFoundError("резервуар не найден")
         query = select(LevelReading).where(LevelReading.tank_id == tank_id)
         if since is not None:
             stamp = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
@@ -796,25 +746,20 @@ def list_dispense_records(
             stamp = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
             query = query.where(DispenseRecord.started_at >= stamp)
         rows = list(db.scalars(query.order_by(DispenseRecord.started_at.desc()).limit(limit)).all())
-    result: list[DispenseReadingOut] = []
-    for row in rows:
-        pump_address, mode, price = parse_dispense_meta(row.dispenser_id, row.raw_payload)
-        result.append(
-            DispenseReadingOut(
-                id=row.id,
-                station_id=row.station_id,
-                tank_id=row.tank_id,
-                dispenser_id=row.dispenser_id,
-                pump_address=pump_address,
-                mode=mode,
-                volume_liters=row.volume_liters,
-                price_kzt_per_liter=price,
-                started_at=row.started_at.isoformat(),
-                finished_at=None if row.finished_at is None else row.finished_at.isoformat(),
-                external_txn_id=row.external_txn_id,
-            )
+    return [
+        build_dispense_out(
+            record_id=row.id,
+            station_id=row.station_id,
+            tank_id=row.tank_id,
+            dispenser_id=row.dispenser_id,
+            volume_liters=row.volume_liters,
+            started_at=row.started_at,
+            finished_at=row.finished_at,
+            external_txn_id=row.external_txn_id,
+            raw_payload=row.raw_payload,
         )
-    return result
+        for row in rows
+    ]
 
 
 def _to_station_owner(rows: list[StationUser]) -> StationOwner:
@@ -833,7 +778,7 @@ def _to_station_owner(rows: list[StationUser]) -> StationOwner:
 def list_station_users(station_id: UUID) -> list[StationOwner]:
     with session() as db:
         if db.get(Station, station_id) is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         rows = list(
             db.scalars(
                 select(StationUser).where(
@@ -846,16 +791,14 @@ def list_station_users(station_id: UUID) -> list[StationOwner]:
 
 
 def create_station_user(station_id: UUID, username: str, password: str) -> StationOwner:
-    from app.config import get_settings
-
-    cleaned = username.strip().lower()
-    if not cleaned:
-        raise HTTPException(status_code=422, detail="укажите логин владельца")
-    if cleaned == get_settings().admin_username.strip().lower():
-        raise HTTPException(status_code=409, detail="этот логин занят администратором платформы")
+    cleaned = clean_owner_username(
+        username,
+        get_settings().admin_username,
+        empty_detail="укажите логин владельца",
+    )
     with session() as db:
         if db.get(Station, station_id) is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         existing = list(db.scalars(select(StationUser).where(StationUser.username == cleaned)).all())
         if existing:
             already = next((row for row in existing if row.station_id == station_id), None)
@@ -872,8 +815,7 @@ def create_station_user(station_id: UUID, username: str, password: str) -> Stati
                 db.refresh(row)
                 existing.append(row)
             return _to_station_owner(existing)
-        if len(password) < 6:
-            raise HTTPException(status_code=422, detail="пароль владельца не короче 6 символов")
+        require_owner_password(password)
         row = StationUser(
             id=uuid4(),
             station_id=station_id,
@@ -908,8 +850,6 @@ def authenticate_station_user(username: str, password: str) -> StationOwner | No
 
 def import_memory_snapshot(data: dict) -> None:
     """Разовый импорт state.json в пустую БД Postgres при старте."""
-    from app.domain.tank_book import recompute_tank_book
-
     catalog_data = data.get("catalog") if isinstance(data.get("catalog"), dict) else {}
     devices_data = data.get("devices") if isinstance(data.get("devices"), dict) else {}
     owners_data = data.get("owners") if isinstance(data.get("owners"), list) else []
@@ -954,13 +894,8 @@ def import_memory_snapshot(data: dict) -> None:
             sid = UUID(str(dev["station_id"]))
             tid = UUID(str(dev["tank_id"]))
             book = books_by_key.get((sid, tid), {})
-            cal = book.get("calibration") if isinstance(book.get("calibration"), dict) else {}
-            measured_raw = book.get("last_measured_at")
-            measured_at = (
-                datetime.fromisoformat(str(measured_raw).replace("Z", "+00:00"))
-                if measured_raw
-                else None
-            )
+            fields = extract_book_fields(book)
+            cal = fields["calibration"]
             tank_row = Tank(
                 id=tid,
                 station_id=sid,
@@ -969,18 +904,18 @@ def import_memory_snapshot(data: dict) -> None:
                 has_electronic_sensor=True,
                 level_source=LevelSource.electronic,
                 ingest_token=str(dev.get("token") or secrets.token_urlsafe(24)),
-                opening_liters=book.get("opening_liters"),
-                receipts_liters=float(book.get("receipts_liters") or 0.0),
-                dispense_liters=float(book.get("dispense_liters") or 0.0),
-                pending_dispense_liters=float(book.get("pending_dispense_liters") or 0.0),
-                pending_receipt_liters=float(book.get("pending_receipt_liters") or 0.0),
-                actual_remainder_liters=book.get("actual_remainder_liters"),
-                last_volts=book.get("last_volts"),
-                last_measured_at=measured_at,
-                cal_low_volts=cal.get("low_volts") if cal else None,
-                cal_low_percent=cal.get("low_percent") if cal else None,
-                cal_high_volts=cal.get("high_volts") if cal else None,
-                cal_high_percent=cal.get("high_percent") if cal else None,
+                opening_liters=fields["opening_liters"],  # type: ignore[arg-type]
+                receipts_liters=float(fields["receipts_liters"]),  # type: ignore[arg-type]
+                dispense_liters=float(fields["dispense_liters"]),  # type: ignore[arg-type]
+                pending_dispense_liters=float(fields["pending_dispense_liters"]),  # type: ignore[arg-type]
+                pending_receipt_liters=float(fields["pending_receipt_liters"]),  # type: ignore[arg-type]
+                actual_remainder_liters=fields["actual_remainder_liters"],  # type: ignore[arg-type]
+                last_volts=fields["last_volts"],  # type: ignore[arg-type]
+                last_measured_at=fields["last_measured_at"],  # type: ignore[arg-type]
+                cal_low_volts=None if cal is None else cal.low_volts,  # type: ignore[union-attr]
+                cal_low_percent=None if cal is None else cal.low_percent,  # type: ignore[union-attr]
+                cal_high_volts=None if cal is None else cal.high_volts,  # type: ignore[union-attr]
+                cal_high_percent=None if cal is None else cal.high_percent,  # type: ignore[union-attr]
             )
             recompute_tank_book(tank_row)
             db.add(tank_row)

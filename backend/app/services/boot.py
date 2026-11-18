@@ -25,6 +25,18 @@ def run_migrations() -> None:
     logger.info("миграции применены")
 
 
+def restore_memory_state() -> None:
+    """Регистрирует все in-memory хранилища и восстанавливает state.json при режиме memory."""
+    settings = get_settings()
+    if settings.use_postgres:
+        return
+    import app.services.memory_account  # noqa: F401
+    import app.services.shelly_link  # noqa: F401
+    from app.services.memory_state import restore
+
+    restore()
+
+
 def import_state_if_empty() -> None:
     settings = get_settings()
     if not settings.use_postgres:

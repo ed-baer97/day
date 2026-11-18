@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Response
 
 from app.auth import Principal, require_admin, require_principal, require_station_access
 from app.domain.tank_book import summarize_station_tanks
+from app.routers.deps import station_to_out
 from app.schemas.station import (
     StationCreate,
     StationDetailOut,
@@ -20,27 +21,8 @@ from app.services.account import (
     list_stations,
     update_station,
 )
-from app.services.catalog import StationCard
 
 router = APIRouter(prefix="/stations", tags=["stations"])
-
-
-def station_to_out(station: StationCard) -> StationOut:
-    return StationOut(
-        id=station.id,
-        code=station.code,
-        name=station.name,
-        address=station.address,
-        lat=station.lat,
-        lon=station.lon,
-        is_active=station.is_active,
-    )
-
-
-def require_existing_station_access(station_id: UUID, principal: Principal) -> StationCard:
-    station = get_station(station_id)
-    require_station_access(station_id, principal)
-    return station
 
 
 @router.get("", response_model=list[StationOut])

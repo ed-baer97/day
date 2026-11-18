@@ -39,6 +39,40 @@ from agzs_edge.iskra import (
 )
 from agzs_edge.serial_link import AskaLink, PollRawResult
 
+
+def send_buttons_param_to_pumps(
+    link: AskaLink,
+    addresses: tuple[int, ...],
+    param_code: str,
+    *,
+    checksum_mode: str,
+    last_frames: dict[int, IskraTelemetryFrame] | None = None,
+) -> tuple[list[int], list[tuple[int, str]]]:
+    """Отправляет команду режима кнопок (0.16/0.17/0.18) на список адресов колонок."""
+    succeeded: list[int] = []
+    errors: list[tuple[int, str]] = []
+    for address in addresses:
+        frame = last_frames.get(address) if last_frames else None
+        if frame is not None and (frame.is_dispensing or frame.valve_open):
+            errors.append((address, "колонка выполняет налив"))
+            continue
+        if frame is not None and frame.state_code != STATE_IDLE:
+            reset_req = build_reset_command(address, checksum_mode=checksum_mode)
+            reset_res = link.send_command(address, reset_req)
+            if reset_res.error_message:
+                errors.append((address, reset_res.error_message))
+                continue
+        req = build_param_command(address, param_code, volume_digits=0, checksum_mode=checksum_mode)
+        res = link.send_command(address, req)
+        if res.error_message:
+            errors.append((address, res.error_message))
+            continue
+        if param_code == "0.16":
+            reset_req = build_reset_command(address, checksum_mode=checksum_mode)
+            link.send_command(address, reset_req)
+        succeeded.append(address)
+    return succeeded, errors
+
 COLUMN_ERROR_DESCRIPTIONS: dict[int, str] = {
     0: "Ошибок колонки нет",
     1: "Ошибка 01: последовательность импульсов от турбинки (разъём/зазор/геометрия ТПР)",

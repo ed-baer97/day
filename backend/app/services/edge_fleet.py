@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import threading
 from datetime import datetime, timezone
 
+from app.config import get_settings
+from app.domain.errors import ValidationError
 from app.schemas.ingest import (
     EdgeFleetSummaryOut,
     EdgeHeartbeatAck,
@@ -18,6 +22,40 @@ from app.schemas.ingest import (
 _LOCK = threading.RLock()
 
 _RING_ORDER = ("ring0", "ring1", "ring2")
+
+
+def canonical_release_payload(version: str, sha256: str, min_version: str | None) -> bytes:
+    """Каноническая строка для HMAC-SHA256 подписи OTA-манифеста station-edge."""
+    return f"{version.strip()}\n{sha256.strip().lower()}\n{(min_version or '').strip()}".encode("utf-8")
+
+
+def sign_release_manifest(
+    version: str,
+    sha256: str,
+    min_version: str | None,
+    signing_key: str,
+) -> str:
+    """Вычисляет HMAC-SHA256 (hex lowercase) для релиза station-edge."""
+    return hmac.new(
+        signing_key.strip().encode("utf-8"),
+        canonical_release_payload(version, sha256, min_version),
+        hashlib.sha256,
+    ).hexdigest().lower()
+
+
+def verify_release_signature(manifest: EdgeReleaseManifest, signing_key: str) -> bool:
+    """Проверяет криптографическую подпись манифеста HMAC-SHA256."""
+    sig = (manifest.signature or "").strip().lower()
+    key = signing_key.strip()
+    if not sig or not key:
+        return False
+    expected = sign_release_manifest(
+        manifest.version,
+        manifest.sha256,
+        manifest.min_version,
+        key,
+    )
+    return hmac.compare_digest(sig, expected)
 
 
 def normalize_channel(channel: str) -> str:
@@ -183,6 +221,7 @@ def get_release_for_station(
             channel=target.channel,
             min_version=target.min_version,
             notes=target.notes,
+            signature=target.signature,
             update_required=update_required,
         )
 
@@ -195,7 +234,21 @@ def publish_release(
 ) -> EdgeReleaseManifest:
     """Публикует новый релиз для кольца (ring0/canary, ring1, ring2/stable) и обновляет списки станций."""
     ring = normalize_channel(manifest.channel)
-    stored = manifest.model_copy(update={"channel": ring})
+    signing_key = get_settings().edge_release_signing_key.strip()
+    updates: dict[str, object] = {"channel": ring}
+    if signing_key:
+        if manifest.signature is not None and manifest.signature.strip():
+            if not verify_release_signature(manifest, signing_key):
+                raise ValidationError("неверная подпись релиза")
+            updates["signature"] = manifest.signature.strip().lower()
+        else:
+            updates["signature"] = sign_release_manifest(
+                manifest.version,
+                manifest.sha256,
+                manifest.min_version,
+                signing_key,
+            )
+    stored = manifest.model_copy(update=updates)
     with _LOCK:
         _RELEASES[ring] = stored
         _replace_ring_stations(_RING0_STATIONS, canary_stations)

@@ -6,6 +6,7 @@
   "percent_quantum": 1,
   "liter_noise": 0.5,
   "low_fill_percent": 25,
+  "safe_fill_percent": 85,
   "poll_seconds": 15,
   "sensor_stale_seconds": 60,
   "role_admin": "admin",

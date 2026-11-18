@@ -3,7 +3,7 @@ import { dateTime, liters, percentLabel } from "../../format";
 import {
   isLowFill,
   type LiveLevel,
-  SensorStatus,
+  SensorStatusBadge,
   tankSensorBadge,
   tankSensorLabel,
 } from "../../liveLevels";
@@ -37,7 +37,7 @@ export default function PublicStationModal({
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span className="badge">{region}</span>
             <span className="badge">{station.code}</span>
-            {station.tanks.length > 0 ? <SensorStatus level={live} /> : null}
+            {station.tanks.length > 0 ? <SensorStatusBadge level={live} /> : null}
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {onPrev ? (

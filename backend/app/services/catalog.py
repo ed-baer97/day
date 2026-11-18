@@ -1,50 +1,22 @@
-"""Справочник заправок и газовозов.
-
-Карточки живут в памяти процесса. На старте — живая АГЗС с датчиком.
-"""
+"""Справочник заправок и газовозов в памяти процесса."""
 
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
-from datetime import datetime
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
-
-from app.schemas.ingest import IngestAck
+from app.domain.entities import TRUCK_STATUSES, StationCard, TruckCard
+from app.domain.errors import ConflictError, NotFoundError
+from app.services.account_helpers import (
+    clean_optional_text,
+    require_non_empty,
+    require_truck_status,
+    reset_gps_seen,
+)
+from app.services.board_cache import invalidate_public_board_cache
+from app.services.memory_state import persist, register_store
 
 _lock = threading.Lock()
-
-
-def _commit() -> None:
-    from app.services.memory_state import persist
-
-    persist()
-
-TRUCK_STATUSES = ("idle", "loading", "in_transit", "arrived", "unloading")
-
-
-@dataclass
-class StationCard:
-    id: UUID
-    code: str
-    name: str
-    address: str | None
-    lat: float
-    lon: float
-    is_active: bool
-
-
-@dataclass
-class TruckCard:
-    id: UUID
-    plate_number: str
-    capacity_liters: float
-    carrier_name: str | None
-    status: str
-    lat: float | None
-    lon: float | None
 
 
 def _stations() -> list[StationCard]:
@@ -63,8 +35,6 @@ def _trucks() -> list[TruckCard]:
 
 _station_cards: list[StationCard] = _stations()
 _truck_cards: list[TruckCard] = _trucks()
-_seen_gps: set[str] = set()
-_MAX_SEEN_GPS = 10_000
 
 
 def reset_catalog() -> None:
@@ -72,27 +42,8 @@ def reset_catalog() -> None:
     with _lock:
         _station_cards = _stations()
         _truck_cards = _trucks()
-        _seen_gps.clear()
-
-
-def _text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    cleaned = value.strip()
-    return cleaned or None
-
-
-def _require_code(value: str, label: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        raise HTTPException(status_code=422, detail=f"укажите {label}")
-    return cleaned
-
-
-def _require_status(value: str) -> str:
-    if value not in TRUCK_STATUSES:
-        raise HTTPException(status_code=422, detail="неизвестный статус газовоза")
-    return value
+    reset_gps_seen()
+    invalidate_public_board_cache()
 
 
 def list_stations() -> list[StationCard]:
@@ -105,7 +56,7 @@ def get_station(station_id: UUID) -> StationCard:
         for station in _station_cards:
             if station.id == station_id:
                 return station
-    raise HTTPException(status_code=404, detail="Station not found")
+    raise NotFoundError("Station not found")
 
 
 def create_station(
@@ -117,22 +68,22 @@ def create_station(
     lon: float,
     is_active: bool,
 ) -> StationCard:
-    cleaned_code = _require_code(code, "код заправки")
-    cleaned_name = _require_code(name, "название заправки")
+    cleaned_code = require_non_empty(code, "код заправки")
+    cleaned_name = require_non_empty(name, "название заправки")
     with _lock:
         if any(station.code == cleaned_code for station in _station_cards):
-            raise HTTPException(status_code=409, detail="заправка с таким кодом уже есть")
+            raise ConflictError("заправка с таким кодом уже есть")
         station = StationCard(
             id=uuid4(),
             code=cleaned_code,
             name=cleaned_name,
-            address=_text(address),
+            address=clean_optional_text(address),
             lat=lat,
             lon=lon,
             is_active=is_active,
         )
         _station_cards.append(station)
-    _commit()
+    persist()
     return station
 
 
@@ -150,36 +101,33 @@ def update_station(
     with _lock:
         station = next((item for item in _station_cards if item.id == station_id), None)
         if station is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         if code is not None:
-            cleaned = _require_code(code, "код заправки")
+            cleaned = require_non_empty(code, "код заправки")
             if any(item.code == cleaned and item.id != station_id for item in _station_cards):
-                raise HTTPException(status_code=409, detail="заправка с таким кодом уже есть")
+                raise ConflictError("заправка с таким кодом уже есть")
             station.code = cleaned
         if name is not None:
-            station.name = _require_code(name, "название заправки")
+            station.name = require_non_empty(name, "название заправки")
         if address_set:
-            station.address = _text(address)
+            station.address = clean_optional_text(address)
         if lat is not None:
             station.lat = lat
         if lon is not None:
             station.lon = lon
         if is_active is not None:
             station.is_active = is_active
-    _commit()
+    persist()
     return station
 
 
 def delete_station(station_id: UUID) -> None:
-    from app.services.device_ingest import delete_station_devices
-
     with _lock:
         index = next((i for i, item in enumerate(_station_cards) if item.id == station_id), None)
         if index is None:
-            raise HTTPException(status_code=404, detail="Station not found")
+            raise NotFoundError("Station not found")
         _station_cards.pop(index)
-    delete_station_devices(station_id)
-    _commit()
+    persist()
 
 
 def list_trucks() -> list[TruckCard]:
@@ -192,7 +140,7 @@ def get_truck(truck_id: UUID) -> TruckCard:
         for truck in _truck_cards:
             if truck.id == truck_id:
                 return truck
-    raise HTTPException(status_code=404, detail="Truck not found")
+    raise NotFoundError("Truck not found")
 
 
 def create_truck(
@@ -204,22 +152,22 @@ def create_truck(
     lat: float | None,
     lon: float | None,
 ) -> TruckCard:
-    plate = _require_code(plate_number, "номер газовоза")
-    status = _require_status(status)
+    plate = require_non_empty(plate_number, "номер газовоза")
+    valid_status = require_truck_status(status)
     with _lock:
         if any(truck.plate_number == plate for truck in _truck_cards):
-            raise HTTPException(status_code=409, detail="газовоз с таким номером уже есть")
+            raise ConflictError("газовоз с таким номером уже есть")
         truck = TruckCard(
             id=uuid4(),
             plate_number=plate,
             capacity_liters=capacity_liters,
-            carrier_name=_text(carrier_name),
-            status=status,
+            carrier_name=clean_optional_text(carrier_name),
+            status=valid_status,
             lat=lat,
             lon=lon,
         )
         _truck_cards.append(truck)
-    _commit()
+    persist()
     return truck
 
 
@@ -239,23 +187,23 @@ def update_truck(
     with _lock:
         truck = next((item for item in _truck_cards if item.id == truck_id), None)
         if truck is None:
-            raise HTTPException(status_code=404, detail="Truck not found")
+            raise NotFoundError("Truck not found")
         if plate_number is not None:
-            plate = _require_code(plate_number, "номер газовоза")
+            plate = require_non_empty(plate_number, "номер газовоза")
             if any(item.plate_number == plate and item.id != truck_id for item in _truck_cards):
-                raise HTTPException(status_code=409, detail="газовоз с таким номером уже есть")
+                raise ConflictError("газовоз с таким номером уже есть")
             truck.plate_number = plate
         if capacity_liters is not None:
             truck.capacity_liters = capacity_liters
         if carrier_set:
-            truck.carrier_name = _text(carrier_name)
+            truck.carrier_name = clean_optional_text(carrier_name)
         if status is not None:
-            truck.status = _require_status(status)
+            truck.status = require_truck_status(status)
         if lat_set:
             truck.lat = lat
         if lon_set:
             truck.lon = lon
-    _commit()
+    persist()
     return truck
 
 
@@ -263,30 +211,9 @@ def delete_truck(truck_id: UUID) -> None:
     with _lock:
         index = next((i for i, item in enumerate(_truck_cards) if item.id == truck_id), None)
         if index is None:
-            raise HTTPException(status_code=404, detail="Truck not found")
+            raise NotFoundError("Truck not found")
         _truck_cards.pop(index)
-    _commit()
-
-
-def record_truck_position(
-    truck_id: UUID,
-    *,
-    lat: float,
-    lon: float,
-    recorded_at: datetime,
-    source_event_id: str | None,
-) -> IngestAck:
-    """Пишет координату газовоза. Повтор того же source_event_id координату не двигает."""
-    key = source_event_id or f"gps:{truck_id}:{recorded_at.isoformat()}"
-    with _lock:
-        if key in _seen_gps:
-            return IngestAck(accepted=True, message="duplicate", duplicate=True, entity_id=truck_id)
-    update_truck(truck_id, lat=lat, lon=lon, lat_set=True, lon_set=True)
-    with _lock:
-        if len(_seen_gps) >= _MAX_SEEN_GPS:
-            _seen_gps.clear()
-        _seen_gps.add(key)
-    return IngestAck(accepted=True, message="gps accepted", entity_id=truck_id)
+    persist()
 
 
 def snapshot() -> dict:
@@ -321,9 +248,8 @@ def snapshot() -> dict:
 
 def restore_snapshot(data: dict) -> None:
     """Подменяет справочник содержимым файла. Без ключей список не трогает."""
-
     global _station_cards, _truck_cards
-    if "stations" not in data and "trucks" not in data:
+    if not isinstance(data, dict) or ("stations" not in data and "trucks" not in data):
         return
     stations = [
         StationCard(
@@ -354,3 +280,25 @@ def restore_snapshot(data: dict) -> None:
             _station_cards = stations
         if "trucks" in data:
             _truck_cards = trucks
+
+
+register_store("catalog", snapshot, restore_snapshot)
+
+__all__ = [
+    "TRUCK_STATUSES",
+    "StationCard",
+    "TruckCard",
+    "create_station",
+    "create_truck",
+    "delete_station",
+    "delete_truck",
+    "get_station",
+    "get_truck",
+    "list_stations",
+    "list_trucks",
+    "reset_catalog",
+    "restore_snapshot",
+    "snapshot",
+    "update_station",
+    "update_truck",
+]

@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from app.auth import require_admin
-from app.routers.tanks import device_to_out
+from app.routers.deps import device_to_out
 from app.schemas.station import ShellyBind, TankDeviceOut
 from app.services.account import get_station, get_tank_device
 from app.services.shelly_link import connect_shelly, disconnect_shelly

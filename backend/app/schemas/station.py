@@ -114,3 +114,13 @@ class DispenseReadingOut(BaseModel):
     started_at: str
     finished_at: str | None = None
     external_txn_id: str | None = None
+
+
+class LevelReadingOut(BaseModel):
+    id: UUID
+    tank_id: UUID
+    volts: float | None
+    remainder_liters: float
+    fill_percent: float | None
+    recorded_at: str
+    delta_liters: float | None = None

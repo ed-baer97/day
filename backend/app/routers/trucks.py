@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Response
 
+from app.domain.entities import TruckCard
 from app.schemas.truck import TruckCreate, TruckDetailOut, TruckOut, TruckUpdate
 from app.services.account import (
     create_truck,
@@ -12,7 +13,6 @@ from app.services.account import (
     list_trucks,
     update_truck,
 )
-from app.services.catalog import TruckCard
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
 

@@ -1,6 +1,6 @@
 """Чистая доменная логика книги резервуара (Tank Book).
 
-Не зависит от способа хранения (in-memory словарь или PostgreSQL ORM).
+Не зависит от FastAPI, Pydantic-схем и адаптеров хранения (memory / PostgreSQL).
 Формула книги:
     calculated_remainder = opening_liters + receipts_liters - dispense_liters
 Отпуски и приёмки, пришедшие до первого показания физического уровня (opening_liters is None),
@@ -11,24 +11,44 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 from uuid import UUID
 
-from app.domain.errors import CalibrationRequired
-from app.schemas.ingest import IngestAck, LevelIngest, TankIngestState
-from app.schemas.station import TankOut
-from app.services.balance import calculate_remainder, classify_discrepancy
-from app.services.calibration import (
+from app.domain.balance import (
+    DEFAULT_BALANCE_TOLERANCE_LITERS,
+    DEFAULT_MEASUREMENT_ERROR_BAND_LITERS,
+    calculate_remainder,
+    classify_discrepancy,
+)
+from app.domain.calibration import (
     LevelCalibration,
     level_volts_changed,
     round_percent,
     volts_to_percent,
 )
+from app.domain.entities import TankBookAck, TankBookState
+from app.domain.errors import CalibrationRequired
 
 CALIBRATION_REQUIRED = "для volts нужна калибровка резервуара: POST /ingest/calibration"
 
 
-def recompute_tank_book(target: Any) -> tuple[float | None, float | None, str]:
+class LevelReadingInput(Protocol):
+    volts: float | None
+    actual_remainder_liters: float | None
+
+
+class TankSummaryInput(Protocol):
+    capacity_liters: float
+    actual_remainder_liters: float | None
+    calculated_remainder_liters: float | None
+
+
+def recompute_tank_book(
+    target: Any,
+    *,
+    tolerance: float = DEFAULT_BALANCE_TOLERANCE_LITERS,
+    measurement_band: float = DEFAULT_MEASUREMENT_ERROR_BAND_LITERS,
+) -> tuple[float | None, float | None, str]:
     """Пересчитывает расчётный остаток, невязку (delta) и статус сверки для бака."""
     if target.opening_liters is None:
         target.calculated_remainder_liters = None
@@ -43,7 +63,12 @@ def recompute_tank_book(target: Any) -> tuple[float | None, float | None, str]:
         target.receipts_liters,
         target.dispense_liters,
     )
-    result = classify_discrepancy(calculated, target.actual_remainder_liters)
+    result = classify_discrepancy(
+        calculated,
+        target.actual_remainder_liters,
+        tolerance=tolerance,
+        measurement_band=measurement_band,
+    )
     target.calculated_remainder_liters = result.calculated_remainder_liters
     if hasattr(target, "delta_liters"):
         target.delta_liters = result.delta_liters
@@ -58,10 +83,10 @@ def build_ingest_ack(
     message: str,
     duplicate: bool = False,
     entity_id: UUID | None = None,
-) -> IngestAck:
-    """Формирует стандартный ответ IngestAck по текущему состоянию резервуара."""
+) -> TankBookAck:
+    """Формирует доменный результат операции по текущему состоянию резервуара."""
     calculated, delta, status = recompute_tank_book(target)
-    return IngestAck(
+    return TankBookAck(
         accepted=True,
         message=message,
         entity_id=entity_id,
@@ -79,10 +104,10 @@ def build_tank_ingest_state(
     station_id: UUID,
     tank_id: UUID,
     calibrated: bool,
-) -> TankIngestState:
-    """Формирует карточку состояния книги резервуара TankIngestState."""
+) -> TankBookState:
+    """Формирует доменный снимок состояния книги резервуара."""
     calculated, delta, status = recompute_tank_book(target)
-    return TankIngestState(
+    return TankBookState(
         station_id=station_id,
         tank_id=tank_id,
         opening_liters=target.opening_liters,
@@ -100,12 +125,7 @@ def build_tank_ingest_state(
 
 
 def _gauge_is_the_book(target: Any) -> bool:
-    """Уровень — единственный источник, пока нет отдельной приёмки или отпуска.
-
-    Симуляция резервуара двигает только шкалу. Книга повторяет её, иначе первый
-    замер (часто пол шкалы) остаётся «начальным остатком», а следующий уровень
-    система принимает за излишек или недостачу.
-    """
+    """Уровень — единственный источник, пока нет отдельной приёмки или отпуска."""
     return (
         float(getattr(target, "receipts_liters", 0) or 0) == 0
         and float(getattr(target, "dispense_liters", 0) or 0) == 0
@@ -121,7 +141,7 @@ def _adopt_opening(target: Any, liters: float) -> None:
 
 def apply_level_reading(
     target: Any,
-    body: LevelIngest,
+    body: LevelReadingInput,
     calibration: LevelCalibration | None,
     *,
     capacity_liters: float | None = None,
@@ -197,7 +217,10 @@ def apply_receipt_volume(target: Any, volume_liters: float) -> None:
 
 
 def summarize_station_tanks(
-    tanks: Sequence[TankOut],
+    tanks: Sequence[TankSummaryInput],
+    *,
+    tolerance: float = DEFAULT_BALANCE_TOLERANCE_LITERS,
+    measurement_band: float = DEFAULT_MEASUREMENT_ERROR_BAND_LITERS,
 ) -> tuple[float | None, float | None, float | None, str]:
     """Считает суммарный остаток, ёмкость, дельту и статус сверки по всем бакам станции."""
     if not tanks:
@@ -223,5 +246,10 @@ def summarize_station_tanks(
         for t in tanks
         if t.calculated_remainder_liters is not None and t.actual_remainder_liters is not None
     )
-    result = classify_discrepancy(total_calc, total_act_with_book)
+    result = classify_discrepancy(
+        total_calc,
+        total_act_with_book,
+        tolerance=tolerance,
+        measurement_band=measurement_band,
+    )
     return total_actual, total_capacity, result.delta_liters, result.status

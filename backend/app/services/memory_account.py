@@ -8,17 +8,17 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+from app.domain.entities import TankDevice
 from app.schemas.ingest import IngestAck
 from app.services.catalog import (
     create_station,
     create_truck,
-    delete_station,
+    delete_station as _delete_station_card,
     delete_truck,
     get_station,
     get_truck,
     list_stations,
     list_trucks,
-    record_truck_position,
     update_station,
     update_truck,
 )
@@ -28,17 +28,14 @@ from app.services.device_ingest import (
     accept_level,
     accept_levels_batch,
     accept_receipt,
-    bind_calibration,
-    bind_dispense,
-    bind_level,
-    bind_receipt,
+    delete_station_devices,
     delete_tank_device,
     get_tank_device,
     has_calibration,
     list_dispense_records,
     list_station_tanks_out,
     list_tank_devices,
-    register_tank,
+    register_tank as _register_tank_device,
     set_calibration,
     tank_by_token,
     tank_remainder,
@@ -47,9 +44,29 @@ from app.services.device_ingest import (
 )
 from app.services.station_accounts import (
     authenticate_owner as authenticate_station_user,
-    grant_owner as create_station_user,
-    list_owners as list_station_users,
+    grant_owner as _grant_owner,
+    list_owners as _list_owners,
 )
+
+
+def delete_station(station_id: UUID) -> list[UUID]:
+    _delete_station_card(station_id)
+    return delete_station_devices(station_id)
+
+
+def register_tank(station_id: UUID, code: str, capacity_liters: float) -> TankDevice:
+    get_station(station_id)
+    return _register_tank_device(station_id, code, capacity_liters)
+
+
+def list_station_users(station_id: UUID):
+    get_station(station_id)
+    return _list_owners(station_id)
+
+
+def create_station_user(station_id: UUID, username: str, password: str):
+    get_station(station_id)
+    return _grant_owner(station_id, username, password)
 
 
 def list_active_stations_with_tanks():
@@ -66,21 +83,19 @@ def list_level_readings(
     newest_first: bool = True,
 ) -> list:
     """В памяти журнал замеров не хранится: витрина читает текущий остаток."""
-    del station_id, tank_id, since, limit, newest_first
+    get_tank_device(station_id, tank_id)
+    del since, limit, newest_first
     return []
 
 
 __all__ = [
+    "IngestAck",
     "accept_dispense",
     "accept_dispenses_batch",
     "accept_level",
     "accept_levels_batch",
     "accept_receipt",
     "authenticate_station_user",
-    "bind_calibration",
-    "bind_dispense",
-    "bind_level",
-    "bind_receipt",
     "create_station",
     "create_station_user",
     "create_truck",
@@ -99,7 +114,6 @@ __all__ = [
     "list_stations",
     "list_tank_devices",
     "list_trucks",
-    "record_truck_position",
     "register_tank",
     "set_calibration",
     "tank_by_token",
@@ -108,5 +122,4 @@ __all__ = [
     "update_station",
     "update_tank_device",
     "update_truck",
-    "IngestAck",
 ]

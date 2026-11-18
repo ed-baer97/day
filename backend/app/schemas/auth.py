@@ -5,6 +5,16 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.domain.access import ROLE_ADMIN
+from app.schemas.station import LevelReadingOut
+
+__all__ = [
+    "LevelReadingOut",
+    "LoginIn",
+    "SessionOut",
+    "StationUserCreate",
+    "StationUserCreated",
+    "StationUserOut",
+]
 
 
 class LoginIn(BaseModel):
@@ -34,13 +44,3 @@ class StationUserOut(BaseModel):
 
 class StationUserCreated(StationUserOut):
     password: str
-
-
-class LevelReadingOut(BaseModel):
-    id: UUID
-    tank_id: UUID
-    volts: float | None
-    remainder_liters: float
-    fill_percent: float | None
-    recorded_at: str
-    delta_liters: float | None = None

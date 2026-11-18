@@ -17,12 +17,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
-
 from app.config import get_settings
+from app.domain.errors import ConflictError, DomainError, NotFoundError, ValidationError
 from app.schemas.ingest import LevelIngest
 from app.schemas.station import ShellyLinkOut
-from app.services.account import accept_level, get_tank_device, has_calibration
+from app.services.account import (
+    accept_level,
+    get_tank_device,
+    has_calibration,
+    register_calibration_hook,
+    register_tank_deleted_hook,
+)
+from app.services.memory_state import persist, register_store
 from app.services.shelly import HttpShelly, ShellyError, ShellyRpc, ShellySnapshot, read_snapshot, reset_shelly_runtime
 
 logger = logging.getLogger(__name__)
@@ -76,29 +82,29 @@ def normalize_host(raw: str) -> str:
     if "://" in text:
         scheme, rest = text.split("://", 1)
         if scheme.lower() not in ("http", "https"):
-            raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
+            raise ValidationError("укажите IP-адрес Shelly, например 192.168.0.104")
         text = rest
     text = text.split("/")[0].strip()
     if not _HOST.fullmatch(text):
-        raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
+        raise ValidationError("укажите IP-адрес Shelly, например 192.168.0.104")
     ip, sep, port = text.rpartition(":")
     if sep:
         if not port.isdigit() or not 1 <= int(port) <= 65535:
-            raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
+            raise ValidationError("укажите IP-адрес Shelly, например 192.168.0.104")
         text_ip = ip
     else:
         text_ip = text
 
     lowered = text_ip.lower()
     if lowered in _FORBIDDEN_HOSTS or lowered.endswith(".internal") or lowered.endswith(".localhost"):
-        raise HTTPException(status_code=422, detail="недопустимый внутренний или служебный адрес Shelly")
+        raise ValidationError("недопустимый внутренний или служебный адрес Shelly")
 
     if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", text_ip):
         if any(int(part) > 255 for part in text_ip.split(".")):
-            raise HTTPException(status_code=422, detail="укажите IP-адрес Shelly, например 192.168.0.104")
+            raise ValidationError("укажите IP-адрес Shelly, например 192.168.0.104")
         addr = ipaddress.IPv4Address(text_ip)
         if addr.is_loopback or addr.is_unspecified or addr.is_link_local or addr.is_multicast:
-            raise HTTPException(status_code=422, detail="недопустимый внутренний или служебный IP-адрес Shelly")
+            raise ValidationError("недопустимый внутренний или служебный IP-адрес Shelly")
     return text
 
 
@@ -116,7 +122,7 @@ def connect_shelly(station_id: UUID, tank_id: UUID, host: str) -> None:
     with _lock:
         for link in _links.values():
             if link.host == normalized and link.tank_id != device.tank_id:
-                raise HTTPException(status_code=409, detail="этот Shelly уже привязан к другому резервуару")
+                raise ConflictError("этот Shelly уже привязан к другому резервуару")
         current = _links.get(device.tank_id)
         if current is None:
             _links[device.tank_id] = ShellyLink(
@@ -130,8 +136,6 @@ def connect_shelly(station_id: UUID, tank_id: UUID, host: str) -> None:
             current.volts = None
             current.applied = False
             current.last_error = None
-    from app.services.memory_state import persist
-
     persist()
     poll_one(device.tank_id)
 
@@ -141,10 +145,8 @@ def disconnect_shelly(station_id: UUID, tank_id: UUID) -> None:
     with _lock:
         link = _links.get(tank_id)
         if link is None or link.station_id != station_id:
-            raise HTTPException(status_code=404, detail="Shelly не привязан")
+            raise NotFoundError("Shelly не привязан")
         del _links[tank_id]
-    from app.services.memory_state import persist
-
     persist()
 
 
@@ -162,6 +164,18 @@ def poll_one(tank_id: UUID) -> None:
             host = link.host
             station_id = link.station_id
         _poll_host(tank_id, station_id, host)
+
+
+def _poll_one_safe(tank_id: UUID) -> bool:
+    with _lock:
+        linked = tank_id in _links
+    if not linked:
+        return False
+    try:
+        poll_one(tank_id)
+        return True
+    except Exception:
+        return False
 
 
 def poll_all() -> None:
@@ -207,9 +221,8 @@ def _apply(station_id: UUID, tank_id: UUID, snapshot: ShellySnapshot) -> tuple[s
     )
     try:
         accept_level(body)
-    except HTTPException as error:
-        detail = error.detail
-        return detail if isinstance(detail, str) else "не удалось записать уровень", False
+    except DomainError as error:
+        return error.detail or "не удалось записать уровень", False
     return None, True
 
 
@@ -309,7 +322,9 @@ def snapshot_bindings() -> list[dict[str, str]]:
         ]
 
 
-def restore_bindings(rows: list[dict]) -> None:
+def restore_bindings(rows: object) -> None:
+    if not isinstance(rows, list):
+        return
     with _lock:
         _links.clear()
         for row in rows:
@@ -329,5 +344,9 @@ def _poll_seconds() -> float:
         return 5.0
     return seconds
 
+
+register_tank_deleted_hook(remove_shelly_for_tank)
+register_calibration_hook(_poll_one_safe)
+register_store("shelly", snapshot_bindings, restore_bindings)
 
 shelly_poller = ShellyPoller()

@@ -76,7 +76,7 @@ export function tankSensorBadge(tank: PublicTank): "ok" | "warn" | "danger" {
   return tank.online === true ? "ok" : "danger";
 }
 
-export function SensorStatus({ level }: { level: LiveLevel }) {
+export function SensorStatusBadge({ level }: { level: LiveLevel }) {
   return <span className={`badge ${sensorBadge(level)}`}>{sensorLabel(level)}</span>;
 }
 

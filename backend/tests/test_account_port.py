@@ -4,10 +4,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.domain.errors import CalibrationRequired
+from app.domain.errors import CalibrationRequired, NotFoundError
 from app.domain.tank_book import CALIBRATION_REQUIRED, apply_level_reading
 from app.main import create_app
 from app.schemas.ingest import DispenseIngest, IngestAck, LevelIngest
@@ -53,13 +52,22 @@ def test_volts_without_calibration_is_domain_error():
 
 
 def test_port_turns_calibration_error_into_http_422():
-    def boom():
-        raise CalibrationRequired(CALIBRATION_REQUIRED)
+    err = CalibrationRequired(CALIBRATION_REQUIRED)
+    assert err.status_code == 422
+    assert err.detail == CALIBRATION_REQUIRED
 
-    with pytest.raises(HTTPException) as caught:
-        account._levels(boom)
-    assert caught.value.status_code == 422
-    assert caught.value.detail == CALIBRATION_REQUIRED
+    resp = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": str(uuid4()),
+            "tank_id": str(uuid4()),
+            "volts": 2.5,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "source_event_id": "cal-err-http",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == CALIBRATION_REQUIRED
 
 
 def test_gps_writes_truck_and_ignores_duplicate():
@@ -183,11 +191,11 @@ def test_postgres_batch_rolls_back_when_an_item_fails(monkeypatch):
 
     def apply(_db, body: DispenseIngest) -> IngestAck:
         if body.external_txn_id == "bad":
-            raise HTTPException(status_code=404, detail="резервуар не найден")
+            raise NotFoundError("резервуар не найден")
         return IngestAck(accepted=True, message="dispense accepted")
 
     monkeypatch.setattr(postgres_account, "_accept_dispense", apply)
-    with pytest.raises(HTTPException) as caught:
+    with pytest.raises(NotFoundError) as caught:
         postgres_account.accept_dispenses_batch([_item("ok"), _item("bad")])
     assert caught.value.status_code == 404
     assert "commit" not in events

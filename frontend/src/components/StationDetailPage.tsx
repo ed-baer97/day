@@ -11,13 +11,14 @@ import { useCatalog } from "../catalog";
 import { balBadge, balText, dateTime, liters, signedLiters, stationRegion } from "../format";
 import {
   isLowFill,
-  SensorStatus,
+  SensorStatusBadge,
   tankSensorBadge,
   tankSensorLabel,
   usePublicLevels,
   useSensorDay,
   useViewPeriod,
 } from "../liveLevels";
+import { freeVolumeLiters, SAFE_FILL_PERCENT, safeRefillLiters } from "../policy";
 import {
   buildLiveTankSamples,
   columnDispenseReport,
@@ -176,13 +177,9 @@ export default function StationDetailPage({
   const levelChart = chartOf(series?.series ?? [], series?.labels ?? range.labels);
   const hasDay = series?.opening != null;
   const freeLiters =
-    hasTanks && live?.remainder != null && live.capacity > 0
-      ? Math.max(0, live.capacity - live.remainder)
-      : null;
+    hasTanks && live ? freeVolumeLiters(live.capacity, live.remainder) : null;
   const safeRefill =
-    hasTanks && live?.remainder != null && live.capacity > 0
-      ? Math.max(0, Math.round(live.capacity * 0.85) - live.remainder)
-      : null;
+    hasTanks && live ? safeRefillLiters(live.capacity, live.remainder) : null;
   const onlineTanksCount = live?.tanks.filter((t) => t.online && t.remainder_liters != null).length ?? 0;
   const totalTanksCount = live?.tanks.length ?? devices.length;
   const expenseLiters =
@@ -285,7 +282,7 @@ export default function StationDetailPage({
         </div>
         <div className="st-row-badges">
           {hasTanks && live ? (
-            <SensorStatus level={live} />
+            <SensorStatusBadge level={live} />
           ) : (
             <span className="badge warn">датчик не подключён</span>
           )}
@@ -313,7 +310,7 @@ export default function StationDetailPage({
           <strong>{freeLiters == null ? "—" : liters(freeLiters)}</strong>
           <em>
             {safeRefill != null
-              ? `рекомендуемый слив до 85%: ${liters(safeRefill)}`
+              ? `рекомендуемый слив до ${SAFE_FILL_PERCENT}%: ${liters(safeRefill)}`
               : "доступный объём под слив"}
           </em>
         </div>

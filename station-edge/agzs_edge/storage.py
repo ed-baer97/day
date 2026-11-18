@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import overload
 
 from agzs_edge.iskra import (
     STATE_DISPENSING,
@@ -62,13 +63,18 @@ class DispenseRow:
         return round(self.volume_liters * self.price_kzt_per_liter, 2)
 
 
-def _to_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+@overload
+def parse_iso_datetime(raw: datetime) -> datetime: ...
 
 
-def parse_iso_datetime(raw: str) -> datetime | None:
+@overload
+def parse_iso_datetime(raw: str) -> datetime | None: ...
+
+
+def parse_iso_datetime(raw: str | datetime) -> datetime | None:
+    """Приводит ISO-строку или datetime к timezone-aware UTC (или None для некорректной строки)."""
+    if isinstance(raw, datetime):
+        return raw.replace(tzinfo=timezone.utc) if raw.tzinfo is None else raw.astimezone(timezone.utc)
     text = raw.strip()
     if not text:
         return None
@@ -80,12 +86,7 @@ def parse_iso_datetime(raw: str) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def _parse_iso_utc(raw: str) -> datetime | None:
-    parsed = parse_iso_datetime(raw)
-    return None if parsed is None else parsed.astimezone(timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _row_to_dispense(row: sqlite3.Row) -> DispenseRow:
@@ -504,8 +505,8 @@ class EdgeDatabase:
         """Возвращает закрытые заправки в интервале [since, until), от новых к старым."""
         if self._read_only and not self.db_path.is_file():
             return []
-        since_utc = _to_utc(since)
-        until_utc = _to_utc(until) if until is not None else None
+        since_utc = parse_iso_datetime(since)
+        until_utc = parse_iso_datetime(until) if until is not None else None
         since_sql = (since_utc - timedelta(seconds=1)).isoformat()
         where_clauses = ["datetime(d.finished_at) >= datetime(?)"]
         params: list[object] = [since_sql]
@@ -527,7 +528,7 @@ class EdgeDatabase:
 
         result: list[DispenseRow] = []
         for row in rows:
-            finished_utc = _parse_iso_utc(str(row["finished_at"]))
+            finished_utc = parse_iso_datetime(str(row["finished_at"]))
             if finished_utc is None:
                 continue
             if finished_utc < since_utc:
@@ -601,11 +602,11 @@ class EdgeDatabase:
         if max_age_sec <= 0:
             return [int(row["pump_address"]) for row in rows]
 
-        ref_now = _to_utc(now or datetime.now(timezone.utc))
+        ref_now = parse_iso_datetime(now or datetime.now(timezone.utc))
         cutoff = ref_now - timedelta(seconds=max_age_sec)
         active: list[int] = []
         for row in rows:
-            updated = _parse_iso_utc(str(row["updated_at"]))
+            updated = parse_iso_datetime(str(row["updated_at"]))
             if updated is not None and updated >= cutoff:
                 active.append(int(row["pump_address"]))
         return active
@@ -625,10 +626,10 @@ class EdgeDatabase:
             raise
         if row is None:
             return None
-        finished_utc = _parse_iso_utc(str(row["finished_at"]))
+        finished_utc = parse_iso_datetime(str(row["finished_at"]))
         if finished_utc is None:
             return None
-        ref_now = _to_utc(now or datetime.now(timezone.utc))
+        ref_now = parse_iso_datetime(now or datetime.now(timezone.utc))
         return max(0.0, (ref_now - finished_utc).total_seconds())
 
     def is_station_idle_for_update(

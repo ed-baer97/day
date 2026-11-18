@@ -9,6 +9,8 @@ Type=oneshot
 WorkingDirectory=/opt/station-edge
 EnvironmentFile=/opt/station-edge/.env
 Environment=PYTHONUNBUFFERED=1
+# Fail-closed для боевого парка: если флаг не переопределён в .env, без AGZS_RELEASE_SIGNING_KEY обновление отклоняется
+Environment=AGZS_REQUIRE_RELEASE_SIGNATURE=1
 ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge update --wait-idle-sec 180 --restart-cmd "systemctl restart station-edge.service station-edge-monitor.service"
 StandardOutput=journal
 StandardError=journal

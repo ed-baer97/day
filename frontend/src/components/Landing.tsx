@@ -5,7 +5,7 @@ import { dateTime, liters, percentLabel, REGIONS, stationRegion } from "../forma
 import {
   isLowFill,
   LOW_FILL_PERCENT,
-  SensorStatus,
+  SensorStatusBadge,
   summarizeLevel,
   tankSensorLabel,
   usePublicLevels,
@@ -604,7 +604,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
 
                   <footer className="level-card-footer">
                     {station.tanks.length > 0 ? (
-                      <SensorStatus level={live} />
+                      <SensorStatusBadge level={live} />
                     ) : (
                       <span className="badge warn">нет резервуаров</span>
                     )}
@@ -656,7 +656,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                       <td>{freeLiters == null ? "—" : liters(freeLiters)}</td>
                       <td>
                         {station.tanks.length > 0 ? (
-                          <SensorStatus level={live} />
+                          <SensorStatusBadge level={live} />
                         ) : (
                           <span className="badge warn">нет резервуаров</span>
                         )}

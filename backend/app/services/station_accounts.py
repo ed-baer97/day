@@ -6,32 +6,15 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
-
 from app.config import get_settings
+from app.domain.entities import StationOwner
+from app.services.account_helpers import clean_owner_username, require_owner_password
+from app.services.memory_state import persist, register_store
 from app.services.passwords import hash_password, verify_password
 
 _lock = threading.Lock()
-
-
-@dataclass
-class StationOwner:
-    id: UUID
-    station_id: UUID
-    username: str
-    password_hash: str
-    kind: str = "owner"
-    station_ids: list[UUID] = field(default_factory=list)
-
-    def stations(self) -> list[UUID]:
-        if self.station_ids:
-            return list(self.station_ids)
-        return [self.station_id]
-
-
 _owners: list[StationOwner] = []
 
 
@@ -39,22 +22,6 @@ def reset_station_accounts() -> None:
     global _owners
     with _lock:
         _owners = []
-
-
-def _commit() -> None:
-    from app.services.memory_state import persist
-
-    persist()
-
-
-def _cleaned(username: str) -> str:
-    cleaned = username.strip().lower()
-    if not cleaned:
-        raise HTTPException(status_code=422, detail="укажите логин")
-    admin_name = get_settings().admin_username.strip().lower()
-    if cleaned == admin_name:
-        raise HTTPException(status_code=409, detail="этот логин занят администратором платформы")
-    return cleaned
 
 
 def _sync(account: StationOwner) -> None:
@@ -69,8 +36,7 @@ def create_owner(station_id: UUID, username: str, password: str) -> StationOwner
 
 def grant_owner(station_id: UUID, username: str, password: str) -> StationOwner:
     """Создаёт владельца или добавляет ему ещё одну заправку."""
-
-    cleaned = _cleaned(username)
+    cleaned = clean_owner_username(username, get_settings().admin_username)
     with _lock:
         existing = next((row for row in _owners if row.username == cleaned), None)
         if existing is not None:
@@ -79,8 +45,7 @@ def grant_owner(station_id: UUID, username: str, password: str) -> StationOwner:
             _sync(existing)
             owner = existing
         else:
-            if len(password) < 6:
-                raise HTTPException(status_code=422, detail="пароль владельца не короче 6 символов")
+            require_owner_password(password)
             owner = StationOwner(
                 id=uuid4(),
                 station_id=station_id,
@@ -90,7 +55,7 @@ def grant_owner(station_id: UUID, username: str, password: str) -> StationOwner:
                 station_ids=[station_id],
             )
             _owners.append(owner)
-    _commit()
+    persist()
     return owner
 
 
@@ -101,6 +66,8 @@ def list_owners(station_id: UUID) -> list[StationOwner]:
 
 def authenticate_owner(username: str, password: str) -> StationOwner | None:
     cleaned = username.strip().lower()
+    if not cleaned:
+        return None
     with _lock:
         owner = next((row for row in _owners if row.username == cleaned), None)
         if owner is None:
@@ -152,3 +119,17 @@ def restore_snapshot(rows: object) -> None:
     global _owners
     with _lock:
         _owners = restored
+
+
+register_store("owners", snapshot, restore_snapshot)
+
+__all__ = [
+    "StationOwner",
+    "authenticate_owner",
+    "create_owner",
+    "grant_owner",
+    "list_owners",
+    "reset_station_accounts",
+    "restore_snapshot",
+    "snapshot",
+]

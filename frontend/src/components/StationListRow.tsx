@@ -1,6 +1,6 @@
 import type { CatalogStation } from "../api/client";
 import { dateTime, liters } from "../format";
-import { isLowFill, type LiveLevel, SensorStatus } from "../liveLevels";
+import { isLowFill, type LiveLevel, SensorStatusBadge } from "../liveLevels";
 
 export function FillCell({
   fill,
@@ -32,7 +32,7 @@ export function FillCell({
         </strong>
         {free != null ? ` (своб. ${liters(free)})` : ""}
       </span>
-      {live && live.tanks.length > 0 ? <SensorStatus level={live} /> : null}
+      {live && live.tanks.length > 0 ? <SensorStatusBadge level={live} /> : null}
     </div>
   );
 }
@@ -83,7 +83,7 @@ export default function StationListRow({
         </div>
         <div className="st-row-badges">
           {hasTanks && live ? (
-            <SensorStatus level={live} />
+            <SensorStatusBadge level={live} />
           ) : (
             <span className="badge warn">не подключён</span>
           )}

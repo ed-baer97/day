@@ -2,11 +2,12 @@ import type { CatalogStation, CatalogTruck } from "../api/client";
 import { dateTime, liters, phaseLabel, stationRegion } from "../format";
 import {
   isLowFill,
-  SensorStatus,
+  SensorStatusBadge,
   tankSensorBadge,
   tankSensorLabel,
   usePublicLevels,
 } from "../liveLevels";
+import { freeVolumeLiters, SAFE_FILL_PERCENT, safeRefillLiters } from "../policy";
 
 export default function MapPopup({
   truck,
@@ -28,14 +29,8 @@ export default function MapPopup({
   const live = station ? byCode.get(station.code) : undefined;
   const hasTanks = !!live && live.tanks.length > 0;
   const fill = hasTanks && live?.fill != null ? Math.round(live.fill) : null;
-  const freeLiters =
-    hasTanks && live?.remainder != null && live.capacity > 0
-      ? Math.max(0, live.capacity - live.remainder)
-      : null;
-  const safeRefill =
-    hasTanks && live?.remainder != null && live.capacity > 0
-      ? Math.max(0, Math.round(live.capacity * 0.85) - live.remainder)
-      : null;
+  const freeLiters = hasTanks && live ? freeVolumeLiters(live.capacity, live.remainder) : null;
+  const safeRefill = hasTanks && live ? safeRefillLiters(live.capacity, live.remainder) : null;
 
   return (
     <aside className="map-popup" role="dialog" aria-label="Подробная карточка объекта">
@@ -87,7 +82,7 @@ export default function MapPopup({
             <span className="badge">{stationRegion(station)}</span>
             <span className="badge">{station.code}</span>
             {hasTanks && live ? (
-              <SensorStatus level={live} />
+              <SensorStatusBadge level={live} />
             ) : (
               <span className="badge warn">датчик не подключён</span>
             )}
@@ -115,7 +110,11 @@ export default function MapPopup({
                 <div className="bal-cell">
                   <span>Свободно</span>
                   <strong>{freeLiters == null ? "—" : liters(freeLiters)}</strong>
-                  <em>{safeRefill != null ? `до 85%: ${liters(safeRefill)}` : "под слив"}</em>
+                  <em>
+                    {safeRefill != null
+                      ? `до ${SAFE_FILL_PERCENT}%: ${liters(safeRefill)}`
+                      : "под слив"}
+                  </em>
                 </div>
               </div>
 

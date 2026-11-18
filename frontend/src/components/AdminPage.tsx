@@ -8,6 +8,7 @@ import { useAuth } from "../auth";
 import { messageOf, useCatalog } from "../catalog";
 import { stationRegion } from "../format";
 import { isLowFill, usePublicLevels } from "../liveLevels";
+import { freeVolumeLiters, safeRefillLiters } from "../policy";
 import type { DiscrepancyEvent } from "../types";
 import { useToast } from "./Toast";
 import { ADMIN_SECTIONS, type AdminTab } from "../pages/admin/types";
@@ -109,9 +110,8 @@ export default function AdminPage({
         const cap = hasLive && live.capacity > 0 ? live.capacity : 0;
         const actual = hasLive ? live.remainder : null;
         const fill = hasLive && live.fill != null ? Math.round(live.fill) : null;
-        const free = actual != null && cap > 0 ? Math.max(0, cap - actual) : null;
-        const safeRefill =
-          actual != null && cap > 0 ? Math.max(0, Math.round(cap * 0.85) - actual) : null;
+        const free = freeVolumeLiters(cap, actual);
+        const safeRefill = safeRefillLiters(cap, actual);
         const online = !!live && live.tanks.some((t) => t.online && t.remainder_liters != null);
         const region = stationRegion(row);
         return { row, cap, actual, fill, free, safeRefill, online, live, region };

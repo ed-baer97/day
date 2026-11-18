@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     auth_secret: str = "lpg-dev-secret-change-me"
     auth_disabled: bool = False
 
+    # Секрет HMAC-SHA256 для криптоподписи OTA-релизов station-edge (EDGE_RELEASE_SIGNING_KEY).
+    edge_release_signing_key: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

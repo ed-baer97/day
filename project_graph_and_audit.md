@@ -2,10 +2,10 @@
 
 > [!NOTE]
 > Результаты автоматических проверок проекта (`d:\Проект\day`):
-> - **Station Edge (`pytest -c station-edge/pyproject.toml station-edge/tests -q`)**: `72 passed in 4.10s` (все 9 тестовых модулей: Протокол v3.10 / Искра 1.72, контроллер БП без ПУ `Uzsg01PsuController`, авто-сброс `0x37`, трекер `dispensed_ml`, SQLite WAL + `read_only=True`, чанкированный Bulk Outbox Sync `MAX_BATCH_SIZE = 200`, `SerialAskaLink`, `fill_watch`, монитор смены `monitor.py` с баннером обновления на `/dev/tty1`, кроссплатформенный `diagnose`, Graceful Shutdown, 3 кольца обновлений, простой, восстановление после отключения питания, блокировка кнопок `0.17`→`0.18`/`0.16` и CLI).
-> - **Backend (`pytest backend/tests`)**: `79` тестов в коллекции (`10 passed` в офлайн-прогоне `test_edge_fleet.py`, `test_tank_book.py`, `test_policy.py`: 3 кольца раскатки и fleet heartbeat, книга резервуара, политика; `ruff check` и `compileall` без ошибок).
-> - **Линтер и компиляция (`ruff check station-edge backend` + `python -m compileall backend station-edge -q`)**: `All checks passed!`, `0 ошибок` синтаксиса/компиляции.
-> - **Frontend (`tsc --noEmit && vite build`)**: `PASSED` (72 модуля собрано, модульная архитектура CSS и компонентов).
+> - **Station Edge (`pytest -c station-edge/pyproject.toml station-edge/tests -q`)**: `75 passed` (все 9 тестовых модулей: Протокол v3.10 / Искра 1.72, контроллер БП без ПУ `Uzsg01PsuController`, авто-сброс `0x37`, трекер `dispensed_ml`, SQLite WAL + `read_only=True`, единая `parse_iso_datetime()`, чанкированный Bulk Outbox Sync `MAX_BATCH_SIZE = 200`, `SerialAskaLink`, `fill_watch`, монитор смены `monitor.py` с баннером обновления на `/dev/tty1`, кроссплатформенный `diagnose`, Graceful Shutdown, 3 кольца обновлений, простой, возобновление после отключения питания, HMAC-SHA256 проверка подписи релизов, ацикличность `updater`, блокировка кнопок `0.17`→`0.18`/`0.16` и CLI).
+> - **Backend (`pytest -c backend/pytest.ini backend/tests -q`)**: `89 passed` (полный набор из 19 модулей: 36 офлайн unit/AST/parity-тестов + HTTP `TestClient`-тесты, включая `test_architecture_and_parity.py`, защиту `PUT /edge/release` и `GET /edge/fleet` через `require_admin`, HMAC-SHA256 подпись релизов и единый обработчик `DomainError`).
+> - **Линтер и компиляция (`ruff check backend station-edge` + `python -m compileall -q backend/app station-edge/agzs_edge`)**: `All checks passed!`, `0 ошибок` синтаксиса/компиляции.
+> - **Frontend (`tsc --noEmit && vite build` + `esbuild | node`)**: `PASSED` (73 модуля собрано, все проверки `.check.ts` — `columnReport`, `levelSource`, `policyHelpers` — успешно выполнены).
 
 ---
 
@@ -20,7 +20,7 @@ flowchart TB
         FakeShelly["scripts/fake_shelly.py\n(_Handler)"]
         FakeTopaz["scripts/fake_topaz.py\n(send_dispense)"]
         InstallShelly["scripts/install_shelly_level.py\n(install / render_script)"]
-        StationEdge["station-edge/agzs_edge\n(Компьютер — АСКА-02 — БП — УЗГС-01,\nПротокол v3.10, авто-сброс 0x37,\nUzsg01PsuController, SQLite WAL + OutboxSyncWorker)"]
+        StationEdge["station-edge/agzs_edge\n(Компьютер — АСКА-02 — БП — УЗГС-01,\nПротокол v3.10, авто-сброс 0x37,\nUzsg01PsuController, SQLite WAL + OutboxSyncWorker,\nEdgeUpdater с HMAC-SHA256)"]
         TruckGps["Трекер газовоза"]
     end
 
@@ -28,24 +28,25 @@ flowchart TB
         AppTSX["src/App.tsx\n(оболочка экранов)"]
         RouteTS["src/route.ts\n(parseRoute, routePath, sameRoute)"]
         AuthTSX["src/auth.tsx\n(AuthProvider, useAuth)"]
-        LiveLevels["src/liveLevels.tsx\n(LevelsProvider, usePublicLevels,\nuseSensorDay, useViewPeriod)"]
+        LiveLevels["src/liveLevels.tsx\n(LevelsProvider, usePublicLevels,\nuseSensorDay, useViewPeriod, SensorStatusBadge)"]
         CatalogTSX["src/catalog.tsx\n(CatalogProvider, useCatalog)"]
+        ErrorsPolicy["src/errors.ts + src/policy.ts\n(messageOf, safeRefillLiters, freeVolumeLiters)"]
         ApiClient["src/api/client.ts\n(api.*, getJson, sendJson)"]
         Pages["layout/ + pages/:\nTopbar, BreadcrumbBar, MapScreen,\nSupplyPage, PublicStationModal,\nAdminStationsTab, AdminTrucksTab,\nAdminSuppliesTab, AdminReconcileTab"]
     end
 
     subgraph BackendAPI["backend (FastAPI /api/v1)"]
-        MainPy["app/main.py\n(create_app, lifespan)"]
+        MainPy["app/main.py\n(create_app, lifespan, обработчик DomainError)"]
         AuthPy["app/auth.py\n(require_principal, require_admin,\nrequire_station_access, require_station_owner)"]
-        Routers["Роутеры app/routers/*:\nauth, public, stations, tanks, shelly,\nstation_owners, trucks, map,\nbatches, balance, events, ingest"]
-        Account["app/services/account.py\nпорт учёта: backend()"]
-        Adapters["Адаптеры:\nmemory_account.py\npostgres_account.py\n(один commit на пакет)"]
-        Services["Прочие сервисы:\nshelly_link, shelly, calibration,\nlevel_journal, balance, batch_book,\ntrail, event_log, public_board, boot,\nedge_fleet (ring0..ring2, heartbeat)"]
-        Domain["Домен app/domain/*:\ntank_book.py (книга резервуара)\nerrors.py (CalibrationRequired)\npolicy.py, access.py"]
+        Routers["Роутеры app/routers/* + deps.py:\nauth, public, stations, tanks, shelly,\nstation_owners, trucks, map,\nbatches, balance, events, ingest"]
+        Account["app/services/account.py\nпорт и оркестрация (bind_*, валидация, хуки)"]
+        Adapters["Адаптеры хранения:\nmemory_account.py\npostgres_account.py\n(один commit на пакет)"]
+        Services["Прочие сервисы:\nshelly_link, shelly, level_journal,\nbalance, batch_book, trail, event_log,\npublic_board, board_cache, boot,\naccount_helpers, edge_fleet"]
+        Domain["Домен app/domain/*:\ntank_book.py, entities.py,\nbalance.py, calibration.py,\nerrors.py (DomainError), policy.py, access.py"]
     end
 
     subgraph Storage["Хранилища данных"]
-        MemState["In-Memory + JSON snapshot\n(catalog.py, device_ingest.py,\nmemory_state.py)"]
+        MemState["In-Memory + JSON snapshot\n(catalog.py, device_ingest.py,\nstation_accounts.py, memory_state.py)"]
         PostgresDB["PostgreSQL 16 + PostGIS\n(postgres_account.py / SQLAlchemy Models)"]
     end
 
@@ -53,12 +54,13 @@ flowchart TB
     FakeShelly <-->|"HTTP /rpc (JSON-RPC)"| Services
     FakeTopaz -->|"POST /api/v1/ingest/dispense"| Routers
     StationEdge -->|"POST /api/v1/ingest/dispense\nи /dispenses/batch\n(X-Device-Token, external_txn_id)"| Routers
-    StationEdge <-->|"GET/PUT /api/v1/ingest/edge/release\nPOST /edge/heartbeat"| Routers
+    StationEdge -->|"GET /edge/release + POST /edge/heartbeat\n(PUT /edge/release и GET /edge/fleet — admin)"| Routers
     TruckGps -->|"POST /api/v1/ingest/gps\nпишет lat/lon газовоза"| Routers
     InstallShelly -->|"Script.PutCode / Start"| Shelly
 
     AppTSX --> RouteTS
     AppTSX --> AuthTSX & LiveLevels & CatalogTSX & Pages
+    Pages --> ErrorsPolicy
     Pages --> ApiClient -->|"REST /api/v1/*"| Routers
 
     MainPy --> AuthPy --> Routers
@@ -71,32 +73,32 @@ flowchart TB
     Adapters --> PostgresDB
 ```
 
-### 1.2. Граф зависимостей сервисного слоя Backend (`backend/app/services/*`)
+### 1.2. Граф зависимостей сервисного слоя и домена Backend (`backend/app/*`)
 
 ```mermaid
 flowchart LR
-    account_mode["account_mode.py\n(use_postgres)"] --> account["account.py\nbackend(), порт учёта"]
-    account --> memory_account["memory_account.py"]
-    account --> postgres_account["postgres_account.py\nодин commit на пакет"]
+    routers["routers/* + routers/deps.py"] --> account["services/account.py\n(оркестрация, bind_*, хуки, кэш)"]
+    account --> account_mode["services/account_mode.py"]
+    account --> account_helpers["services/account_helpers.py"]
+    account --> board_cache["services/board_cache.py"]
+    account --> memory_account["services/memory_account.py"]
+    account --> postgres_account["services/postgres_account.py\n(изолирован от memory-модулей)"]
 
-    memory_account --> catalog["catalog.py\nпамять станций и газовозов"]
-    memory_account --> device_ingest["device_ingest.py\nпамять резервуаров"]
-    memory_account --> station_accounts["station_accounts.py"]
+    memory_account --> catalog["services/catalog.py"]
+    memory_account --> device_ingest["services/device_ingest.py"]
+    memory_account --> station_accounts["services/station_accounts.py"]
 
-    device_ingest --> tank_book["domain/tank_book.py"]
-    postgres_account --> tank_book
-    tank_book --> errors["domain/errors.py\nCalibrationRequired"]
+    catalog & device_ingest & station_accounts & shelly_link["services/shelly_link.py"] --> memory_state["services/memory_state.py\n(реестр register_store)"]
 
-    public_board["public_board.py"] --> account
-    shelly_link["shelly_link.py"] --> account
-    shelly_link --> shelly["shelly.py"]
+    device_ingest & postgres_account --> tank_book["domain/tank_book.py"]
+    account & catalog & device_ingest & postgres_account --> entities["domain/entities.py"]
+    tank_book --> d_balance["domain/balance.py"] & d_calibration["domain/calibration.py"] & d_errors["domain/errors.py\n(DomainError)"]
 
-    boot["boot.py"] --> postgres_account
-    boot --> memory_state["memory_state.py"]
-    memory_state --> catalog
-    memory_state --> device_ingest
-    station_accounts --> passwords["passwords.py"]
-    edge_fleet["edge_fleet.py\nкольца ring0..ring2 и heartbeat парка"]
+    public_board["services/public_board.py"] --> account & board_cache & d_calibration
+    shelly_link --> account & shelly["services/shelly.py"]
+    boot["services/boot.py"] --> memory_account & memory_state & shelly_link & postgres_account
+    station_accounts --> passwords["services/passwords.py"]
+    edge_fleet["services/edge_fleet.py\n(ring0..ring2, HMAC-SHA256, heartbeat)"] --> d_errors
 ```
 
 ### 1.3. Граф модулей станционного узла (`station-edge/agzs_edge/*`)
@@ -104,52 +106,26 @@ flowchart LR
 ```mermaid
 flowchart LR
     main["main.py\nCLI: serve, unlock, buttons,\nset-dose, start, stop, set-price,\ncounters, console, probe, listen,\nwatch-fill, diagnose, status,\nmonitor, flush, update"]
-    config["config.py\nEdgeSettings, FrameLayout,\nauto_reset_on_stop, update_channel,\nupdate_idle_quiet_sec,\nlock_buttons_on_update,\npump_buttons_mode"]
+    config["config.py\nEdgeSettings, FrameLayout,\nauto_reset_on_stop, update_channel,\nrelease_signing_key, require_release_signature"]
     service["service.py\nStationEdgeService\npoll_cycle_once(), _maybe_auto_reset(),\nrequest_stop(), is_idle_for_update(),\nlock_pump_buttons_for_update(),\nrestore_pump_buttons()"]
-    psu["psu_controller.py\nUzsg01PsuController\n0x34..0x39, 0.11..0.19"]
+    psu["psu_controller.py\nUzsg01PsuController,\nsend_buttons_param_to_pumps()"]
     tracker["tracker.py\nPumpDispenseTracker\ndose / full_tank -> dispensed_ml,\nhas_active_sessions(), active_addresses()"]
     iskra["iskra.py\nПротокол v3.10 (Искра 1.72)\nкадры 23 Б, Status [17..19]"]
-    link["serial_link.py\nSerialAskaLink (COM/TTY)\nEmulatorAskaLink"]
-    storage["storage.py\nEdgeDatabase (SQLite WAL)\n_session() без утечки FD,\nread_only / list_dispenses_between(),\nactive_dispensing_pumps(),\nseconds_since_last_dispense(),\nis_station_idle_for_update()"]
+    link["serial_link.py\nSerialAskaLink, EmulatorAskaLink,\nbuild_link()"]
+    storage["storage.py\nEdgeDatabase (SQLite WAL)\n_session() без утечки FD,\nparse_iso_datetime(),\nis_station_idle_for_update()"]
     sync["sync.py\nOutboxSyncWorker\nPOST /dispense и /dispenses/batch"]
     watch["fill_watch.py\nwatch_fill()"]
     diag["diagnose.py\nrun_diagnose()"]
     monitor["monitor.py\nShiftWindow, build_shift_snapshot()\nrender_shift_dashboard() (баннер ОБНОВЛЕНИЕ),\nrun_monitor_loop() (--kiosk)"]
-    updater["updater.py\nEdgeUpdater, ReleaseManifest,\nUpdateProgressState, SHA-256,\nпростой, возобновление и откат"]
+    updater["updater.py\nEdgeUpdater, ReleaseManifest,\nHMAC-SHA256 + SHA-256,\nпростой, возобновление и откат"]
 
-    main --> config
-    main --> service
-    main --> psu
-    main --> watch
-    main --> diag
-    main --> storage
-    main --> monitor
-    main --> sync
-    main --> updater
-
-    service --> link
-    service --> iskra
-    service --> tracker
-    service --> storage
-    service --> sync
-    service --> updater
-
-    monitor --> config
-    monitor --> psu
-    monitor --> storage
-    monitor --> updater
-
-    updater --> config
-    updater --> storage
-    updater --> service
-
-    psu --> link
-    psu --> iskra
-    watch --> link
-    watch --> iskra
-    watch --> tracker
-    diag --> link
-    diag --> iskra
+    main --> config & service & psu & watch & diag & storage & monitor & sync & updater
+    service --> link & iskra & tracker & storage & sync & psu & updater
+    monitor --> config & psu & storage & updater
+    updater --> config & storage & sync & link & psu
+    psu --> link & iskra & config
+    watch --> link & iskra & tracker
+    diag --> link & iskra
     storage --> tracker
     sync --> storage
 ```
@@ -252,14 +228,24 @@ d:\Проект\day\
 │   │   │                                 ├── require_principal()
 │   │   │                                 ├── require_station_access()
 │   │   │                                 └── require_station_owner()
-│   │   ├── main.py                       ├── _lifespan()
+│   │   ├── main.py                       ├── lifespan(), handle_domain_error()
 │   │   │                                 └── create_app()
 │   │   ├── domain/
 │   │   │   ├── __init__.py
-│   │   │   ├── access.py                 └── ROLE_ADMIN, ROLE_STATION, is_admin_role(), may_read_station()
-│   │   │   ├── errors.py                 └── CalibrationRequired
+│   │   │   ├── access.py                 └── ROLE_ADMIN, ROLE_STATION, is_admin_role(), may_manage_catalog()
+│   │   │   ├── balance.py                ├── DiscrepancyType, DiscrepancySeverity, ReconcileResult,
+│   │   │   │                             └── calculate_remainder(), classify_discrepancy()
+│   │   │   ├── calibration.py            ├── LevelCalibration (dataclass), round_volts(),
+│   │   │   │                             │   level_volts_changed(), round_percent(),
+│   │   │   │                             │   remainder_fill_percent(), same_published_level(),
+│   │   │   │                             └── volts_to_percent(), volts_to_liters()
+│   │   │   ├── entities.py               ├── TRUCK_STATUSES, StationCard, TruckCard, TankDevice,
+│   │   │   │                             │   TankBook, StationOwner, TankBookAck, TankBookState,
+│   │   │   │                             └── parse_dispense_meta()
+│   │   │   ├── errors.py                 └── DomainError, NotFoundError, ConflictError, ValidationError,
+│   │   │   │                                 ForbiddenError, CalibrationRequired
 │   │   │   ├── level_policy.json
-│   │   │   ├── policy.py                 └── _load_policy()
+│   │   │   ├── policy.py                 └── load_policy(), SAFE_FILL_PERCENT, LOW_FILL_PERCENT, ...
 │   │   │   └── tank_book.py              ├── recompute_tank_book(), build_ingest_ack(),
 │   │   │                                 │   build_tank_ingest_state(), apply_level_reading(),
 │   │   │                                 │   apply_dispense_volume(), apply_receipt_volume(),
@@ -279,146 +265,125 @@ d:\Проект\day\
 │   │   │   │                             ├── Batch (Base)
 │   │   │   │                             └── BatchTrailEvent (Base)
 │   │   │   ├── balance.py                └── BalanceSnapshot (Base)
-│   │   │   └── event.py                  ├── DiscrepancyType (Enum)
-│   │   │                                 ├── DiscrepancySeverity (Enum)
-│   │   │                                 └── DiscrepancyEvent (Base)
+│   │   │   └── event.py                  └── DiscrepancyEvent (Base) [импортирует enum из domain/balance.py]
 │   │   ├── schemas/
 │   │   │   ├── __init__.py
 │   │   │   ├── common.py                 ├── GeoPoint, TimeRange
-│   │   │   ├── auth.py                   ├── LoginIn, TokenOut, UserOut
-│   │   │   ├── public.py                 ├── PublicTankLevelOut, PublicStationLevelsOut
-│   │   │   ├── station.py                ├── TankOut, StationOut, StationCreateIn, StationUpdateIn,
-│   │   │   │                             │   TankDeviceCreateIn, TankDeviceUpdateIn, ShellyLinkIn,
-│   │   │   │                             │   ShellyDeviceOut, TankDeviceOut, TankLevelRowOut,
-│   │   │   │                             │   DispenseReadingOut, StationUserCreateIn, StationUserOut
-│   │   │   ├── truck.py                  ├── TruckOut, TruckCreateIn, TruckUpdateIn, MapPoint, MapOverview
+│   │   │   ├── auth.py                   ├── LoginIn, SessionOut, StationUserCreate, StationUserOut
+│   │   │   ├── public.py                 ├── PublicTankOut, PublicStationOut
+│   │   │   ├── station.py                ├── TankOut, StationOut, StationCreate, StationUpdate,
+│   │   │   │                             │   TankDeviceCreate, TankDeviceUpdate, ShellyBind,
+│   │   │   │                             │   ShellyLinkOut, TankDeviceOut, StationDetailOut,
+│   │   │   │                             │   DispenseReadingOut, LevelReadingOut
+│   │   │   ├── truck.py                  ├── TruckOut, TruckCreate, TruckUpdate
 │   │   │   ├── batch.py                  ├── TrailStep, BatchTrailOut
-│   │   │   ├── balance.py                ├── BalanceReconcileIn, BalanceSnapshotOut
+│   │   │   ├── balance.py                ├── BalanceReconcileRequest, BalanceSnapshotOut
 │   │   │   ├── event.py                  └── DiscrepancyEventOut
 │   │   │   └── ingest.py                 ├── DispenseIngest, ReceiptIngest, CalibrationIn,
 │   │   │                                     LevelIngest, IngestAck, TankIngestState,
 │   │   │                                     DispenseBatchIngest, LevelBatchIngest,
-│   │   │                                     EdgeReleaseManifest, EdgeReleaseOut,
+│   │   │                                     EdgeReleaseManifest (+ signature), EdgeReleaseOut,
 │   │   │                                     EdgeHeartbeatIn, EdgeNodeStatus,
 │   │   │                                     EdgeHeartbeatAck, EdgeFleetSummaryOut
 │   │   ├── routers/
 │   │   │   ├── __init__.py
-│   │   │   ├── auth.py                   ├── issue_access_token(), read_me()
-│   │   │   ├── public.py                 └── public_stations()
+│   │   │   ├── deps.py                   └── station_to_out(), require_existing_station_access(), device_to_out()
+│   │   │   ├── auth.py                   ├── login(), logout(), me()
+│   │   │   ├── public.py                 └── public_levels()
 │   │   │   ├── stations.py               ├── list_station_cards(), create_station_card(),
 │   │   │   │                             │   patch_station_card(), remove_station_card(),
-│   │   │   │                             │   get_station_card(), station_to_out()
+│   │   │   │                             └── get_station_card()
 │   │   │   ├── tanks.py                  ├── list_tanks(), list_station_devices(),
 │   │   │   │                             │   create_station_device(), patch_station_device(),
 │   │   │   │                             │   remove_station_device(), list_device_levels(),
-│   │   │   │                             │   list_station_dispenses(), device_to_out()
+│   │   │   │                             └── list_station_dispenses()
 │   │   │   ├── shelly.py                 ├── put_station_shelly(), delete_station_shelly()
 │   │   │   ├── station_owners.py         ├── list_station_logins(), create_station_login()
-│   │   │   ├── trucks.py                 ├── get_trucks(), post_truck(), patch_truck(), get_truck()
+│   │   │   ├── trucks.py                 ├── list_truck_cards(), create_truck_card(), patch_truck_card(), get_truck_card()
 │   │   │   ├── map.py                    └── map_overview()
 │   │   │   ├── batches.py                └── get_batch_trail()
-│   │   │   ├── balance.py                ├── reconcile_balance(), list_snapshots()
-│   │   │   ├── events.py                 ├── list_events(), acknowledge_event()
+│   │   │   ├── balance.py                ├── reconcile(), list_snapshots()
+│   │   │   ├── events.py                 ├── list_event_cards(), resolve_event_card()
 │   │   │   └── ingest.py                 ├── require_device(), calibrate(), ingest_gps(),
 │   │   │                                     ingest_level(), ingest_levels_batch(),
 │   │   │                                     ingest_dispense(), ingest_dispenses_batch(),
 │   │   │                                     ingest_receipt(), ingest_tank(),
 │   │   │                                     get_edge_release(), post_edge_heartbeat(),
-│   │   │                                     put_edge_release(), get_edge_fleet()
+│   │   │                                     put_edge_release() [admin], get_edge_fleet() [admin]
 │   │   └── services/
 │   │       ├── __init__.py
 │   │       ├── account_mode.py           └── use_postgres()
-│   │       ├── account.py                ├── backend(), _levels(), list_stations(),
-│   │       │                             │   get_station(), create_station(), update_station(),
-│   │       │                             │   delete_station(), list_trucks(), get_truck(),
-│   │       │                             │   create_truck(), update_truck(), delete_truck(),
-│   │       │                             │   record_truck_position(), list_active_stations_with_tanks(),
-│   │       │                             │   list_tank_devices(), accept_level(), accept_levels_batch(),
-│   │       │                             │   accept_dispense(), accept_dispenses_batch(),
-│   │       │                             │   accept_receipt(), bind_level(), bind_dispense(),
-│   │       │                             │   list_station_users(), authenticate_station_user(),
-│   │       │                             └── list_level_readings(), list_dispense_records()
+│   │       ├── account_helpers.py        ├── clean_optional_text(), require_non_empty(), require_truck_status(),
+│   │       │                             │   require_station_and_tank(), *_event_key(),
+│   │       │                             │   is_gps_seen()/remember_gps(), ack_to_schema()/state_to_schema(),
+│   │       │                             │   build_tank_out(), build_dispense_out(), batch_counts(),
+│   │       │                             └── calibration_to_dict()/from_dict(), extract_book_fields()
+│   │       ├── board_cache.py            └── get_cached_board(), set_cached_board(), invalidate_public_board_cache()
+│   │       ├── account.py                ├── backend(), register_tank_deleted_hook(), register_calibration_hook(),
+│   │       │                             │   общая валидация/хуки/инвалидация кэша, bind_*,
+│   │       │                             │   record_truck_position(), CRUD станций/газовозов/резервуаров,
+│   │       │                             └── accept_level/dispense/receipt + батчи
 │   │       ├── memory_account.py         └── фасад памяти: те же имена, что у postgres_account
-│   │       ├── boot.py                   ├── boot_store(), persist_state()
-│   │       ├── calibration.py            ├── LevelCalibration (dataclass), round_volts(),
-│   │       │                             │   level_volts_changed(), round_percent(),
-│   │       │                             │   remainder_fill_percent(), same_published_level(),
-│   │       │                             │   volts_to_percent(), volts_to_liters()
+│   │       ├── boot.py                   ├── run_migrations(), restore_memory_state(), import_state_if_empty()
+│   │       ├── calibration.py            └── совместимый re-export из app.domain.calibration
 │   │       ├── level_journal.py          ├── PublishedLevel (Protocol), published_levels()
-│   │       ├── balance.py                ├── ReconciliationResult (dataclass), calculate_remainder(),
-│   │       │                             │   classify_discrepancy()
-│   │       ├── balance_log.py            ├── record_snapshot(), list_recorded_snapshots(),
-│   │       │                             │   reset_balance_log()
-│   │       ├── event_log.py              ├── record_event(), list_recorded_events(),
-│   │       │                             │   acknowledge_recorded_event(), open_events_count(),
-│   │       │                             │   reset_events()
-│   │       ├── batch_book.py             ├── BatchRecord (dataclass), register_receipt_batch(),
-│   │       │                             │   find_batch_by_code(), reset_batches()
-│   │       ├── trail.py                  └── build_batch_trail()
+│   │       ├── balance.py                └── обёртка над app.domain.balance с порогами из Settings
+│   │       ├── balance_log.py            ├── record_reconcile(), snapshots_for(), demo_consumption()
+│   │       ├── event_log.py              ├── all_events(), list_events(), get_event(), resolve_event()
+│   │       ├── batch_book.py             ├── list_batches(), create_batch(), by_code(), by_id()
+│   │       ├── trail.py                  └── trail_chain_labels()
 │   │       ├── passwords.py              ├── hash_password(), verify_password()
-│   │       ├── station_accounts.py       ├── StationOwner (dataclass), create_owner(),
-│   │       │                             │   grant_owner(), list_owners(),
-│   │       │                             │   authenticate_owner(), snapshot(),
-│   │       │                             │   restore_snapshot(), reset_station_accounts()
-│   │       ├── catalog.py                ├── StationCard (dataclass), TruckCard (dataclass),
-│   │       │                             │   reset_catalog(), list_stations(), get_station(),
-│   │       │                             │   create_station(), update_station(), delete_station(),
-│   │       │                             │   list_trucks(), get_truck(), create_truck(),
-│   │       │                             │   update_truck(), delete_truck(),
-│   │       │                             │   record_truck_position(), snapshot(), restore_snapshot()
-│   │       ├── device_ingest.py          ├── TankDevice (dataclass), TankBook (dataclass),
-│   │       │                             │   reset_device_ingest(), register_tank(),
-│   │       │                             │   update_tank_device(), list_tank_devices(),
-│   │       │                             │   get_tank_device(), tank_by_token(), tank_remainder(),
-│   │       │                             │   has_calibration(), set_calibration(), accept_level(),
-│   │       │                             │   accept_levels_batch(), accept_receipt(),
-│   │       │                             │   accept_dispense(), accept_dispenses_batch(),
-│   │       │                             │   parse_dispense_meta(), list_dispense_records(),
-│   │       │                             │   bind_level(), bind_dispense(), tank_state(),
-│   │       │                             │   snapshot(), restore_snapshot()
-│   │       ├── shelly.py                 ├── ShellyError (Exception), ShellySnapshot (dataclass),
-│   │       │                             │   ShellyRpc (Protocol), HttpShellyRpc, parse_rpc_payload(),
-│   │       │                             │   snapshot_from(), read_snapshot()
-│   │       ├── shelly_link.py            ├── ShellyLink (dataclass), set_shelly_rpc(),
-│   │       │                             │   reset_shelly_links(), normalize_host(),
-│   │       │                             │   connect_shelly(), disconnect_shelly(), shelly_view(),
-│   │       │                             │   poll_one(), snapshot_bindings(), restore_bindings()
-│   │       ├── public_board.py           ├── list_public_levels(), _is_online(), _utc()
+│   │       ├── station_accounts.py       ├── grant_owner(), list_owners(), authenticate_owner(),
+│   │       │                             └── snapshot(), restore_snapshot(), reset_station_accounts()
+│   │       ├── catalog.py                ├── reset_catalog(), list/create/update/delete_station(),
+│   │       │                             └── list/create/update/delete_truck(), snapshot(), restore_snapshot()
+│   │       ├── device_ingest.py          ├── reset_device_ingest(), register_tank(), update_tank_device(),
+│   │       │                             │   list_tank_devices(), list_station_tanks_out(), get_tank_device(),
+│   │       │                             │   tank_by_token(), tank_remainder(), has_calibration(), set_calibration(),
+│   │       │                             │   accept_level(), accept_levels_batch(), accept_receipt(),
+│   │       │                             │   accept_dispense(), accept_dispenses_batch(), list_dispense_records(),
+│   │       │                             └── tank_state(), snapshot(), restore_snapshot()
+│   │       ├── shelly.py                 ├── ShellyError, ShellySnapshot, ShellyRpc, HttpShelly,
+│   │       │                             └── parse_rpc_payload(), snapshot_from(), read_snapshot()
+│   │       ├── shelly_link.py            ├── ShellyLink (dataclass), normalize_host(),
+│   │       │                             │   connect_shelly(), disconnect_shelly(), remove_shelly_for_tank(),
+│   │       │                             └── shelly_view(), poll_one(), snapshot_bindings(), restore_bindings()
+│   │       ├── public_board.py           ├── list_public_stations(), sensor_online(), invalidate_public_board_cache()
 │   │       ├── edge_fleet.py             ├── normalize_channel(), parse_version_tuple(),
-│   │       │                             │   _upsert_node_status(), _replace_ring_stations(),
-│   │       │                             │   get_release_for_station(), publish_release(),
-│   │       │                             │   record_heartbeat(), fleet_summary(), reset_edge_fleet()
-│   │       ├── memory_state.py           ├── persist(), restore()
+│   │       │                             │   canonical_release_payload(), sign_release_manifest(),
+│   │       │                             │   verify_release_signature(), get_release_for_station(),
+│   │       │                             └── publish_release(), record_heartbeat(), fleet_summary(), reset_edge_fleet()
+│   │       ├── memory_state.py           ├── register_store(), persist(), restore()
 │   │       └── postgres_account.py       ├── session(), _insert_once(), _accept_level(),
 │   │                                         _accept_dispense(), accept_levels_batch(),
 │   │                                         accept_dispenses_batch() — один commit,
-│   │                                         record_truck_position(), list_stations(),
-│   │                                         register_tank(), accept_level(), accept_dispense(),
-│   │                                         accept_receipt(), list_level_readings(),
-│   │                                         list_dispense_records(),
-│   │                                         create_station_user(), authenticate_station_user(),
-│   │                                         import_memory_snapshot()
+│   │                                         CRUD станций/газовозов/резервуаров, accept_receipt(),
+│   │                                         list_level_readings(), list_dispense_records(),
+│   │                                         create/list/authenticate_station_user(), import_memory_snapshot()
 │   └── tests/
 │       ├── conftest.py                   └── _auth_open_for_tests()
-│       ├── test_account_port.py         └── 8 тестов (выбор адаптера, CalibrationRequired → 422,
-│       │                                     GPS координата и дубль, откат пакета PostgreSQL)
-│       ├── test_api.py                   └── 6 тестов (health, map, batch 404, reconcile, dispense, levels)
-│       ├── test_auth.py                  └── 5 тестов (login, expired/revoked token, rate limit, SSRF)
-│       ├── test_balance.py               └── 5 тестов (calculate_remainder, ok, shortage, surplus, band)
-│       ├── test_bulk_ingest.py           └── 3 теста (пакетный инжест наливов, уровней, TTL-кэш витрины)
-│       ├── test_calibration.py           └── 7 тестов (midpoint, endpoints, dial clamp, rounding, flat)
-│       ├── test_catalog.py               └── 4 теста (seed stations, CRUD station, tank, CRUD truck)
-│       ├── test_device_ingest.py         └── 8 тестов (dispense/shortage, calibration, receipt, noise, token)
-│       ├── test_edge_fleet.py            └── 1 тест (3 кольца раскатки ring0..ring2, привязка станций и fleet heartbeat)
-│       ├── test_level_journal.py         └── 1 тест (published_levels noise threshold)
-│       ├── test_memory_state.py          └── 1 тест (persist & restore across reset)
-│       ├── test_policy.py                └── 4 теста (level_policy.json sync, api_prefix, rounding)
-│       ├── test_public_levels.py         └── 2 теста (fill_only, empty tank)
-│       ├── test_sensor_online.py         └── 2 теста (fresh online, stale offline)
-│       ├── test_shelly.py                └── 9 тестов (snapshot, RPC, auto-voltmeter, link, cal, offline)
-│       ├── test_shelly_script.py         └── 3 теста (render_script placeholders, escaping, validation)
-│       ├── test_station_access.py        └── 5 тестов (RBAC station/owner/admin, multi-station)
-│       └── test_tank_book.py             └── 5 тестов (книга резервуара, шум вольт, сводка станции, DispenseReadingOut)
+│       ├── test_account_port.py         └── выбор адаптера, CalibrationRequired/DomainError → 422,
+│       │                                     GPS координата и дубль, откат пакета PostgreSQL
+│       ├── test_api.py                   └── health, map, batch 404, reconcile, dispense, levels
+│       ├── test_architecture_and_parity.py └── AST-тесты слоёв/циклов, boot.restore_memory_state(),
+│       │                                     паритет Memory vs PostgreSQL (404/422, Shelly, кэш витрины),
+│       │                                     известное расхождение 404 и гарды деплоя (--workers 1, OTA fail-closed)
+│       ├── test_auth.py                  └── login, expired/revoked token, rate limit, SSRF (ValidationError 422)
+│       ├── test_balance.py               └── calculate_remainder, ok, shortage, surplus, band
+│       ├── test_bulk_ingest.py           └── пакетный инжест наливов, уровней, TTL-кэш витрины
+│       ├── test_calibration.py           └── midpoint, endpoints, dial clamp, rounding, flat
+│       ├── test_catalog.py               └── seed stations, CRUD station, tank, CRUD truck
+│       ├── test_device_ingest.py         └── dispense/shortage, calibration, receipt, noise, token
+│       ├── test_edge_fleet.py            └── 3 кольца ring0..ring2, fleet heartbeat, require_admin на release/fleet, HMAC-подпись
+│       ├── test_level_journal.py         └── published_levels noise threshold
+│       ├── test_memory_state.py          └── persist & restore across reset
+│       ├── test_policy.py                └── level_policy.json sync (в т.ч. SAFE_FILL_PERCENT), api_prefix, rounding
+│       ├── test_public_levels.py         └── fill_only, empty tank
+│       ├── test_sensor_online.py         └── fresh online, stale offline
+│       ├── test_shelly.py                └── snapshot, RPC, auto-voltmeter, link, cal, offline
+│       ├── test_shelly_script.py         └── render_script placeholders, escaping, validation
+│       ├── test_station_access.py        └── RBAC station/owner/admin + HTTP-защита PUT/GET edge release/fleet
+│       └── test_tank_book.py             └── книга резервуара, шум вольт, сводка станции, DispenseReadingOut
 │
 ├── station-edge/
 │   ├── 99-aska02.rules
@@ -440,12 +405,10 @@ d:\Проект\day\
 │   │   │                                 │   shift_start_hour, shift_hours, monitor_refresh_sec,
 │   │   │                                 │   monitor_kiosk, currency_symbol, update_channel,
 │   │   │                                 │   releases_dir, update_idle_quiet_sec,
-│   │   │                                 │   lock_buttons_on_update, pump_buttons_mode]
-│   │   │                                 ├── load_dotenv()
-│   │   │                                 ├── resolve_preferred_port()
-│   │   │                                 ├── _parse_bool()
-│   │   │                                 ├── _parse_addresses()
-│   │   │                                 └── _parse_dispenser_map()
+│   │   │                                 │   lock_buttons_on_update, pump_buttons_mode,
+│   │   │                                 │   release_signing_key, require_release_signature]
+│   │   │                                 ├── load_dotenv(), resolve_preferred_port()
+│   │   │                                 ├── _parse_bool(), _parse_addresses(), _parse_dispenser_map()
 │   │   ├── iskra.py                      ├── CMD_*_ASCII (0x33..0x39), PARAM_PRICE_CODES (0.1..0.19)
 │   │   │                                 ├── IskraFrameError (ValueError)
 │   │   │                                 ├── IskraTelemetryFrame (dataclass) [.raw_hex, .volume_raw,
@@ -463,10 +426,9 @@ d:\Проект\day\
 │   │   │                                 ├── _decode_price(), _completed_volume_in_price_field()
 │   │   │                                 └── _validate_frame_envelope(), _decode_sost_field(), parse_iskra_frame()
 │   │   ├── psu_controller.py             ├── COLUMN_ERROR_DESCRIPTIONS, STATE_DESCRIPTIONS_RU
-│   │   │                                 ├── PsuControlError (RuntimeError)
-│   │   │                                 ├── ResetResult (dataclass)
-│   │   │                                 ├── CountersReport (dataclass) [.render()]
+│   │   │                                 ├── PsuControlError (RuntimeError), ResetResult, CountersReport
 │   │   │                                 ├── _decode_dose_type_ru(), format_detailed_status()
+│   │   │                                 ├── send_buttons_param_to_pumps()
 │   │   │                                 └── Uzsg01PsuController [.get_status(), .reset_column(),
 │   │   │                                     .set_buttons_mode(), .preset_dose(), .start_pump(),
 │   │   │                                     .stop_pump(), .set_price(), .read_counters()]
@@ -475,13 +437,12 @@ d:\Проект\day\
 │   │   │                                 ├── _ActiveSession (dataclass)
 │   │   │                                 └── PumpDispenseTracker [.active_session(), .has_active_sessions(),
 │   │   │                                     .active_addresses(), .process_frame()]
-│   │   ├── serial_link.py                ├── PollRawResult (dataclass)
-│   │   │                                 ├── AskaLink (Protocol)
+│   │   ├── serial_link.py                ├── PollRawResult (dataclass), AskaLink (Protocol)
 │   │   │                                 ├── SerialAskaLink [.open(), .close(), .poll_test(), .send_command()]
 │   │   │                                 ├── EmulatorAskaLink [.open(), .close(), .poll_test(), .send_command()]
-│   │   │                                 └── list_available_serial_ports()
+│   │   │                                 └── build_link(), list_available_serial_ports()
 │   │   ├── storage.py                    ├── OutboxItem (dataclass), DispenseRow (dataclass) [.amount_kzt]
-│   │   │                                 ├── _to_utc(), parse_iso_datetime(), _parse_iso_utc(), _row_to_dispense()
+│   │   │                                 ├── parse_iso_datetime(), _row_to_dispense()
 │   │   │                                 └── EdgeDatabase [._connect(), ._session(), ._init_schema(),
 │   │   │                                     ._empty_summary(), .update_live_state(), .mark_no_response(),
 │   │   │                                     .log_raw_frame(), .record_completed_dispense(),
@@ -501,8 +462,7 @@ d:\Проект\day\
 │   │   │                                 ├── send_vps_request(), probe_vps_link()
 │   │   │                                 ├── post_dispense_to_vps(), post_dispenses_batch_to_vps()
 │   │   │                                 └── OutboxSyncWorker [.flush_due()]
-│   │   ├── service.py                    ├── build_link(), send_buttons_param_to_pumps()
-│   │   │                                 └── StationEdgeService [.request_stop(), .is_idle_for_update(),
+│   │   ├── service.py                    └── StationEdgeService [.request_stop(), .is_idle_for_update(),
 │   │   │                                     .lock_pump_buttons_for_update(), .restore_pump_buttons(),
 │   │   │                                     .poll_cycle_once(), ._maybe_auto_reset(),
 │   │   │                                     ._sync_pump_buttons_with_update_state(), ._announce_vps(),
@@ -512,7 +472,9 @@ d:\Проект\day\
 │   │   │                                 ├── update_state_path(), read_update_state(),
 │   │   │                                 │   write_update_state(), clear_update_state()
 │   │   │                                 ├── parse_version_tuple(), is_newer_version(),
-│   │   │                                 │   compute_sha256(), verify_sha256()
+│   │   │                                 │   compute_sha256(), verify_sha256(),
+│   │   │                                 │   canonical_release_payload(), sign_release_manifest(),
+│   │   │                                 │   verify_release_signature()
 │   │   │                                 ├── fetch_release_manifest(), report_edge_heartbeat(),
 │   │   │                                 │   download_release_artifact()
 │   │   │                                 └── EdgeUpdater [.wait_until_idle(), .run_update(),
@@ -539,9 +501,9 @@ d:\Проект\day\
 │       ├── test_monitor.py               └── 7 тестов (смены 12/24 ч, фильтрация, табло 80 симв., read-only без БД, цикл киоска, config и сквозной CLI)
 │       ├── test_psu_controller.py        └── 12 тестов (разблокировка '07'->'05', цикл 0x34..0x39, 0.11..0.19, запреты при наливе, авто-сброс, _session() без утечки FD, CLI)
 │       ├── test_serial_link.py           └── 5 тестов (таймауты, шум до SOH, короткий ответ, probe --checksum all)
-│       ├── test_storage_sync.py          └── 7 тестов (SQLite WAL, дедупликация, чанки >200 в OutboxSyncWorker, HTTP VPS sync, read_only на пустой БД)
+│       ├── test_storage_sync.py          └── 7 тестов (SQLite WAL, дедупликация, чанки >200 в OutboxSyncWorker, HTTP VPS sync, read_only на пустой БД, parse_iso_datetime)
 │       ├── test_tracker.py               └── 8 тестов (обычная доза, «до полного», живые кадры, холостой пуск 090000, отмена дозы, ошибки Sost[19])
-│       └── test_updater_and_graceful.py  └── 8 тестов (active_dispensing_pumps, Graceful Shutdown, окно простоя, возобновление после сбоя питания и баннер tty1, SHA-256 и откат, блокировка кнопок 0.17->0.18, CLI update --check)
+│       └── test_updater_and_graceful.py  └── 10 тестов (active_dispensing_pumps, Graceful Shutdown, простой, возобновление после сбоя, SHA-256 + HMAC-SHA256 подпись, откат, блокировка кнопок, ацикличность updater, CLI)
 │
 └── frontend/
     ├── index.html
@@ -553,10 +515,12 @@ d:\Проект\day\
     ├── vite.local.config.ts
     ├── columnReport.check.ts             └── reading()
     ├── levelSource.check.ts              └── reading()
+    ├── policyHelpers.check.ts            └── проверки SAFE_FILL_PERCENT, freeVolumeLiters(), safeRefillLiters(), messageOf()
     └── src/
         ├── main.tsx
         ├── vite-env.d.ts
         ├── sources.ts                    └── SRC (источники данных интерфейса)
+        ├── errors.ts                     └── messageOf() (единый разбор ошибок API)
         ├── columnReport.ts               ├── CONNECTED_COLUMNS, ColumnSeries, ColumnReport, LiveTankSample,
         │                                 └── buildLiveTankSamples(), isColumnReportStation(),
         │                                     bucketCaption(), columnDispenseReport()
@@ -566,9 +530,9 @@ d:\Проект\day\
         │                                     FiscalCheck, StationBalance, FleetStats,
         │                                     BatchTrailEvent, BatchTrail, SupplyStatus,
         │                                     LpgSupply, SupplyOperation, DiscrepancyEvent
-        ├── policy.ts                     └── LEVEL_POLICY, DIAL_MIN_PERCENT, DIAL_MAX_PERCENT,
-        │                                     LEVEL_STEP_VOLTS, LITER_NOISE, POLL_SECONDS,
-        │                                     POLL_MS, SENSOR_STALE_SECONDS, LOW_FILL_PERCENT
+        ├── policy.ts                     └── DIAL_MIN_PERCENT, DIAL_MAX_PERCENT, LOW_FILL_PERCENT,
+        │                                     SAFE_FILL_PERCENT (85%), POLL_MS,
+        │                                     freeVolumeLiters(), safeRefillLiters()
         ├── access.ts                     ├── ROLE_ADMIN, ROLE_STATION, ROLE_OWNER, ROLE_CONSOLE,
         │                                 ├── roleOf(), isAdmin()
         ├── session.ts                    ├── AdminSession, readSession(), writeSession(),
@@ -589,10 +553,10 @@ d:\Проект\day\
         ├── theme.tsx                     ├── ThemeProvider(), useTheme()
         ├── liveLevels.tsx                ├── LOW_FILL_PERCENT, isLowFill(), LiveLevel,
         │                                 │   summarizeLevel(), sensorLabel(), sensorBadge(),
-        │                                 │   tankSensorLabel(), tankSensorBadge(), SensorStatus(),
+        │                                 │   tankSensorLabel(), tankSensorBadge(), SensorStatusBadge(),
         │                                 │   LevelsProvider(), usePublicLevels(),
         │                                 │   useViewPeriod(), useSensorDay()
-        ├── catalog.tsx                   ├── CatalogProvider(), useCatalog(), messageOf()
+        ├── catalog.tsx                   ├── CatalogProvider(), useCatalog() (re-export messageOf)
         ├── App.tsx                       └── App() — оболочка экранов, адрес через route.ts
         ├── styles/
         │   ├── variables.css             └── Корневая точка входа со ссылками @import
@@ -642,7 +606,7 @@ d:\Проект\day\
             ├── StationDetailPage.tsx     └── StationDetailPage()
             ├── StationOwnerCard.tsx      └── StationOwnerCard()
             ├── TankDeviceRows.tsx        ├── TankDeviceRows(), toRow(), shellyText(),
-            │                             │   ingestUrl(), messageOf()
+            │                             │   ingestUrl() (использует errors.ts)
             └── Toast.tsx                 ├── ToastProvider(), useToast()
 ```
 
@@ -795,3 +759,15 @@ d:\Проект\day\
 - **Блокировка кнопок колонок `0.17`→`0.18`/`0.16` и окно на `/dev/tty1` ([`monitor.py`](file:///d:/Проект/day/station-edge/agzs_edge/monitor.py), [`service.py`](file:///d:/Проект/day/station-edge/agzs_edge/service.py), [`config.py`](file:///d:/Проект/day/station-edge/agzs_edge/config.py))**: на время установки и рестарта на мониторе бесправного пользователя горит рамка **`ОБНОВЛЕНИЕ — КОЛОНКИ НЕДОСТУПНЫ`**, а физические кнопки колонок отключаются командой `0x38` (`0.17`) и автоматически возвращаются в работу (`0.18`/`0.16`) после завершения или рестарта службы (не затрагивая режим `emulator`).
 - **Правило `udev` и шаблоны Ansible ([`99-aska02.rules`](file:///d:/Проект/day/station-edge/99-aska02.rules), [`hosts.example.ini`](file:///d:/Проект/day/deploy/fleet/hosts.example.ini), [`update-stations.yml`](file:///d:/Проект/day/deploy/fleet/update-stations.yml))**: фиксация АСКА-02 за `/dev/aska02` и волновой плейбук (`serial: "20%"`) для раскатки по Mesh-VPN (Headscale / WireGuard).
 - **Тесты ([`test_updater_and_graceful.py`](file:///d:/Проект/day/station-edge/tests/test_updater_and_graceful.py), [`test_edge_fleet.py`](file:///d:/Проект/day/backend/tests/test_edge_fleet.py))**: добавлены 8 тестов станционного контура (`72 passed` суммарно по `station-edge`) и тест 3 колец/heartbeat на бэкенде.
+
+#### 9. Выполнено: устранение нарушений слоёв, дублей адаптеров, циклов импорта и уязвимости OTA-релизов
+- **Безопасность OTA-релизов ([`ingest.py`](file:///d:/Проект/day/backend/app/routers/ingest.py), [`edge_fleet.py`](file:///d:/Проект/day/backend/app/services/edge_fleet.py), [`updater.py`](file:///d:/Проект/day/station-edge/agzs_edge/updater.py))**: `PUT /api/v1/ingest/edge/release` и `GET /api/v1/ingest/edge/fleet` переведены с `require_device` на `require_admin`. Добавлена каноническая подпись `HMAC-SHA256` (`signature`, `EDGE_RELEASE_SIGNING_KEY`, `AGZS_RELEASE_SIGNING_KEY`, `AGZS_REQUIRE_RELEASE_SIGNATURE`), проверяемая на станции и при первом скачивании (`run_update`), и при возобновлении после сбоя питания (`_resume_interrupted_update`). В шаблонах боевого деплоя ([`.env.example`](file:///d:/Проект/day/station-edge/.env.example), [`station-edge-updater.service`](file:///d:/Проект/day/station-edge/station-edge-updater.service), [`update-stations.yml`](file:///d:/Проект/day/deploy/fleet/update-stations.yml)) включён режим fail-closed (`AGZS_REQUIRE_RELEASE_SIGNATURE=1`), а в [`deploy/docker-compose.yml`](file:///d:/Проект/day/deploy/docker-compose.yml) и [`deploy/.env.example`](file:///d:/Проект/day/deploy/.env.example) проброшен `EDGE_RELEASE_SIGNING_KEY`.
+- **Фиксация одного воркера до переноса памяти процесса ([`backend/Dockerfile`](file:///d:/Проект/day/backend/Dockerfile))**: в команде запуска `uvicorn` явно зафиксировано `--workers 1` с перечнем состояний в памяти процесса (`auth.py`, `account_helpers._SEEN_GPS`, `board_cache.py`, `routers/map.py`, `edge_fleet.py`, `shelly_link.py` / `shelly_poller`).
+- **Доменные исключения вместо `HTTPException` в сервисах ([`errors.py`](file:///d:/Проект/day/backend/app/domain/errors.py), [`main.py`](file:///d:/Проект/day/backend/app/main.py))**: введены `DomainError`, `NotFoundError` (404), `ConflictError` (409), `ValidationError` (422), `ForbiddenError` (403) и единый `@app.exception_handler(DomainError)`. Из всего `backend/app/services/` удалены импорты `fastapi.HTTPException`.
+- **Чистый доменный слой и разрыв циклов ([`balance.py`](file:///d:/Проект/day/backend/app/domain/balance.py), [`calibration.py`](file:///d:/Проект/day/backend/app/domain/calibration.py), [`entities.py`](file:///d:/Проект/day/backend/app/domain/entities.py), [`tank_book.py`](file:///d:/Проект/day/backend/app/domain/tank_book.py), [`deps.py`](file:///d:/Проект/day/backend/app/routers/deps.py), [`board_cache.py`](file:///d:/Проект/day/backend/app/services/board_cache.py), [`memory_state.py`](file:///d:/Проект/day/backend/app/services/memory_state.py))**:
+  - `tank_book.py` очищен от импортов `app.schemas.*` и `app.services.*`; перенесены `balance`, `calibration` и сущности в `app/domain/`.
+  - `LevelReadingOut` перенесена в [`station.py`](file:///d:/Проект/day/backend/app/schemas/station.py). Общие хелперы роутеров вынесены в [`deps.py`](file:///d:/Проект/day/backend/app/routers/deps.py).
+  - `postgres_account.py` полностью изолирован от `catalog`, `device_ingest`, `station_accounts` и `shelly_link`; в `device_ingest.py` удалены все 14 отложенных импортов внутри функций; `memory_state.py` переведён на `register_store()`, гарантируемую при старте через `boot.restore_memory_state()`.
+- **Паритет Memory и PostgreSQL + дедупликация ([`account.py`](file:///d:/Проект/day/backend/app/services/account.py), [`account_helpers.py`](file:///d:/Проект/day/backend/app/services/account_helpers.py))**: общие валидация, ключи идемпотентности, GPS-дедупликатор, сериализация снимка, подсчёт батчей и побочные эффекты вынесены на уровень оркестрации. Исправлены 4 расхождения: отвязка Shelly и сброс кэша при `delete_tank_device` / `delete_station`, проверка 404 станции в `register_tank`, проверка 422 в `accept_receipt`, сброс кэша витрины при приёме уровня/налива/приёмки/калибровки. Единственное известное отличие (автосоздание `TankBook` в Memory vs `404` в PostgreSQL) явно зафиксировано отдельным тестом паритета.
+- **Станционный узел и фронтенд ([`serial_link.py`](file:///d:/Проект/day/station-edge/agzs_edge/serial_link.py), [`psu_controller.py`](file:///d:/Проект/day/station-edge/agzs_edge/psu_controller.py), [`storage.py`](file:///d:/Проект/day/station-edge/agzs_edge/storage.py), [`errors.ts`](file:///d:/Проект/day/frontend/src/errors.ts), [`policy.ts`](file:///d:/Проект/day/frontend/src/policy.ts), [`liveLevels.tsx`](file:///d:/Проект/day/frontend/src/liveLevels.tsx))**: разорван цикл `updater.py <-> service.py`, сведены 3 парсера дат в `parse_iso_datetime()`, на фронтенде вынесены `messageOf()`, `SAFE_FILL_PERCENT` (85% из `level_policy.json`), `freeVolumeLiters()`, `safeRefillLiters()`, компонент `SensorStatus` переименован в `SensorStatusBadge`.
+- **Проверки**: [`test_architecture_and_parity.py`](file:///d:/Проект/day/backend/tests/test_architecture_and_parity.py) (включая явную фиксацию расхождения 404 и гарды деплоя) + расширенные `test_edge_fleet.py`, `test_station_access.py`, `test_updater_and_graceful.py`, `test_storage_sync.py`, `policyHelpers.check.ts` — итого `91 passed` (backend) и `75 passed` (`station-edge`).

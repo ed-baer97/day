@@ -375,4 +375,8 @@ def test_storage_read_only_empty_sqlite_and_parse_iso_datetime(tmp_path: Path) -
     assert parse_iso_datetime("not-a-date") is None
     assert parse_iso_datetime("2026-11-18T10:00:00Z") == datetime(2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc)
     assert parse_iso_datetime("2026-11-18T10:00:00") == datetime(2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc)
+    assert parse_iso_datetime("2026-11-18T15:00:00+05:00") == datetime(2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc)
+    assert parse_iso_datetime(datetime(2026, 11, 18, 10, 0, 0)) == datetime(
+        2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc
+    )
 

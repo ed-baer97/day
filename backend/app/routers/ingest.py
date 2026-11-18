@@ -11,7 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
-from app.auth import is_admin_authorization
+from app.auth import is_admin_authorization, require_admin
 from app.config import get_settings
 from app.schemas.ingest import (
     CalibrationIn,
@@ -174,7 +174,7 @@ def put_edge_release(
     body: EdgeReleaseManifest,
     canary_stations: Annotated[list[str] | None, Query()] = None,
     ring1_stations: Annotated[list[str] | None, Query()] = None,
-    _: str | None = Depends(require_device),
+    _: str = Depends(require_admin),
 ) -> EdgeReleaseManifest:
     """Публикует целевой релиз для кольца (ring0/canary, ring1, ring2/stable) и обновляет списки станций."""
     return publish_release(body, canary_stations=canary_stations, ring1_stations=ring1_stations)
@@ -182,7 +182,7 @@ def put_edge_release(
 
 @router.get("/edge/fleet", response_model=EdgeFleetSummaryOut)
 def get_edge_fleet(
-    _: str | None = Depends(require_device),
+    _: str = Depends(require_admin),
 ) -> EdgeFleetSummaryOut:
     """Возвращает сводку по версиям и состоянию обновлений всех АГЗС."""
     return fleet_summary()

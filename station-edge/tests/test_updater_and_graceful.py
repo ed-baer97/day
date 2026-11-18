@@ -677,3 +677,157 @@ def test_updater_calls_lock_and_unlock_pumps_on_success_and_rollback(tmp_path: P
     ]
 
 
+def test_updater_hmac_signature_verification_and_resume(tmp_path: Path) -> None:
+    """Подпись HMAC-SHA256 блокирует подмену релиза при старте, при check_only и при resume после сбоя."""
+    from agzs_edge.updater import canonical_release_payload, sign_release_manifest
+
+    db_path = tmp_path / "sig.db"
+    EdgeDatabase(db_path)
+    db_ro = EdgeDatabase(db_path, read_only=True)
+    releases_dir = tmp_path / "releases"
+    signing_key = "super-secret-ota-key"
+
+    wheel_v2 = b"signed-wheel-0.2.0"
+    sha_v2 = hashlib.sha256(wheel_v2).hexdigest()
+    good_sig = sign_release_manifest("0.2.0", sha_v2, "0.1.0", signing_key)
+    assert canonical_release_payload("0.2.0", sha_v2, "0.1.0") == (
+        f"0.2.0\n{sha_v2}\n0.1.0".encode("utf-8")
+    )
+
+    def _download(url: str, dest: Path, *, device_token: str = "") -> Path:
+        del url, device_token
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(wheel_v2)
+        return dest
+
+    settings = EdgeSettings(
+        db_path=db_path,
+        releases_dir=releases_dir,
+        station_code="AKT-SIG",
+        update_idle_quiet_sec=0.0,
+        release_signing_key=signing_key,
+        require_release_signature=True,
+    )
+
+    # 1. Отсутствующая или поддельная подпись отклоняется ДО скачивания
+    download_calls: list[str] = []
+    forged_updater = EdgeUpdater(
+        settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+            min_version="0.1.0",
+            signature="0" * 64,
+        ),
+        artifact_downloader=lambda u, d, **kw: download_calls.append(u) or _download(u, d),
+        heartbeat_fn=lambda *a, **kw: True,
+    )
+    assert forged_updater.run_update(check_only=True).status == "failed"
+    forged_res = forged_updater.run_update()
+    assert forged_res.status == "failed"
+    assert "подпись" in forged_res.message.lower()
+    assert download_calls == []
+
+    # 2. Верная подпись проходит проверку, загружает и устанавливает .whl
+    installed: list[str] = []
+    ok_updater = EdgeUpdater(
+        settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+            min_version="0.1.0",
+            signature=good_sig,
+        ),
+        artifact_downloader=_download,
+        installer_fn=lambda p: installed.append(p.name),
+        self_test_fn=lambda: True,
+        restart_fn=lambda _cmd: None,
+        heartbeat_fn=lambda *a, **kw: True,
+        lock_pumps_fn=lambda: None,
+        unlock_pumps_fn=lambda: None,
+    )
+    ok_res = ok_updater.run_update()
+    assert ok_res.status == "updated"
+    assert installed == ["agzs_edge-0.2.0.whl"]
+
+    # 3. Если require_release_signature=True, но ключ не задан на станции — обновление запрещено
+    nokey_settings = EdgeSettings(
+        db_path=db_path,
+        releases_dir=releases_dir,
+        station_code="AKT-NOKEY",
+        require_release_signature=True,
+        release_signing_key="",
+    )
+    nokey_updater = EdgeUpdater(
+        nokey_settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+            min_version="0.1.0",
+            signature=good_sig,
+        ),
+        heartbeat_fn=lambda *a, **kw: True,
+    )
+    assert nokey_updater.run_update().status == "failed"
+
+    # 4. Подменённый state после отключения питания с невалидной подписью отклоняется и удаляет .whl
+    forged_whl = releases_dir / "agzs_edge-0.9.0.whl"
+    forged_whl.parent.mkdir(parents=True, exist_ok=True)
+    forged_whl.write_bytes(b"tampered")
+    write_update_state(
+        settings,
+        UpdateProgressState(
+            in_progress=True,
+            phase="installing",
+            current_version="0.1.0",
+            target_version="0.9.0",
+            channel="ring2",
+            message="test",
+            sha256=hashlib.sha256(b"tampered").hexdigest(),
+            min_version="0.1.0",
+            signature="deadbeef" * 8,
+            artifact_path=str(forged_whl),
+        ),
+    )
+    installed.clear()
+    resume_updater = EdgeUpdater(
+        settings,
+        db=db_ro,
+        current_version="0.1.0",
+        installer_fn=lambda p: installed.append(p.name),
+        self_test_fn=lambda: True,
+        heartbeat_fn=lambda *a, **kw: True,
+        lock_pumps_fn=lambda: None,
+        unlock_pumps_fn=lambda: None,
+    )
+    resume_res = resume_updater.run_update()
+    assert resume_res.status == "failed"
+    assert not forged_whl.exists()
+    assert installed == []
+
+
+def test_updater_does_not_import_service_cycle() -> None:
+    """updater.py не должен импортировать agzs_edge.service (отсутствие цикла модулей)."""
+    import ast
+
+    updater_path = Path(__file__).resolve().parents[1] / "agzs_edge" / "updater.py"
+    tree = ast.parse(updater_path.read_text(encoding="utf-8"))
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+    assert not any(mod == "agzs_edge.service" or mod.startswith("agzs_edge.service.") for mod in imported)
+
+
+

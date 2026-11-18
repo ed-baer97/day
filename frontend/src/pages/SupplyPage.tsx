@@ -1,7 +1,8 @@
 import type { BatchRecord, CatalogStation, CatalogTruck } from "../api/client";
 import { dateTime, liters, phaseLabel, stationRegion } from "../format";
 import type { NetworkStats } from "../layout/Topbar";
-import { isLowFill, type LiveLevel, LOW_FILL_PERCENT, SensorStatus } from "../liveLevels";
+import { isLowFill, type LiveLevel, LOW_FILL_PERCENT, SensorStatusBadge } from "../liveLevels";
+import { freeVolumeLiters, SAFE_FILL_PERCENT, safeRefillLiters } from "../policy";
 
 export default function SupplyPage({
   stations,
@@ -82,7 +83,7 @@ export default function SupplyPage({
                 <th>Уровень %</th>
                 <th>Фактический остаток</th>
                 <th>Полная ёмкость</th>
-                <th>Рекомендуемый слив (до 85%)</th>
+                <th>Рекомендуемый слив (до {SAFE_FILL_PERCENT}%)</th>
                 <th>Макс. свободно (до 100%)</th>
                 <th>Датчик</th>
                 <th>Переход</th>
@@ -96,11 +97,8 @@ export default function SupplyPage({
                   const fill = hasLive && live?.fill != null ? Math.round(live.fill) : null;
                   const rem = hasLive ? (live?.remainder ?? null) : null;
                   const cap = hasLive ? (live?.capacity ?? 0) : 0;
-                  const free = rem != null && cap > 0 ? Math.max(0, cap - rem) : null;
-                  const safe =
-                    rem != null && cap > 0
-                      ? Math.max(0, Math.round(cap * 0.85) - rem)
-                      : null;
+                  const free = freeVolumeLiters(cap, rem);
+                  const safe = safeRefillLiters(cap, rem);
                   return { st, live, hasLive, fill, rem, cap, free, safe };
                 })
                 .sort((a, b) => (a.fill ?? 101) - (b.fill ?? 101))
@@ -125,7 +123,7 @@ export default function SupplyPage({
                     <td>{free == null ? "—" : liters(free)}</td>
                     <td>
                       {hasLive && live ? (
-                        <SensorStatus level={live} />
+                        <SensorStatusBadge level={live} />
                       ) : (
                         <span className="badge warn">не подключён</span>
                       )}

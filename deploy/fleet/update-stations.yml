@@ -10,6 +10,7 @@
     edge_dir: /opt/station-edge
     edge_venv_python: "{{ edge_dir }}/.venv/bin/python"
     src_station_edge: "{{ playbook_dir }}/../../station-edge"
+    require_release_signature: true
 
   tasks:
     - name: Установить правило udev для стабильного симлинка /dev/aska02
@@ -57,6 +58,8 @@
           --wait-idle-sec 180
           --restart-cmd "systemctl restart station-edge.service station-edge-monitor.service"
         chdir: "{{ edge_dir }}"
+      environment:
+        AGZS_REQUIRE_RELEASE_SIGNATURE: "{{ '1' if require_release_signature | bool else '0' }}"
       register: update_out
       changed_when: "'[UPDATED]' in update_out.stdout"
       failed_when: update_out.rc != 0

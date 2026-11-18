@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
-from agzs_edge.config import FrameLayout
+from agzs_edge.config import EdgeSettings, FrameLayout
 from agzs_edge.iskra import (
     CMD_PARAMS_ASCII,
     CMD_RESET_ASCII,
@@ -508,6 +508,18 @@ class EmulatorAskaLink:
             request_bytes=request,
             response_bytes=self._build_live_reply(address, cmd, state),
         )
+
+
+def build_link(settings: EdgeSettings) -> AskaLink:
+    """Создаёт линию связи с АСКА-02 (COM/TTY или встроенный эмулятор) по настройкам узла."""
+    if settings.source_mode == "emulator":
+        return EmulatorAskaLink(layout=settings.layout)
+    return SerialAskaLink(
+        port=settings.serial_port,
+        baudrate=settings.serial_baudrate,
+        timeout_sec=settings.serial_timeout_sec,
+        layout=settings.layout,
+    )
 
 
 def list_available_serial_ports() -> list[tuple[str, str, str]]:
