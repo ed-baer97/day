@@ -298,3 +298,61 @@ def test_service_corrupted_frames_delayed_auto_reset_and_announce_vps(monkeypatc
     )
     monkeypatch.setattr(svc, "poll_cycle_once", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
     svc.serve(max_cycles=1)
+
+
+def test_auto_reset_respects_delay_after_real_dispense(monkeypatch, tmp_path: Path) -> None:
+    """После реального налива 03 -> 07 заправка сразу пишется в БД, а СБРОС 0x37 ждёт заданную паузу."""
+    from agzs_edge.iskra import CMD_RESET_ASCII, STATE_COMPLETED, STATE_DISPENSING
+    from agzs_edge.serial_link import PollRawResult
+
+    disp_frame = build_test_response_frame(
+        address=1, state_code=STATE_DISPENSING, error_code="00", price_digits=7200, volume_ml=5000
+    )
+    done_frame = build_test_response_frame(
+        address=1, state_code=STATE_COMPLETED, error_code="00", price_digits=7200, volume_ml=5000
+    )
+    idle_frame = build_test_response_frame(
+        address=1, state_code=STATE_IDLE, error_code="00", price_digits=7200, volume_ml=0
+    )
+
+    class _MockLink:
+        def __init__(self, responses: list[bytes]) -> None:
+            self.responses = list(responses)
+            self.commands: list[bytes] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            resp = self.responses.pop(0) if self.responses else b""
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.commands.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=idle_frame)
+
+    link = _MockLink([disp_frame, done_frame, done_frame])
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "delayed_disp.db",
+        sync_enabled=False,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=2.0,
+    )
+    svc = StationEdgeService(settings, link=link)
+
+    ticks = iter([100.0, 102.5])
+    monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
+
+    assert svc.poll_cycle_once() == []  # 03 (идёт налив)
+    closed = svc.poll_cycle_once()      # 07 (закрытие налива; время 100.0 -> старт паузы 2.0 с)
+    assert len(closed) == 1
+    assert closed[0].dispensed_ml == 5000
+    assert link.commands == []          # 0x37 ещё не отправлен, на табло виден итог
+    assert svc.poll_cycle_once() == []  # время 102.5 >= 100.0 + 2.0 -> отправка 0x37
+    assert len(link.commands) == 1
+    assert link.commands[0][3] == CMD_RESET_ASCII

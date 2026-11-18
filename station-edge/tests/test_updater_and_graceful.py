@@ -549,11 +549,47 @@ def test_physical_pump_buttons_locked_during_update_and_restored_on_start(tmp_pa
     service.poll_cycle_once()
     assert param_codes_sent == ["000017", "000018"]
 
-    # 2. Старт новой (обновлённой) службы serve() сразу включает кнопки 0.18
+    # 2. Старт новой (обновлённой) службы serve() сразу включает кнопки 0.18 (явно задан lock-reset)
     param_codes_sent.clear()
     restarted_service = StationEdgeService(settings, link=_ButtonTrackingLink([idle_resp]), db=db)
     restarted_service.serve(max_cycles=1)
     assert param_codes_sent == ["000018"]
+
+    # 3. По умолчанию для БП без ПУ pump_buttons_mode == "enable" (0.16);
+    # при живом кадре с Status[17]=0x70 (биты 6 и 5 уже = 1) лишний 0x38 не отправляется,
+    # а при Status[17]=0x50 (СБРОС заблокирован) отправляется 0.16 + 0x37.
+    assert EdgeSettings().pump_buttons_mode == "enable"
+    from agzs_edge.iskra import SOH, ETX, STX, CMD_TEST_ASCII, compute_bcc
+
+    def _live_05_frame(byte17: int) -> bytes:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + b"007200"
+            + b"000000"
+            + bytes([byte17, 0x8A])
+            + b"05"
+            + bytes([ETX])
+        )
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    live_05_enabled = _live_05_frame(0x70)
+    live_05_locked_rst = _live_05_frame(0x50)
+    default_settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        poll_interval_sec=0.0,
+        auto_reset_on_stop=True,
+        db_path=tmp_path / "buttons_live.db",
+        sync_enabled=False,
+    )
+    param_codes_sent.clear()
+    StationEdgeService(default_settings, link=_ButtonTrackingLink([live_05_enabled])).serve(max_cycles=1)
+    assert param_codes_sent == []
+
+    param_codes_sent.clear()
+    StationEdgeService(default_settings, link=_ButtonTrackingLink([live_05_locked_rst])).serve(max_cycles=1)
+    assert param_codes_sent == ["000016"]
 
 
 def test_updater_calls_lock_and_unlock_pumps_on_success_and_rollback(tmp_path: Path) -> None:

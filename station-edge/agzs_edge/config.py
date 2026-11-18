@@ -163,7 +163,7 @@ class EdgeSettings:
     releases_dir: Path = field(default_factory=lambda: Path("releases"))
     update_idle_quiet_sec: float = 60.0
     lock_buttons_on_update: bool = True
-    pump_buttons_mode: str = "lock-reset"
+    pump_buttons_mode: str = "enable"
     layout: FrameLayout = field(default_factory=FrameLayout)
 
     def __post_init__(self) -> None:
@@ -253,7 +253,7 @@ class EdgeSettings:
         if update_idle_quiet_sec < 0:
             raise ValueError("AGZS_UPDATE_IDLE_QUIET_SEC должен быть >= 0")
         lock_buttons_on_update = _parse_bool(os.environ.get("AGZS_LOCK_BUTTONS_ON_UPDATE"), default=True)
-        pump_buttons_mode = os.environ.get("AGZS_PUMP_BUTTONS_MODE", "lock-reset").strip().lower() or "lock-reset"
+        pump_buttons_mode = os.environ.get("AGZS_PUMP_BUTTONS_MODE", "enable").strip().lower() or "enable"
         if pump_buttons_mode not in {"lock-reset", "enable"}:
             raise ValueError("AGZS_PUMP_BUTTONS_MODE должен быть 'lock-reset' или 'enable'")
 

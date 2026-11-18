@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
     STATE_COMPLETED,
+    STATE_IDLE,
     IskraFrameError,
     IskraTelemetryFrame,
     build_param_command,
@@ -44,11 +45,22 @@ def send_buttons_param_to_pumps(
     param_code: str,
     *,
     checksum_mode: str,
+    last_frames: dict[int, IskraTelemetryFrame] | None = None,
 ) -> tuple[list[int], list[tuple[int, str]]]:
     """Отправляет команду режима кнопок (0.16/0.17/0.18) на список адресов колонок."""
     succeeded: list[int] = []
     errors: list[tuple[int, str]] = []
     for address in addresses:
+        frame = last_frames.get(address) if last_frames else None
+        if frame is not None and (frame.is_dispensing or frame.valve_open):
+            errors.append((address, "колонка выполняет налив"))
+            continue
+        if frame is not None and frame.state_code != STATE_IDLE:
+            reset_req = build_reset_command(address, checksum_mode=checksum_mode)
+            reset_res = link.send_command(address, reset_req)
+            if reset_res.error_message:
+                errors.append((address, reset_res.error_message))
+                continue
         req = build_param_command(address, param_code, volume_digits=0, checksum_mode=checksum_mode)
         res = link.send_command(address, req)
         if res.error_message:
@@ -83,6 +95,7 @@ class StationEdgeService:
         )
         self._last_sync_ts = 0.0
         self._last_seen: dict[int, tuple[str, str, int]] = {}
+        self._last_frame_by_addr: dict[int, IskraTelemetryFrame] = {}
         self._stop_07_since: dict[int, float] = {}
         self._stop_requested: bool = False
         self._pumps_locked_for_update: bool = False
@@ -106,6 +119,17 @@ class StationEdgeService:
             and self.settings.source_mode != "emulator"
         )
 
+    @staticmethod
+    def _buttons_match_target_mode(frame: IskraTelemetryFrame | None, target_mode: str) -> bool:
+        """Возвращает True, если в живом кадре биты 6 и 5 байта 17 уже соответствуют target_mode."""
+        if frame is None or not frame.flags_raw.startswith("P"):
+            return False
+        if target_mode == "enable":
+            return frame.start_stop_buttons_enabled and frame.reset_button_enabled
+        if target_mode == "lock-reset":
+            return frame.start_stop_buttons_enabled and not frame.reset_button_enabled
+        return False
+
     def lock_pump_buttons_for_update(self) -> list[int]:
         """Отключает физические кнопки на колонках (команда 0x38, код 0.17) на время обновления ПО."""
         if not self._can_control_buttons():
@@ -115,6 +139,7 @@ class StationEdgeService:
             self.settings.pump_addresses,
             "0.17",
             checksum_mode=self._tx_checksum_mode(),
+            last_frames=self._last_frame_by_addr,
         )
         for address, err in errors:
             logger.warning("Колонка #%d: ошибка блокировки кнопок (0.17): %s", address, err)
@@ -125,15 +150,33 @@ class StationEdgeService:
         return locked
 
     def restore_pump_buttons(self) -> list[int]:
-        """Включает физические кнопки на колонках (0.18 или 0.16) после старта или завершения обновления."""
+        """Включает физические кнопки на колонках (0.16 или 0.18) без лишней записи в EEPROM."""
         if not self._can_control_buttons():
             return []
+        if not self._pumps_locked_for_update:
+            addresses_to_update = tuple(
+                addr
+                for addr in self.settings.pump_addresses
+                if not self._buttons_match_target_mode(
+                    self._last_frame_by_addr.get(addr),
+                    self.settings.pump_buttons_mode,
+                )
+            )
+        else:
+            addresses_to_update = self.settings.pump_addresses
+
+        if not addresses_to_update:
+            self._pumps_locked_for_update = False
+            self._restore_buttons_pending = False
+            return []
+
         param_code = "0.16" if self.settings.pump_buttons_mode == "enable" else "0.18"
         restored, errors = send_buttons_param_to_pumps(
             self.link,
-            self.settings.pump_addresses,
+            addresses_to_update,
             param_code,
             checksum_mode=self._tx_checksum_mode(),
+            last_frames=self._last_frame_by_addr,
         )
         for address, err in errors:
             logger.warning("Колонка #%d: ошибка включения кнопок (%s): %s", address, param_code, err)
@@ -174,6 +217,8 @@ class StationEdgeService:
                     note=str(exc),
                 )
                 continue
+
+            self._last_frame_by_addr[address] = frame
 
             if self.settings.save_raw_frames or frame.has_protocol_alarm:
                 self.db.log_raw_frame(
@@ -253,6 +298,7 @@ class StationEdgeService:
         completed: CompletedDispense | None,
         observed_at: datetime,
     ) -> None:
+        del completed
         if frame.state_code != STATE_COMPLETED or frame.valve_open:
             self._stop_07_since.pop(address, None)
             return
@@ -260,7 +306,7 @@ class StationEdgeService:
             return
 
         now_mono = time.monotonic()
-        if completed is not None or self.settings.auto_reset_delay_sec <= 0:
+        if self.settings.auto_reset_delay_sec <= 0 or self._stop_requested:
             should_reset = True
         else:
             first_seen = self._stop_07_since.setdefault(address, now_mono)
@@ -280,6 +326,7 @@ class StationEdgeService:
             try:
                 reset_frame = parse_iskra_frame(res.response_bytes, self.settings.layout)
                 self.db.update_live_state(reset_frame, observed_at=observed_at)
+                self._last_frame_by_addr[address] = reset_frame
                 self._last_seen[address] = (
                     reset_frame.state_code,
                     reset_frame.price_raw,
