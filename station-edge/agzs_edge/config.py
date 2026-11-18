@@ -120,6 +120,8 @@ class EdgeSettings:
     protocol: str = "iskra_172"  # только подтверждённые: iskra_172
     checksum_mode: str = "xor"
     read_only: bool = True
+    auto_reset_on_stop: bool = False
+    auto_reset_delay_sec: float = 2.0
     db_path: Path = field(default_factory=lambda: Path("station_edge.db"))
     save_raw_frames: bool = False
     vps_base_url: str = "http://93.171.232.47"
@@ -130,6 +132,11 @@ class EdgeSettings:
     dispenser_map: dict[int, str] = field(default_factory=dict)
     sync_enabled: bool = True
     sync_interval_sec: float = 5.0
+    shift_start_hour: int = 8
+    shift_hours: int = 12
+    monitor_refresh_sec: float = 2.0
+    monitor_kiosk: bool = False
+    currency_symbol: str = "₸"
     layout: FrameLayout = field(default_factory=FrameLayout)
 
     @classmethod
@@ -150,9 +157,11 @@ class EdgeSettings:
                 "AGZS_PROTOCOL: разрешён только iskra_172. "
                 "aska02_native не активирован — нет подтверждённой спецификации прошивки АСКА-02 07.2026"
             )
-        read_only = os.environ.get("AGZS_READ_ONLY", "1").strip() not in {"0", "false", "no"}
-        if not read_only:
-            raise ValueError("AGZS_READ_ONLY=0 запрещён: узел работает только на чтение")
+        read_only = os.environ.get("AGZS_READ_ONLY", "1").strip().lower() not in {"0", "false", "no"}
+        auto_reset_on_stop = os.environ.get("AGZS_AUTO_RESET", "0").strip().lower() in {"1", "true", "yes"}
+        auto_reset_delay_sec = float(os.environ.get("AGZS_AUTO_RESET_DELAY_SEC", "2.0").strip() or "2.0")
+        if auto_reset_on_stop:
+            read_only = False
 
         checksum_mode = os.environ.get("AGZS_ISKRA_CHECKSUM_MODE", "xor").strip().lower() or "xor"
         if checksum_mode not in {"xor", "sum7", "sum8", "any"}:
@@ -179,6 +188,25 @@ class EdgeSettings:
         sync_enabled = os.environ.get("AGZS_SYNC_ENABLED", "1").strip() not in {"0", "false", "no"}
         sync_interval_sec = float(os.environ.get("AGZS_SYNC_INTERVAL_SEC", "5.0").strip() or "5.0")
 
+        shift_start_hour = int(os.environ.get("AGZS_SHIFT_START_HOUR", "8").strip() or "8")
+        if shift_start_hour < 0 or shift_start_hour > 23:
+            raise ValueError("AGZS_SHIFT_START_HOUR должен быть в диапазоне 0..23")
+
+        shift_hours = int(os.environ.get("AGZS_SHIFT_HOURS", "12").strip() or "12")
+        if shift_hours < 1 or shift_hours > 24:
+            raise ValueError("AGZS_SHIFT_HOURS должен быть в диапазоне 1..24")
+
+        monitor_refresh_sec = float(os.environ.get("AGZS_MONITOR_REFRESH_SEC", "2.0").strip() or "2.0")
+        if monitor_refresh_sec <= 0:
+            raise ValueError("AGZS_MONITOR_REFRESH_SEC должен быть больше 0")
+
+        monitor_kiosk = os.environ.get("AGZS_MONITOR_KIOSK", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        currency_symbol = os.environ.get("AGZS_CURRENCY", "₸").strip() or "₸"
+
         layout = FrameLayout(checksum_mode=checksum_mode)
         # Предпочитаем стабильный by-id на Linux, если порт задан как ttyUSB*
         if serial_port.startswith("/dev/ttyUSB"):
@@ -194,6 +222,8 @@ class EdgeSettings:
             protocol=protocol,
             checksum_mode=checksum_mode,
             read_only=read_only,
+            auto_reset_on_stop=auto_reset_on_stop,
+            auto_reset_delay_sec=auto_reset_delay_sec,
             db_path=db_path,
             save_raw_frames=save_raw,
             vps_base_url=vps_base_url,
@@ -204,6 +234,11 @@ class EdgeSettings:
             dispenser_map=dispenser_map,
             sync_enabled=sync_enabled,
             sync_interval_sec=sync_interval_sec,
+            shift_start_hour=shift_start_hour,
+            shift_hours=shift_hours,
+            monitor_refresh_sec=monitor_refresh_sec,
+            monitor_kiosk=monitor_kiosk,
+            currency_symbol=currency_symbol,
             layout=layout,
         )
 

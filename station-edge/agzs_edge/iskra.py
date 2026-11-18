@@ -1,9 +1,8 @@
-"""Протокол «Искра 1.72» для УЗГС-01 (Технопроект) через адаптер АСКА-02.
+"""Протокол «Искра 1.72» (ООО Техно Проект, v3.10) для УЗСГ-01 / УЗГС-01 через адаптер АСКА-02.
 
-ВАЖНО (аппаратная безопасность):
-Этот модуль реализует ИСКЛЮЧИТЕЛЬНО команду опроса состояния «Тест» (код 4).
-Формирование команд пуска, задания дозы, установки цены или останова физически
-не предусмотрено: пуск и остановка колонки выполняются только аппаратно с пульта УЗГС-01.
+Поддерживает как безопасный мониторинг (команда «Тест», код 0x34), так и полный
+цикл управления колонкой при работе с блоком питания без пульта управления:
+Сброс (0x37), Задание дозы (0x39), Пуск (0x35), Останов (0x36), Параметры (0x38).
 """
 
 from __future__ import annotations
@@ -15,8 +14,31 @@ from agzs_edge.config import FrameLayout
 SOH = 0x01
 STX = 0x02
 ETX = 0x03
-CMD_TEST_ASCII = ord("4")  # 0x34 — единственная команда, которую шлёт узел: «Тест»
+
+# Коды команд управления по разделу 3.1.1 Протокола обмена данными v3.10.
+CMD_SETUP_ASCII = ord("3")     # 0x33 — «Установка» (установка параметров ГРК)
+CMD_TEST_ASCII = ord("4")      # 0x34 — «Тест» (опрос состояния ГРК)
+CMD_START_ASCII = ord("5")     # 0x35 — «Пуск» (запуск ГРК)
+CMD_STOP_ASCII = ord("6")      # 0x36 — «Останов» (останов ГРК)
+CMD_RESET_ASCII = ord("7")     # 0x37 — «Сброс» (сброс состояния ГРК)
+CMD_PARAMS_ASCII = ord("8")    # 0x38 — «Параметры» (запрос/установка параметров ГРК)
+CMD_SET_DOSE_ASCII = ord("9")  # 0x39 — «Задание дозы»
 EXPECTED_FRAME_LEN = 23
+
+# Коды операций команды 0x38 («Параметры») в 6-байтовом поле Price.
+PARAM_PRICE_CODES: dict[str, str] = {
+    "0.1": "000010",   # Установка коэффициента ТПР
+    "0.10": "000010",
+    "0.11": "000011",  # Суммарный счётчик 1
+    "0.12": "000012",  # Суточный счётчик + температура/плотность
+    "0.13": "000013",  # Сброс суточного счётчика
+    "0.14": "000014",  # Параметры ТПР / плотномера
+    "0.15": "000015",  # Установка цены
+    "0.16": "000016",  # Включить кнопки на ГРК
+    "0.17": "000017",  # Выключить кнопки на ГРК
+    "0.18": "000018",  # Включить кнопки и заблокировать сброс на ГРК
+    "0.19": "000019",  # Суммарный счётчик 2
+}
 
 # Поле Code ответа «Тест» протокола Искра 1.72 (универсальный протокол КУ ТРК).
 STATE_DOSE_SET = "01"     # Готовность к пуску
@@ -57,10 +79,26 @@ class IskraTelemetryFrame:
     flags_raw: str
     checksum_byte: int
     raw_bytes: bytes
+    completed_volume_ml: int | None = None
 
     @property
     def raw_hex(self) -> str:
         return self.raw_bytes.hex(" ").upper()
+
+    @property
+    def volume_raw(self) -> str:
+        return self.raw_bytes[11:17].decode("ascii", errors="replace") if len(self.raw_bytes) >= 17 else "000000"
+
+    @property
+    def reported_volume_ml(self) -> int:
+        return self.completed_volume_ml if self.completed_volume_ml is not None else self.volume_ml
+
+    @property
+    def preset_dose_ml(self) -> int | None:
+        """Заданная доза в миллилитрах, когда в состоянии != '05' поле Price несёт уставку по п. 3.2.1."""
+        if self.state_code != STATE_IDLE and self.flags_raw.startswith("P") and self.price_raw.isdigit():
+            return int(self.price_raw) * 10
+        return None
 
     @property
     def is_dispensing(self) -> bool:
@@ -72,7 +110,54 @@ class IskraTelemetryFrame:
 
     @property
     def has_protocol_alarm(self) -> bool:
-        return self.error_code != "00" or self.state_code == STATE_ERROR
+        return self.error_code != "00" or self.state_code == STATE_ERROR or self.column_error_code > 0
+
+    @property
+    def status_byte17(self) -> int:
+        return self.raw_bytes[17] if len(self.raw_bytes) > 17 else 0
+
+    @property
+    def status_byte18(self) -> int:
+        return self.raw_bytes[18] if len(self.raw_bytes) > 18 else 0
+
+    @property
+    def sost_byte19(self) -> int:
+        return self.raw_bytes[19] if len(self.raw_bytes) > 19 else 0
+
+    @property
+    def valve_open(self) -> bool:
+        """Бит 7 байта 17 по табл. 3.2.1: 1 = клапан открыт, 0 = закрыт."""
+        return bool(self.status_byte17 & 0x80)
+
+    @property
+    def start_stop_buttons_enabled(self) -> bool:
+        """Бит 6 байта 17 по табл. 3.2.1: 1 = кнопки ПУСК/СТОП на колонке включены."""
+        return bool(self.status_byte17 & 0x40)
+
+    @property
+    def reset_button_enabled(self) -> bool:
+        """Бит 5 байта 17 по табл. 3.2.1: 1 = кнопка СБРОС на колонке включена, 0 = заблокирована."""
+        return bool(self.status_byte17 & 0x20)
+
+    @property
+    def dose_type_bits(self) -> int:
+        """Биты 0–4 байта 17 по табл. 3.2.1 (10h=сброс, 11h/14h=литры, 12h/15h=деньги)."""
+        return self.status_byte17 & 0x1F
+
+    @property
+    def column_error_code(self) -> int:
+        """Код ошибки колонки 1..4 из битов 0–5 байта 19 (табл. 3.2.2, Приложение 6)."""
+        if len(self.raw_bytes) <= 19:
+            return 0
+        bits = self.sost_byte19 & 0x3F
+        if 0x31 <= bits <= 0x34:
+            return bits - 0x30
+        return 0
+
+    @property
+    def is_locked_in_stop(self) -> bool:
+        """True, если колонка стоит в останове ('04'/'07') с заблокированной кнопкой СБРОС."""
+        return self.state_code in {STATE_COMPLETED, STATE_STOPPED} and not self.reset_button_enabled
 
 
 def compute_bcc(payload_after_soh_including_etx: bytes, mode: str = "xor") -> int:
@@ -111,26 +196,149 @@ def verify_frame_checksum(frame: bytes, layout: FrameLayout | None = None) -> bo
     return received == compute_bcc(body, cfg.checksum_mode)
 
 
-def build_test_command(address: int, *, checksum_mode: str = "xor") -> bytes:
-    """Собирает запрос «Тест» (код 4) протокола Искра 1.72 для адреса 1..6.
+def _format_six_field(value: int | str, field_name: str) -> bytes:
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < 0 or value > 999_999:
+            raise ValueError(f"Поле {field_name} должно быть в диапазоне 0..999999, получено: {value}")
+        return f"{value:06d}".encode("ascii")
+    text = str(value)
+    if len(text) < 6 and text.isdigit():
+        text = text.zfill(6)
+    if len(text) != 6:
+        raise ValueError(f"Поле {field_name} должно состоять ровно из 6 ASCII-символов, получено: {value!r}")
+    return text.encode("ascii")
 
-    Кадр 23 байта, как в п. 4.1 универсального протокола КУ ТРК:
-      SOH, номер ТРК из двух цифр, '4', STX, цена 000000, объём 000000,
-      ошибка 00, состояние 00, ETX, XOR всех байт после SOH.
-    Другие коды команд (доза, пуск, останов, сброс, до полного) не формируются.
-    """
-    if not isinstance(address, int) or address < 1 or address > 6:
+
+def build_command_frame(
+    address: int,
+    command_ascii: int,
+    *,
+    price_digits: int | str = 0,
+    volume_digits: int | str = 0,
+    status_ascii: str = "00",
+    sost_ascii: str = "00",
+    checksum_mode: str = "xor",
+) -> bytes:
+    """Собирает 23-байтный кадр команды управления АСУ → АСКА по Протоколу v3.10."""
+    if not isinstance(address, int) or isinstance(address, bool) or address < 1 or address > 6:
         raise ValueError(f"Адрес колонки должен быть целым числом 1..6, получено: {address!r}")
+    if not isinstance(command_ascii, int) or not 0 <= command_ascii <= 0xFF:
+        raise ValueError(f"Код команды должен быть байтом 0..255, получено: {command_ascii!r}")
+    if len(status_ascii) != 2 or len(sost_ascii) != 2:
+        raise ValueError("Поля status_ascii и sost_ascii должны состоять ровно из 2 ASCII-символов")
+
     body = (
         f"{address:02d}".encode("ascii")
-        + bytes([CMD_TEST_ASCII, STX])
-        + b"000000"
-        + b"000000"
-        + b"0000"
+        + bytes([command_ascii, STX])
+        + _format_six_field(price_digits, "Price")
+        + _format_six_field(volume_digits, "Volume")
+        + status_ascii.encode("ascii")
+        + sost_ascii.encode("ascii")
         + bytes([ETX])
     )
     mode = "xor" if checksum_mode == "any" else checksum_mode
     return bytes([SOH]) + body + bytes([compute_bcc(body, mode)])
+
+
+def build_test_command(address: int, *, checksum_mode: str = "xor") -> bytes:
+    """Собирает запрос «Тест» (код 0x34) протокола v3.10 для адреса 1..6."""
+    return build_command_frame(
+        address,
+        CMD_TEST_ASCII,
+        price_digits=0,
+        volume_digits=0,
+        status_ascii="00",
+        sost_ascii="00",
+        checksum_mode=checksum_mode,
+    )
+
+
+def build_reset_command(address: int, *, status_ascii: str = "00", checksum_mode: str = "xor") -> bytes:
+    """Собирает команду «Сброс» (код 0x37, п. 4.4) для перевода ГРК из '07'/'04' в '05'."""
+    return build_command_frame(
+        address,
+        CMD_RESET_ASCII,
+        price_digits=0,
+        volume_digits=0,
+        status_ascii=status_ascii,
+        sost_ascii="00",
+        checksum_mode=checksum_mode,
+    )
+
+
+def build_set_dose_command(
+    address: int,
+    volume_ml: int,
+    *,
+    price_digits: int | str = 0,
+    status_ascii: str = "00",
+    checksum_mode: str = "xor",
+) -> bytes:
+    """Собирает команду «Задание дозы» (код 0x39, п. 4.5). Для «до полного» volume_ml=999000."""
+    if not isinstance(volume_ml, int) or isinstance(volume_ml, bool) or volume_ml <= 0 or volume_ml > 999_999:
+        raise ValueError(f"Доза налива (мл) должна быть в диапазоне 1..999999, получено: {volume_ml!r}")
+    return build_command_frame(
+        address,
+        CMD_SET_DOSE_ASCII,
+        price_digits=price_digits,
+        volume_digits=volume_ml,
+        status_ascii=status_ascii,
+        sost_ascii="00",
+        checksum_mode=checksum_mode,
+    )
+
+
+def build_start_command(address: int, *, checksum_mode: str = "xor") -> bytes:
+    """Собирает команду «Пуск» (код 0x35, п. 4.2) для запуска налива из состояния '01' или '04'."""
+    return build_command_frame(
+        address,
+        CMD_START_ASCII,
+        price_digits=0,
+        volume_digits=0,
+        status_ascii="00",
+        sost_ascii="00",
+        checksum_mode=checksum_mode,
+    )
+
+
+def build_stop_command(address: int, *, checksum_mode: str = "xor") -> bytes:
+    """Собирает команду «Останов» (код 0x36, п. 4.3) для остановки налива из состояния '03'."""
+    return build_command_frame(
+        address,
+        CMD_STOP_ASCII,
+        price_digits=0,
+        volume_digits=0,
+        status_ascii="00",
+        sost_ascii="00",
+        checksum_mode=checksum_mode,
+    )
+
+
+def build_param_command(
+    address: int,
+    param_code: str,
+    *,
+    volume_digits: int | str = 0,
+    status_ascii: str = "00",
+    checksum_mode: str = "xor",
+) -> bytes:
+    """Собирает команду «Параметры» (код 0x38, разделы 1–2 описания параметров)."""
+    code = param_code.strip()
+    if code in PARAM_PRICE_CODES:
+        price_field = PARAM_PRICE_CODES[code]
+    elif len(code) == 6 and code.isdigit():
+        price_field = code
+    else:
+        raise ValueError(f"Неизвестный код параметра: {param_code!r}")
+    return build_command_frame(
+        address,
+        CMD_PARAMS_ASCII,
+        price_digits=price_field,
+        volume_digits=volume_digits,
+        status_ascii=status_ascii,
+        sost_ascii="00",
+        checksum_mode=checksum_mode,
+    )
 
 
 def build_test_response_frame(
@@ -177,21 +385,47 @@ def build_test_response_frame(
     return frame
 
 
-def _decode_price(price_raw: str) -> float:
-    """Переводит 6 цифр цены из кадра в тенге за литр.
+def _read_error_field(field: bytes) -> tuple[str, str]:
+    """Возвращает `(код ошибки, слово статуса линии)`.
 
-    Если в кадре передаются тиыны/сотые доли (например '010000' -> 100.00 ₸),
-    делим на 100; если целые тенге с ведущими нулями ('000100' -> 100 ₸), оставляем целым.
+    Две цифры — код ошибки протокола («00» — нет аварии, «06» — авария).
+    На УЗСГ-01 через АСКА-02 байт 17 является битовой маской Status (табл. 3.2.1):
+    биты 7 (клапан), 6 (кнопки пуск/стоп), 5 (кнопка сброс), 0–4 (тип дозы / маркер параметра),
+    а байт 18 содержит дополнительный флаг (например `0x88`…`0x9F` или `0x00`).
+    """
+    if len(field) == 2 and all(0x30 <= byte <= 0x39 for byte in field):
+        return field.decode("ascii"), ""
+    if len(field) == 2 and ((field[1] & 0x80) == 0x80 or 0x10 <= (field[0] & 0x7F) <= 0x7F):
+        return "00", f"P{field[1]:02X}"
+    return field.hex().upper(), field.hex().upper()
+
+
+def _decode_price(price_raw: str) -> float:
+    """Переводит 6 цифр цены из кадра в рубли/тенге за литр.
+
+    По таблице 2 Протокола v3.10 цена передаётся в копейках/тиынах ('007200' -> 72.00,
+    '008550' -> 85.50). Для совместимости с устаревшим форматом целых единиц ('000100' -> 100)
+    значения < 1000 возвращаются без деления.
     """
     raw_val = int(price_raw)
-    if raw_val >= 1000 and raw_val % 100 == 0:
+    if raw_val >= 1000:
         return raw_val / 100.0
     return float(raw_val)
 
 
-def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTelemetryFrame:
-    """Разбирает и проверяет 23-байтный кадр ответа «Искра 1.72»."""
-    cfg = layout or FrameLayout()
+def _completed_volume_in_price_field(state_code: str, flags_raw: str, price_raw: str, volume_raw: str) -> int | None:
+    """По п. 3.2.1 Протокола v3.10 при состоянии != '05' поле Price несёт уставку дозы, а не отпуск.
+
+    Реальный налитый объём всегда приходит в поле Volume (байты 11–16).
+    Подставлять уставку (например 090000 = 900 л «до полного») как налитый объём нельзя,
+    иначе холостое нажатие «ПУСК» при Volume=000000 ошибочно спишет 9000 мл в БД.
+    """
+    del state_code, flags_raw, price_raw, volume_raw
+    return None
+
+
+def _validate_frame_envelope(raw: bytes, cfg: FrameLayout) -> int:
+    """Проверяет заголовок/хвост/КС 23-байтного кадра Искра 1.72 и возвращает адрес колонки."""
     if len(raw) != cfg.frame_length:
         raise IskraFrameError(
             f"Неверная длина кадра Искра: ожидалось {cfg.frame_length} байт, получено {len(raw)} ({raw.hex(' ').upper()})"
@@ -209,7 +443,6 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
         raise IskraFrameError(
             f"Неверная контрольная сумма кадра: в кадре 0x{raw[cfg.bcc_offset]:02X}, ожидалось 0x{expected:02X}"
         )
-
     if raw[4] != STX:
         raise IskraFrameError(f"Отсутствует маркер STX (0x02) на позиции 4: 0x{raw[4]:02X}")
     try:
@@ -219,27 +452,42 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
             f"Некорректный адрес колонки в байтах [{cfg.addr_offset}:{cfg.addr_offset + 2}]: "
             f"{raw[cfg.addr_offset : cfg.addr_offset + 2].hex(' ').upper()}"
         ) from exc
-
     if address < 1 or address > 6:
         raise IskraFrameError(f"Адрес колонки вне диапазона 1..6: {address}")
+    return address
+
+
+def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTelemetryFrame:
+    """Разбирает и проверяет 23-байтный кадр ответа «Искра 1.72»."""
+    cfg = layout or FrameLayout()
+    address = _validate_frame_envelope(raw, cfg)
 
     cmd_code = raw[cfg.cmd_offset]
     try:
         state_code = raw[cfg.state_slice[0] : cfg.state_slice[1]].decode("ascii")
-        error_code = raw[cfg.error_slice[0] : cfg.error_slice[1]].decode("ascii")
         price_raw = raw[cfg.price_slice[0] : cfg.price_slice[1]].decode("ascii")
         volume_raw = raw[cfg.volume_slice[0] : cfg.volume_slice[1]].decode("ascii")
-        flags_raw = ""
     except UnicodeDecodeError as exc:
         raise IskraFrameError(f"Не-ASCII символы в полях данных кадра: {raw.hex(' ').upper()}") from exc
+    error_code, flags_raw = _read_error_field(raw[cfg.error_slice[0] : cfg.error_slice[1]])
 
-    if not price_raw.isdigit() or len(price_raw) != 6:
-        raise IskraFrameError(f"Поле цены должно содержать 6 цифр, получено: {price_raw!r}")
-    if not volume_raw.isdigit() or len(volume_raw) != 6:
-        raise IskraFrameError(f"Поле объёма должно содержать 6 цифр, получено: {volume_raw!r}")
+    if cmd_code != CMD_PARAMS_ASCII:
+        if not price_raw.isdigit() or len(price_raw) != 6:
+            raise IskraFrameError(f"Поле цены должно содержать 6 цифр, получено: {price_raw!r}")
+        if not volume_raw.isdigit() or len(volume_raw) != 6:
+            raise IskraFrameError(f"Поле объёма должно содержать 6 цифр, получено: {volume_raw!r}")
 
-    volume_ml = int(volume_raw)
-    price_kzt = _decode_price(price_raw)
+    volume_ml = int(volume_raw) if volume_raw.isdigit() else 0
+    completed_volume_ml = _completed_volume_in_price_field(state_code, flags_raw, price_raw, volume_raw) if price_raw.isdigit() and volume_raw.isdigit() else None
+    # На живой колонке УЗСГ-01 (статус P..) по п. 3.2.1 Протокола v3.10 цена за литр передаётся
+    # только в состоянии сброса ('05'), а в состояниях '01'/'03'/'04'/'07' в поле Price стоит уставка дозы.
+    is_volume_in_price_slot = (
+        cmd_code == CMD_PARAMS_ASCII
+        or not price_raw.isdigit()
+        or completed_volume_ml is not None
+        or (state_code != STATE_IDLE and flags_raw.startswith("P"))
+    )
+    price_kzt = 0.0 if is_volume_in_price_slot else _decode_price(price_raw)
     state_name = STATE_NAMES.get(state_code, f"UNKNOWN_{state_code}")
 
     return IskraTelemetryFrame(
@@ -254,4 +502,5 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
         flags_raw=flags_raw,
         checksum_byte=raw[cfg.bcc_offset],
         raw_bytes=bytes(raw),
+        completed_volume_ml=completed_volume_ml,
     )

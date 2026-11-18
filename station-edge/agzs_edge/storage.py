@@ -9,9 +9,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,26 +52,96 @@ class DispenseRow:
     finished_at: str
     synced_to_vps: bool
 
+    @property
+    def amount_kzt(self) -> float:
+        return round(self.volume_liters * self.price_kzt_per_liter, 2)
+
+
+def _to_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_iso_utc(raw: str) -> datetime | None:
+    text = raw.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return _to_utc(parsed)
+
+
+def _row_to_dispense(row: sqlite3.Row) -> DispenseRow:
+    return DispenseRow(
+        id=int(row["id"]),
+        external_txn_id=str(row["external_txn_id"]),
+        pump_address=int(row["pump_address"]),
+        mode=str(row["mode"]),
+        preset_ml=None if row["preset_ml"] is None else int(row["preset_ml"]),
+        dispensed_ml=int(row["dispensed_ml"]),
+        volume_liters=float(row["volume_liters"]),
+        price_kzt_per_liter=float(row["price_kzt_per_liter"]),
+        final_state_code=str(row["final_state_code"]),
+        error_code=str(row["error_code"]),
+        started_at=str(row["started_at"]),
+        finished_at=str(row["finished_at"]),
+        synced_to_vps=(row["queue_status"] == "sent"),
+    )
+
+
+_SELECT_DISPENSES_BASE = """
+SELECT d.id, d.external_txn_id, d.pump_address, d.mode,
+       d.preset_ml, d.dispensed_ml, d.volume_liters,
+       d.price_kzt_per_liter, d.final_state_code, d.error_code,
+       d.started_at, d.finished_at,
+       q.status AS queue_status
+FROM dispenses d
+LEFT JOIN outbox_queue q ON q.external_txn_id = d.external_txn_id
+"""
+
 
 class EdgeDatabase:
     """Потокобезопасное хранилище SQLite для станционного ПК (Windows / Linux)."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Path | str, *, read_only: bool = False) -> None:
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._read_only = read_only
         self._lock = threading.Lock()
-        self._init_schema()
+        if not self._read_only:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=15.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        if self._read_only:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+        else:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
+    @contextlib.contextmanager
+    def _session(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            if self._read_only:
+                yield conn
+            else:
+                with conn:
+                    yield conn
+        finally:
+            conn.close()
+
     def _init_schema(self) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS dispenses (
@@ -127,7 +199,7 @@ class EdgeDatabase:
 
     def update_live_state(self, frame: IskraTelemetryFrame, *, observed_at: datetime | None = None) -> None:
         stamp = (observed_at or datetime.now(timezone.utc)).isoformat()
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             conn.execute(
                 """
                 INSERT INTO pump_live_state (
@@ -138,7 +210,10 @@ class EdgeDatabase:
                     state_code = excluded.state_code,
                     state_name = excluded.state_name,
                     error_code = excluded.error_code,
-                    price_kzt_per_liter = excluded.price_kzt_per_liter,
+                    price_kzt_per_liter = CASE
+                        WHEN excluded.price_kzt_per_liter > 0 THEN excluded.price_kzt_per_liter
+                        ELSE pump_live_state.price_kzt_per_liter
+                    END,
                     volume_ml = excluded.volume_ml,
                     raw_hex = excluded.raw_hex,
                     updated_at = excluded.updated_at
@@ -149,7 +224,7 @@ class EdgeDatabase:
                     frame.state_name,
                     frame.error_code,
                     frame.price_kzt_per_liter,
-                    frame.volume_ml,
+                    frame.reported_volume_ml,
                     frame.raw_hex,
                     stamp,
                 ),
@@ -161,7 +236,7 @@ class EdgeDatabase:
         Не затирает volume_ml предыдущего успешного кадра: обновляет только статус связи и время.
         """
         stamp = (observed_at or datetime.now(timezone.utc)).isoformat()
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             conn.execute(
                 """
                 INSERT INTO pump_live_state (
@@ -188,7 +263,7 @@ class EdgeDatabase:
         stamp = datetime.now(timezone.utc).isoformat()
         req_hex = request_bytes.hex(" ").upper()
         resp_hex = response_bytes.hex(" ").upper()
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             conn.execute(
                 """
                 INSERT INTO raw_frames (pump_address, request_hex, response_hex, valid, note, recorded_at)
@@ -213,12 +288,13 @@ class EdgeDatabase:
         station_id: str,
         dispenser_id: str,
         tank_id: str | None,
+        now: datetime | None = None,
     ) -> bool:
         """Атомарно сохраняет закрытую заправку в `dispenses` и ставит пакет в `outbox_queue`.
 
         Возвращает True, если запись новая, или False, если такой `external_txn_id` уже был записан.
         """
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = (now or datetime.now(timezone.utc)).isoformat()
         raw_meta = {
             "source": "aska_02_iskra_1_72",
             "pump_address": dispense.pump_address,
@@ -244,7 +320,7 @@ class EdgeDatabase:
 
         payload_json = json.dumps(ingest_payload, ensure_ascii=False)
 
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             try:
                 conn.execute(
                     """
@@ -286,7 +362,7 @@ class EdgeDatabase:
 
     def fetch_due_outbox(self, *, limit: int = 25, now: datetime | None = None) -> list[OutboxItem]:
         now_iso = (now or datetime.now(timezone.utc)).isoformat()
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             rows = conn.execute(
                 """
                 SELECT id, external_txn_id, payload_json, status, attempts,
@@ -314,7 +390,7 @@ class EdgeDatabase:
 
     def mark_outbox_sent(self, external_txn_id: str, server_response: str) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             conn.execute(
                 """
                 UPDATE outbox_queue
@@ -333,7 +409,7 @@ class EdgeDatabase:
         if not items:
             return
         now_iso = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             conn.executemany(
                 """
                 UPDATE outbox_queue
@@ -355,7 +431,7 @@ class EdgeDatabase:
         now: datetime | None = None,
     ) -> None:
         base_now = now or datetime.now(timezone.utc)
-        with self._lock, self._connect() as conn:
+        with self._lock, self._session() as conn:
             row = conn.execute(
                 "SELECT attempts FROM outbox_queue WHERE external_txn_id = ?",
                 (external_txn_id,),
@@ -376,60 +452,90 @@ class EdgeDatabase:
                 (attempts, error_text[:1000], next_retry, external_txn_id),
             )
 
+    @staticmethod
+    def _empty_summary() -> dict[str, object]:
+        return {
+            "total_dispenses": 0,
+            "total_dispensed_ml": 0,
+            "total_liters": 0.0,
+            "outbox_pending": 0,
+            "outbox_sent": 0,
+            "pumps": [],
+        }
+
     def list_dispenses(self, *, limit: int = 50) -> list[DispenseRow]:
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT d.id, d.external_txn_id, d.pump_address, d.mode,
-                       d.preset_ml, d.dispensed_ml, d.volume_liters,
-                       d.price_kzt_per_liter, d.final_state_code, d.error_code,
-                       d.started_at, d.finished_at,
-                       q.status AS queue_status
-                FROM dispenses d
-                LEFT JOIN outbox_queue q ON q.external_txn_id = d.external_txn_id
-                ORDER BY d.id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [
-            DispenseRow(
-                id=int(row["id"]),
-                external_txn_id=str(row["external_txn_id"]),
-                pump_address=int(row["pump_address"]),
-                mode=str(row["mode"]),
-                preset_ml=None if row["preset_ml"] is None else int(row["preset_ml"]),
-                dispensed_ml=int(row["dispensed_ml"]),
-                volume_liters=float(row["volume_liters"]),
-                price_kzt_per_liter=float(row["price_kzt_per_liter"]),
-                final_state_code=str(row["final_state_code"]),
-                error_code=str(row["error_code"]),
-                started_at=str(row["started_at"]),
-                finished_at=str(row["finished_at"]),
-                synced_to_vps=(row["queue_status"] == "sent"),
-            )
-            for row in rows
-        ]
+        if self._read_only and not self.db_path.is_file():
+            return []
+        try:
+            with self._lock, self._session() as conn:
+                rows = conn.execute(
+                    f"{_SELECT_DISPENSES_BASE}\nORDER BY d.id DESC\nLIMIT ?",
+                    (limit,),
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if self._read_only and "no such table" in str(exc).lower():
+                return []
+            raise
+        return [_row_to_dispense(row) for row in rows]
+
+    def list_dispenses_between(
+        self,
+        since: datetime,
+        until: datetime | None = None,
+    ) -> list[DispenseRow]:
+        """Возвращает закрытые заправки в интервале [since, until), от новых к старым."""
+        if self._read_only and not self.db_path.is_file():
+            return []
+        since_utc = _to_utc(since)
+        until_utc = _to_utc(until) if until is not None else None
+        try:
+            with self._lock, self._session() as conn:
+                rows = conn.execute(
+                    f"{_SELECT_DISPENSES_BASE}\nORDER BY d.id DESC"
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if self._read_only and "no such table" in str(exc).lower():
+                return []
+            raise
+
+        result: list[DispenseRow] = []
+        for row in rows:
+            finished_utc = _parse_iso_utc(str(row["finished_at"]))
+            if finished_utc is None:
+                continue
+            if finished_utc < since_utc:
+                continue
+            if until_utc is not None and finished_utc >= until_utc:
+                continue
+            result.append(_row_to_dispense(row))
+        return result
 
     def summary(self) -> dict[str, object]:
-        with self._lock, self._connect() as conn:
-            totals = conn.execute(
-                """
-                SELECT COUNT(*) AS count_dispenses,
-                       COALESCE(SUM(dispensed_ml), 0) AS total_dispensed_ml,
-                       COALESCE(SUM(volume_liters), 0.0) AS total_liters
-                FROM dispenses
-                """
-            ).fetchone()
-            pending = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM outbox_queue WHERE status IN ('pending', 'retry')"
-            ).fetchone()
-            sent = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM outbox_queue WHERE status = 'sent'"
-            ).fetchone()
-            pumps = conn.execute(
-                "SELECT * FROM pump_live_state ORDER BY pump_address ASC"
-            ).fetchall()
+        if self._read_only and not self.db_path.is_file():
+            return self._empty_summary()
+        try:
+            with self._lock, self._session() as conn:
+                totals = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count_dispenses,
+                           COALESCE(SUM(dispensed_ml), 0) AS total_dispensed_ml,
+                           COALESCE(SUM(volume_liters), 0.0) AS total_liters
+                    FROM dispenses
+                    """
+                ).fetchone()
+                pending = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM outbox_queue WHERE status IN ('pending', 'retry')"
+                ).fetchone()
+                sent = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM outbox_queue WHERE status = 'sent'"
+                ).fetchone()
+                pumps = conn.execute(
+                    "SELECT * FROM pump_live_state ORDER BY pump_address ASC"
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if self._read_only and "no such table" in str(exc).lower():
+                return self._empty_summary()
+            raise
         return {
             "total_dispenses": int(totals["count_dispenses"]) if totals else 0,
             "total_dispensed_ml": int(totals["total_dispensed_ml"]) if totals else 0,

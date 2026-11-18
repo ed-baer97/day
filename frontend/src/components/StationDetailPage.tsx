@@ -17,9 +17,11 @@ import {
   useSensorDay,
   useViewPeriod,
 } from "../liveLevels";
+import { isColumnReportStation } from "../columnReport";
 import { chartOf } from "../sensorDay";
 import type { DiscrepancyEvent, StationBalance } from "../types";
 import { BarChart, LineChart } from "./Charts";
+import ColumnReportCard from "./ColumnReportCard";
 import LevelChangesToday from "./LevelChangesToday";
 import PeriodSwitch from "./PeriodSwitch";
 import TankDeviceRows from "./TankDeviceRows";
@@ -162,6 +164,7 @@ export default function StationDetailPage({
       : null;
   const onlineTanksCount = live?.tanks.filter((t) => t.online && t.remainder_liters != null).length ?? 0;
   const totalTanksCount = live?.tanks.length ?? devices.length;
+  const showColumns = isColumnReportStation(station);
 
   return (
     <div className="dash">
@@ -244,6 +247,7 @@ export default function StationDetailPage({
           )}
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
           {hasDay && series ? <span className="badge">расход {liters(series.outflow)}</span> : null}
+          {showColumns ? <span className="badge ok">подключены 2 колонки</span> : null}
         </div>
       </header>
 
@@ -425,6 +429,16 @@ export default function StationDetailPage({
               </div>
             </section>
           </div>
+
+          {showColumns ? (
+            <ColumnReportCard
+              points={series?.points ?? []}
+              range={range}
+              devices={devices}
+              live={live}
+              loading={historyLoading}
+            />
+          ) : null}
 
           <section className="dash-card" style={{ marginBottom: 18 }}>
             <div className="card-head-inline">

@@ -11,7 +11,6 @@ from app.auth import (
     credentials_match,
     issue_token,
     record_login_failure,
-    require_admin,
     require_principal,
     revoke_token,
 )
@@ -41,10 +40,7 @@ def login(body: LoginIn, request: Request) -> SessionOut:
         clear_login_failures(key)
         ids = list(user.stations()) if hasattr(user, "stations") else [user.station_id]
         kind = getattr(user, "kind", None)
-        if kind == "owner":
-            role = "owner"
-        else:
-            role = ROLE_STATION
+        role = "owner" if kind == "owner" else ROLE_STATION
         return SessionOut(
             token=issue_token(user.username, settings.auth_secret, role=role, station_ids=ids),
             username=user.username,

@@ -58,6 +58,7 @@ UI: `http://localhost:5173` (прокси `/api` → `:8000`).
   - *Обычная доза*: поле объёма в кадре — остаток, оно уменьшается (`отпущено = задали − осталось`; например, задали `20 000 мл`, в кадре `12 500` — налито `7 500 мл`).
   - *«До полного»*: дозы заранее нет, поле объёма уже содержит отпущенные миллилитры.
 - **Локальная БД и очередь на VPS:** закрытая заправка пишется как `dispensed_ml` в локальную `station_edge.db` (SQLite WAL) и ставится в очередь `outbox_queue` для отправки на `POST /api/v1/ingest/dispense` или пакетно на `POST /api/v1/ingest/dispenses/batch` (`X-Device-Token`). Повторная отправка того же `external_txn_id` не создаёт вторую заправку на VPS. Воркер `OutboxSyncWorker` автоматически объединяет накопившиеся заправки в пакеты до 50 штук за 1 HTTP-запрос.
+- **Табло на мониторе Linux-сервера без GUI и без пароля:** команда `monitor --kiosk` и сервис [`station-edge/station-edge-monitor.service`](station-edge/station-edge-monitor.service) выводят на консоль `/dev/tty1` статистику по колонкам за смену (№ колонки, статус, время, объём, цену, сумму и итог за смену) в режиме только чтения без входа под паролем администратора.
 
 ```powershell
 cd station-edge
@@ -69,6 +70,9 @@ python -m agzs_edge probe --port COM7 --all-addresses
 
 # Боевой запуск на станции (COM7 -> SQLite -> VPS):
 python -m agzs_edge serve
+
+# Табло статистики по колонкам за смену (разовый вывод или экранный монитор tty1):
+python -m agzs_edge monitor --once
 
 # Проверка на Windows без колонки (встроенный имитатор кадров):
 python -m agzs_edge serve --emulator --cycles 8 --no-sync

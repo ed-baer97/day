@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import urllib.error
@@ -30,6 +31,64 @@ class VpsSendResult:
     error_text: str = ""
 
 
+def _send_vps_request(
+    base_url: str,
+    path: str,
+    device_token: str,
+    *,
+    method: str,
+    body_text: str | None = None,
+    accept_json: bool = False,
+    timeout_sec: float = 10.0,
+) -> VpsSendResult:
+    """Выполняет HTTP-запрос к VPS и возвращает унифицированный VpsSendResult."""
+    url = base_url.rstrip("/") + path
+    headers: dict[str, str] = {"Accept": "application/json"} if accept_json else {"Content-Type": "application/json"}
+    if device_token:
+        headers["X-Device-Token"] = device_token
+    data = None if body_text is None else body_text.encode("utf-8")
+    req = urllib.request.Request(url=url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw_text = resp.read().decode("utf-8", errors="replace")
+            status_code = getattr(resp, "status", 200)
+            return VpsSendResult(ok=True, status_code=status_code, response_text=raw_text)
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        with contextlib.suppress(Exception):
+            err_body = exc.read().decode("utf-8", errors="replace")
+        return VpsSendResult(
+            ok=False,
+            status_code=exc.code,
+            error_text=f"HTTP {exc.code}: {err_body or exc.reason}",
+        )
+    except Exception as exc:
+        return VpsSendResult(ok=False, status_code=0, error_text=f"Ошибка связи с VPS: {exc}")
+
+
+def probe_vps_link(
+    base_url: str,
+    device_token: str,
+    tank_id: str,
+    *,
+    timeout_sec: float = 10.0,
+) -> VpsSendResult:
+    """Проверяет, что центральный сервер принимает токен этой станции.
+
+    Читает книгу резервуара (`GET /api/v1/ingest/tanks/{id}`) и ничего не записывает.
+    """
+    if not tank_id:
+        return VpsSendResult(ok=False, error_text="не задан идентификатор резервуара")
+    return _send_vps_request(
+        base_url,
+        f"/api/v1/ingest/tanks/{tank_id}",
+        device_token,
+        method="GET",
+        accept_json=True,
+        timeout_sec=timeout_sec,
+    )
+
+
 def post_dispense_to_vps(
     base_url: str,
     device_token: str,
@@ -38,55 +97,32 @@ def post_dispense_to_vps(
     timeout_sec: float = 10.0,
 ) -> VpsSendResult:
     """Выполняет HTTP POST `/api/v1/ingest/dispense` на центральный сервер (Ubuntu VPS)."""
-    url = base_url.rstrip("/") + "/api/v1/ingest/dispense"
-    headers = {"Content-Type": "application/json"}
-    if device_token:
-        headers["X-Device-Token"] = device_token
-    req = urllib.request.Request(
-        url=url,
-        data=payload_json.encode("utf-8"),
-        headers=headers,
+    result = _send_vps_request(
+        base_url,
+        "/api/v1/ingest/dispense",
+        device_token,
         method="POST",
+        body_text=payload_json,
+        timeout_sec=timeout_sec,
     )
+    if not result.ok:
+        return result
     try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            raw_text = resp.read().decode("utf-8", errors="replace")
-            status_code = getattr(resp, "status", 200)
-            try:
-                body = json.loads(raw_text)
-            except json.JSONDecodeError:
-                body = {}
-            accepted = bool(body.get("accepted", True))
-            duplicate = bool(body.get("duplicate", False))
-            if accepted:
-                return VpsSendResult(
-                    ok=True,
-                    duplicate=duplicate,
-                    status_code=status_code,
-                    response_text=raw_text,
-                )
-            return VpsSendResult(
-                ok=False,
-                status_code=status_code,
-                error_text=f"Сервер отклонил пакет: {raw_text}",
-            )
-    except urllib.error.HTTPError as exc:
-        err_body = ""
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
+        body = json.loads(result.response_text)
+    except json.JSONDecodeError:
+        body = {}
+    if bool(body.get("accepted", True)):
         return VpsSendResult(
-            ok=False,
-            status_code=exc.code,
-            error_text=f"HTTP {exc.code}: {err_body or exc.reason}",
+            ok=True,
+            duplicate=bool(body.get("duplicate", False)),
+            status_code=result.status_code,
+            response_text=result.response_text,
         )
-    except Exception as exc:
-        return VpsSendResult(
-            ok=False,
-            status_code=0,
-            error_text=f"Ошибка связи с VPS: {exc}",
-        )
+    return VpsSendResult(
+        ok=False,
+        status_code=result.status_code,
+        error_text=f"Сервер отклонил пакет: {result.response_text}",
+    )
 
 
 def post_dispenses_batch_to_vps(
@@ -97,43 +133,15 @@ def post_dispenses_batch_to_vps(
     timeout_sec: float = 15.0,
 ) -> VpsSendResult:
     """Выполняет пакетный HTTP POST `/api/v1/ingest/dispenses/batch` на центральный VPS."""
-    url = base_url.rstrip("/") + "/api/v1/ingest/dispenses/batch"
-    headers = {"Content-Type": "application/json"}
-    if device_token:
-        headers["X-Device-Token"] = device_token
     payload = json.dumps({"items": items}, ensure_ascii=False)
-    req = urllib.request.Request(
-        url=url,
-        data=payload.encode("utf-8"),
-        headers=headers,
+    return _send_vps_request(
+        base_url,
+        "/api/v1/ingest/dispenses/batch",
+        device_token,
         method="POST",
+        body_text=payload,
+        timeout_sec=timeout_sec,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            raw_text = resp.read().decode("utf-8", errors="replace")
-            status_code = getattr(resp, "status", 200)
-            return VpsSendResult(
-                ok=True,
-                status_code=status_code,
-                response_text=raw_text,
-            )
-    except urllib.error.HTTPError as exc:
-        err_body = ""
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        return VpsSendResult(
-            ok=False,
-            status_code=exc.code,
-            error_text=f"HTTP {exc.code}: {err_body or exc.reason}",
-        )
-    except Exception as exc:
-        return VpsSendResult(
-            ok=False,
-            status_code=0,
-            error_text=f"Ошибка связи с VPS: {exc}",
-        )
 
 
 class OutboxSyncWorker:

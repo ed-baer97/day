@@ -1,7 +1,5 @@
 """Тесты высоконагруженного пакетного приёма (Bulk Ingest) и кэширования витрины."""
 
-import os
-from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient

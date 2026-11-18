@@ -16,7 +16,6 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 
 from app.domain.tank_book import (
-    CALIBRATION_REQUIRED,
     apply_dispense_volume,
     apply_level_reading,
     apply_receipt_volume,

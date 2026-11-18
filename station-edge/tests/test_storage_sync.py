@@ -74,6 +74,7 @@ def test_outbox_retry_and_duplicate_handling(tmp_path: Path) -> None:
         station_id="a2222222-2222-2222-2222-222222222201",
         dispenser_id="d2222222-2222-2222-2222-222222222202",
         tank_id="b2222222-2222-2222-2222-222222222201",
+        now=t0,
     )
 
     calls: list[dict] = []
@@ -171,6 +172,7 @@ def test_bulk_outbox_sync(tmp_path: Path) -> None:
             station_id="a2222222-2222-2222-2222-222222222201",
             dispenser_id=f"d2222222-2222-2222-2222-22222222220{i}",
             tank_id="b2222222-2222-2222-2222-222222222201",
+            now=t0,
         )
 
     batch_calls: list[list[dict]] = []

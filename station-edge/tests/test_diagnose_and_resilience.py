@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agzs_edge.config import EdgeSettings, FrameLayout
+from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
     STATE_IDLE,
     IskraFrameError,
@@ -150,39 +150,6 @@ def test_build_test_command_length_and_cmd4() -> None:
     cmd = build_test_command(1)
     assert len(cmd) == 23
     assert cmd[3] == ord("4")
-
-
-def test_observer_keeps_tx_bytes_and_reports_zero_rx() -> None:
-    from agzs_edge.aska_compat import compare_tx
-
-    fake = _FakeSerial([])
-    link = SerialAskaLink(port="COM7", timeout_sec=0.1, min_wait_sec=0.1, inter_byte_timeout_sec=0.02)
-    link._serial = fake  # noqa: SLF001
-    res = link.poll_test(1)
-
-    assert fake.written == [build_test_command(1)]
-    assert compare_tx(build_test_command(1), fake.written[0], 23)["wire_format_preserved"]
-    report = link.last_attempt.report(driver_reported_timeout=True)
-    assert report["tx_exactly_matches_existing_frame"]
-    assert report["rx_bytes"] == 0
-    assert report["code"] == "RX_ZERO_AT_DRIVER_TIMEOUT"
-    assert report["value"] is None
-    assert res.response_bytes == b""
-
-
-def test_observer_accepts_valid_reply_via_existing_parser() -> None:
-    frame = build_test_response_frame(address=1, state_code=STATE_IDLE, price_digits=7200, volume_ml=0)
-    fake = _FakeSerial([frame])
-    link = SerialAskaLink(port="COM7", timeout_sec=0.2, min_wait_sec=0.2)
-    link._serial = fake  # noqa: SLF001
-    res = link.poll_test(1)
-
-    parsed = parse_iskra_frame(res.response_bytes)
-    link.last_attempt.parser_result(frame_valid=True, matches_request=parsed.address == 1, value=parsed.volume_ml)
-    report = link.last_attempt.report()
-    assert report["code"] == "VALID_REPLY_REPORTED_BY_EXISTING_PARSER"
-    assert report["measurement_valid"] is True
-    assert report["value"] == 0
 
 
 def test_protocol_config_rejects_unknown(monkeypatch, tmp_path: Path) -> None:

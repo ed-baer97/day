@@ -75,6 +75,50 @@ def test_parse_alarm_06_frame() -> None:
     assert parsed.has_protocol_alarm
 
 
+def test_parse_live_uzsg01_status_word() -> None:
+    """Живой кадр УЗСГ-01: цена 72.00, объём 0, состояние 05, статус линии P|0x8E."""
+    raw = bytes.fromhex("0130313402303037323030303030303030508E303503EA")
+    assert verify_frame_checksum(raw)
+    parsed = parse_iskra_frame(raw)
+    assert parsed.address == 1
+    assert parsed.command_code == ord("4")
+    assert parsed.state_code == "05"
+    assert parsed.state_name == "IDLE"
+    assert parsed.price_raw == "007200"
+    assert parsed.price_kzt_per_liter == 72.0
+    assert parsed.volume_ml == 0
+    assert parsed.error_code == "00"
+    assert parsed.flags_raw == "P8E"
+    assert not parsed.has_protocol_alarm
+
+
+def test_parse_live_completed_frame_carries_fill_total_in_price_field() -> None:
+    """Живой кадр 07 с уставкой 090000 и Volume=000000: объём равен 0, уставка 900 л, цена не искажается."""
+    raw = bytes.fromhex("01 30 31 34 02 30 39 30 30 30 30 30 30 30 30 30 30 50 91 30 37 03 FB")
+    assert verify_frame_checksum(raw)
+    parsed = parse_iskra_frame(raw)
+    assert parsed.state_code == "07"
+    assert parsed.price_raw == "090000"
+    assert parsed.completed_volume_ml is None
+    assert parsed.reported_volume_ml == 0
+    assert parsed.preset_dose_ml == 900_000
+    assert parsed.price_kzt_per_liter == 0.0
+    assert parsed.volume_ml == 0
+
+
+def test_parse_live_dispensing_frame_with_d0_flag_and_volume_in_price_field() -> None:
+    """Живой кадр налива (03): статус D0 92 (0x50|0x80) не является ошибкой, а 090000 не искажает цену."""
+    raw = bytes.fromhex("01 30 31 34 02 30 39 30 30 30 30 30 30 30 30 30 30 D0 92 30 33 03 7C")
+    assert verify_frame_checksum(raw)
+    parsed = parse_iskra_frame(raw)
+    assert parsed.state_code == "03"
+    assert parsed.error_code == "00"
+    assert parsed.flags_raw == "P92"
+    assert not parsed.has_protocol_alarm
+    assert parsed.price_kzt_per_liter == 0.0
+    assert parsed.volume_ml == 0
+
+
 def test_parse_rejects_wrong_length_or_bad_checksum() -> None:
     raw = build_test_response_frame(address=1, volume_ml=5000)
     with pytest.raises(IskraFrameError, match="Неверная длина"):

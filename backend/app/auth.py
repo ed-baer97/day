@@ -112,10 +112,7 @@ def issue_token(
     return f"{blob}.{signature}"
 
 
-def read_principal(token: str, secret: str) -> Principal | None:
-    with _lock:
-        if token in _revoked_tokens:
-            return None
+def _decode_verified_payload(token: str, secret: str) -> bytes | None:
     blob, dot, signature = token.partition(".")
     if not blob or not dot or not signature:
         return None
@@ -126,19 +123,20 @@ def read_principal(token: str, secret: str) -> Principal | None:
     expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         return None
+    return payload
+
+
+def _parse_token_fields(payload: bytes) -> tuple[int, str, str, str] | None:
     try:
-        decoded = payload.decode()
-        parts = decoded.split(":")
+        parts = payload.decode().split(":")
         if len(parts) == 2:
             # Самый старый формат: expires:username
             expires_raw, username = parts
-            role = ROLE_ADMIN
-            station_raw = ""
+            role, station_raw = ROLE_ADMIN, ""
         elif len(parts) == 3:
             # expires:nonce:username
             expires_raw, _nonce, username = parts
-            role = ROLE_ADMIN
-            station_raw = ""
+            role, station_raw = ROLE_ADMIN, ""
         elif len(parts) >= 5:
             # expires:nonce:username:role:station_id
             expires_raw = parts[0]
@@ -147,9 +145,22 @@ def read_principal(token: str, secret: str) -> Principal | None:
             station_raw = parts[4]
         else:
             return None
-        expires = int(expires_raw)
+        return int(expires_raw), username, role, station_raw
     except ValueError:
         return None
+
+
+def read_principal(token: str, secret: str) -> Principal | None:
+    with _lock:
+        if token in _revoked_tokens:
+            return None
+    payload = _decode_verified_payload(token, secret)
+    if payload is None:
+        return None
+    parsed = _parse_token_fields(payload)
+    if parsed is None:
+        return None
+    expires, username, role, station_raw = parsed
     if time.time() >= expires or not username:
         return None
     station_ids: list[UUID] = []

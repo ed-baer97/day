@@ -13,37 +13,29 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
-from agzs_edge.aska_compat import Attempt
 from agzs_edge.config import FrameLayout
 from agzs_edge.iskra import (
+    CMD_PARAMS_ASCII,
+    CMD_RESET_ASCII,
+    CMD_SET_DOSE_ASCII,
+    CMD_START_ASCII,
+    CMD_STOP_ASCII,
+    CMD_TEST_ASCII,
+    ETX,
     SOH,
     STATE_COMPLETED,
     STATE_DISPENSING,
     STATE_DOSE_SET,
     STATE_IDLE,
+    STATE_STOPPED,
+    STX,
     build_test_command,
     build_test_response_frame,
+    compute_bcc,
 )
 
 logger = logging.getLogger(__name__)
 _PORT_LOCK = threading.RLock()
-
-
-class _ObservedSerial:
-    """Пропускает write/read через Attempt без изменения аргументов и числа вызовов."""
-
-    def __init__(self, ser: object, attempt: Attempt) -> None:
-        self._ser = ser
-        self._attempt = attempt
-
-    def write(self, data: bytes) -> int:
-        return self._attempt.write(self._ser.write, data)  # type: ignore[attr-defined]
-
-    def read(self, size: int) -> bytes:
-        return self._attempt.read(self._ser.read, size)  # type: ignore[attr-defined]
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._ser, name)
 
 
 @dataclass(frozen=True)
@@ -66,6 +58,7 @@ class AskaLink(Protocol):
     def open(self) -> None: ...
     def close(self) -> None: ...
     def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult: ...
+    def send_command(self, address: int, request: bytes) -> PollRawResult: ...
 
 
 class SerialAskaLink:
@@ -89,7 +82,6 @@ class SerialAskaLink:
         self.inter_byte_timeout_sec = inter_byte_timeout_sec
         self._serial: object | None = None
         self._lock = _PORT_LOCK
-        self.last_attempt: Attempt | None = None
 
     def open(self) -> None:
         with self._lock:
@@ -127,17 +119,19 @@ class SerialAskaLink:
         """Отправляет команду «Тест» (код 4) на указанный адрес и читает ответ (если есть)."""
         mode = checksum_mode or self.layout.checksum_mode
         request = build_test_command(address, checksum_mode=mode)
+        return self.send_command(address, request)
+
+    def send_command(self, address: int, request: bytes) -> PollRawResult:
+        """Отправляет произвольный 23-байтный кадр Протокола v3.10 и читает ответ (если есть)."""
         with self._lock:
             try:
                 self.open()
                 assert self._serial is not None
-                attempt = Attempt(request, channel=address)
-                self.last_attempt = attempt
-                ser = _ObservedSerial(self._serial, attempt)
+                ser = self._serial
                 ser.reset_input_buffer()  # type: ignore[attr-defined]
-                ser.write(request)
+                ser.write(request)  # type: ignore[attr-defined]
                 ser.flush()  # type: ignore[attr-defined]
-                logger.debug("TX addr=%s hex=%s", address, request.hex(" ").upper())
+                logger.debug("TX addr=%s cmd=0x%02X hex=%s", address, request[3], request.hex(" ").upper())
 
                 raw = self._read_aligned_frame(ser, self.layout.frame_length)
                 if raw:
@@ -190,17 +184,26 @@ class SerialAskaLink:
 
 
 class EmulatorAskaLink:
-    """Безопасный имитатор кадров УЗГС-01 (Искра 1.72) для проверки записи в БД и отправки на VPS без колонки.
+    """Безопасный имитатор кадров УЗСГ-01 (Искра 1.72 / Протокол v3.10) без живой колонки.
 
-    Генерирует по очереди:
-      - На адресе 1: заправку по обычной дозе (задали 20 000 мл -> остаток убывает 12 500 -> 5 000 -> 0 -> COMPLETED)
-      - На адресе 2: заправку «до полного» (нарастание 0 -> 4 200 -> 9 800 -> 14 600 -> COMPLETED)
+    При обычном опросе `poll_test` воспроизводит демонстрационные наливы для тестов учёта.
+    При вызове `send_command` (или `initial_locked=True`) ведёт себя как живая колонка УЗСГ-01
+    с Блоком питания: поддерживает Сброс (0x37), Задание дозы (0x39), Пуск (0x35), Останов (0x36)
+    и команды параметров 0x38 (кнопки, цена, счётчики).
     """
 
-    def __init__(self, layout: FrameLayout | None = None, price_digits: int = 10000) -> None:
+    def __init__(
+        self,
+        layout: FrameLayout | None = None,
+        price_digits: int = 10000,
+        *,
+        initial_locked: bool = False,
+    ) -> None:
         self.layout = layout or FrameLayout()
         self.price_digits = price_digits
+        self._initial_locked = initial_locked
         self._step_by_addr: dict[int, int] = {}
+        self._controlled_state: dict[int, dict[str, object]] = {}
 
     def open(self) -> None:
         return
@@ -208,9 +211,76 @@ class EmulatorAskaLink:
     def close(self) -> None:
         return
 
+    def _get_state(self, address: int) -> dict[str, object]:
+        if address not in self._controlled_state:
+            self._controlled_state[address] = {
+                "state_code": STATE_COMPLETED if self._initial_locked else STATE_IDLE,
+                "price_kop": self.price_digits,
+                "dose_ml": 900000 if self._initial_locked else 0,
+                "dispensed_ml": 0,
+                "valve_open": False,
+                "buttons_ss": True,
+                "button_reset": False,
+                "dose_type": 0x10,
+                "total_counter_1": 123456,
+                "total_counter_2": 123456,
+                "daily_counter": 4500,
+                "temp_c_tenths": 215,
+                "propane_pct": 65,
+                "tpr_coef": 1234,
+            }
+        return self._controlled_state[address]
+
+    def _build_live_reply(
+        self,
+        address: int,
+        reply_cmd: int,
+        state: dict[str, object],
+        *,
+        price_field: bytes | None = None,
+        volume_field: bytes | None = None,
+        dose_bits_override: int | None = None,
+    ) -> bytes:
+        byte17 = (
+            (0x80 if state["valve_open"] else 0)
+            | (0x40 if state["buttons_ss"] else 0)
+            | (0x20 if state["button_reset"] else 0)
+            | ((dose_bits_override if dose_bits_override is not None else int(state["dose_type"])) & 0x1F)
+        )
+        byte18 = 0x8A
+        state_code = str(state["state_code"])
+        if price_field is None:
+            if state_code == STATE_IDLE:
+                price_val = int(state["price_kop"])
+            else:
+                dose_ml = int(state["dose_ml"])
+                price_val = (dose_ml // 10) if dose_ml > 0 else int(state["price_kop"])
+            price_field = f"{price_val:06d}".encode("ascii")
+        if volume_field is None:
+            volume_field = f"{int(state['dispensed_ml']):06d}".encode("ascii")
+        body = (
+            f"{address:02d}".encode("ascii")
+            + bytes([reply_cmd, STX])
+            + price_field
+            + volume_field
+            + bytes([byte17, byte18])
+            + state_code.encode("ascii")
+            + bytes([ETX])
+        )
+        mode = "xor" if self.layout.checksum_mode == "any" else self.layout.checksum_mode
+        return bytes([SOH]) + body + bytes([compute_bcc(body, mode)])
+
     def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
         mode = checksum_mode or self.layout.checksum_mode
         request = build_test_command(address, checksum_mode=mode)
+        if address in self._controlled_state or self._initial_locked:
+            state = self._get_state(address)
+            return PollRawResult(
+                address=address,
+                request_bytes=request,
+                response_bytes=self._build_live_reply(address, CMD_TEST_ASCII, state),
+            )
+
         step = self._step_by_addr.get(address, 0)
         self._step_by_addr[address] = (step + 1) % 8
 
@@ -250,6 +320,169 @@ class EmulatorAskaLink:
             checksum_mode=mode,
         )
         return PollRawResult(address=address, request_bytes=request, response_bytes=response)
+
+    def send_command(self, address: int, request: bytes) -> PollRawResult:
+        """Эмулирует ответ колонки УЗСГ-01 на команды Протокола v3.10."""
+        cmd = request[3]
+        state = self._get_state(address)
+        if cmd == CMD_TEST_ASCII:
+            if state["state_code"] == STATE_DISPENSING:
+                dose = int(state["dose_ml"])
+                disp = int(state["dispensed_ml"])
+                if dose > 0 and disp + 500 < dose:
+                    state["dispensed_ml"] = disp + 500
+            return PollRawResult(
+                address=address,
+                request_bytes=request,
+                response_bytes=self._build_live_reply(address, CMD_TEST_ASCII, state),
+            )
+
+        if cmd == CMD_RESET_ASCII:
+            state["state_code"] = STATE_IDLE
+            state["valve_open"] = False
+            state["dose_ml"] = 0
+            state["dispensed_ml"] = 0
+            state["dose_type"] = 0x10
+            return PollRawResult(
+                address=address,
+                request_bytes=request,
+                response_bytes=self._build_live_reply(address, CMD_RESET_ASCII, state),
+            )
+
+        if cmd == CMD_SET_DOSE_ASCII:
+            vol_ml = int(request[11:17].decode("ascii"))
+            state["dose_ml"] = vol_ml
+            state["dispensed_ml"] = 0
+            state["valve_open"] = False
+            state["state_code"] = STATE_DOSE_SET
+            state["dose_type"] = 0x11
+            return PollRawResult(
+                address=address,
+                request_bytes=request,
+                response_bytes=self._build_live_reply(address, CMD_SET_DOSE_ASCII, state),
+            )
+
+        if cmd == CMD_START_ASCII:
+            if state["state_code"] in {STATE_DOSE_SET, STATE_STOPPED}:
+                state["state_code"] = STATE_DISPENSING
+                state["valve_open"] = True
+            return PollRawResult(
+                address=address,
+                request_bytes=request,
+                response_bytes=self._build_live_reply(address, CMD_START_ASCII, state),
+            )
+
+        if cmd == CMD_STOP_ASCII:
+            if state["state_code"] == STATE_DISPENSING:
+                state["state_code"] = STATE_STOPPED
+                state["valve_open"] = False
+            return PollRawResult(
+                address=address,
+                request_bytes=request,
+                response_bytes=self._build_live_reply(address, CMD_STOP_ASCII, state),
+            )
+
+        if cmd == CMD_PARAMS_ASCII:
+            p_code = request[5:11].decode("ascii")
+            v_code = request[11:17].decode("ascii")
+            s_code = request[17:19].decode("ascii")
+            if p_code == "000016":
+                state["buttons_ss"] = True
+                state["button_reset"] = True
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(address, CMD_PARAMS_ASCII, state),
+                )
+            if p_code == "000017":
+                state["buttons_ss"] = False
+                state["button_reset"] = False
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(address, CMD_PARAMS_ASCII, state),
+                )
+            if p_code == "000018":
+                state["buttons_ss"] = True
+                state["button_reset"] = False
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(address, CMD_PARAMS_ASCII, state),
+                )
+            if p_code == "000015":
+                state["price_kop"] = int(v_code)
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(address, CMD_PARAMS_ASCII, state),
+                )
+            if p_code in {"000011", "000019"}:
+                marker = 0x1A if p_code == "000011" else 0x1B
+                cnt = int(state["total_counter_1"] if p_code == "000011" else state["total_counter_2"])
+                cnt_s = f"{cnt:010d}".encode("ascii")
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(
+                        address,
+                        CMD_PARAMS_ASCII,
+                        state,
+                        price_field=b"00" + cnt_s[:4],
+                        volume_field=cnt_s[4:],
+                        dose_bits_override=marker,
+                    ),
+                )
+            if p_code in {"000012", "000013"}:
+                if p_code == "000013":
+                    state["daily_counter"] = 0
+                daily_s = f"{int(state['daily_counter']):08d}".encode("ascii")
+                prefix = b"0540" if s_code == "01" else f"0{int(state['temp_c_tenths']):03d}".encode("ascii")
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(
+                        address,
+                        CMD_PARAMS_ASCII,
+                        state,
+                        price_field=prefix + daily_s[:2],
+                        volume_field=daily_s[2:],
+                        dose_bits_override=0x18,
+                    ),
+                )
+            if p_code == "000014":
+                if s_code == "01":
+                    return PollRawResult(
+                        address=address,
+                        request_bytes=request,
+                        response_bytes=self._build_live_reply(
+                            address,
+                            CMD_PARAMS_ASCII,
+                            state,
+                            price_field=b"000001",
+                            volume_field=b"200005",
+                            dose_bits_override=0x19,
+                        ),
+                    )
+                vol_s = f"{int(state['propane_pct']):02d}{int(state['tpr_coef']):04d}".encode("ascii")
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(
+                        address,
+                        CMD_PARAMS_ASCII,
+                        state,
+                        price_field=b"000000",
+                        volume_field=vol_s,
+                        dose_bits_override=0x19,
+                    ),
+                )
+
+        return PollRawResult(
+            address=address,
+            request_bytes=request,
+            response_bytes=self._build_live_reply(address, cmd, state),
+        )
 
 
 def list_available_serial_ports() -> list[tuple[str, str, str]]:
