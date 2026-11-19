@@ -269,7 +269,7 @@ export default function AdminAccessTab({
         <h3>Владельцы АГЗС ({owners.length})</h3>
         <p className="dash-muted">
           Один логин может управлять одной или несколькими заправками (только чтение своих
-          АГЗС, остатков, колонок, журнала и адреса телеметрии).
+          АГЗС, остатков, колонок и журнала замеров).
         </p>
 
         <form
@@ -680,7 +680,7 @@ export default function AdminAccessTab({
                   <span className="badge danger">Скрыто</span>
                 </td>
                 <td>
-                  <span className="badge ok">Администратор / своя станция</span>
+                  <span className="badge ok">Только администратор платформы</span>
                 </td>
               </tr>
             </tbody>
@@ -690,7 +690,8 @@ export default function AdminAccessTab({
               <span className="title">IDOR-изоляция телеметрии и ролевых токенов</span>
               <span className="desc">
                 <code>X-Device-Token</code> привязан к конкретным <code>tank_id</code> и{" "}
-                <code>station_id</code>; токен владельца ограничен списком привязанных АГЗС.
+                <code>station_id</code> и доступен только администратору платформы; токен
+                владельца ограничен списком привязанных АГЗС.
               </span>
             </li>
             <li>

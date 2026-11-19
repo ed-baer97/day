@@ -13,15 +13,11 @@ export type ColumnSeries = {
   number: number;
   code: string;
   name: string;
-  kkmSerial: string;
   liters: number[];
   total: number;
   opsCount: number;
   lastLiters: number | null;
   lastAt: string | null;
-  kkmLiters: number;
-  ofdLiters: number;
-  discrepancyLiters: number;
 };
 
 export type ColumnReport = {
@@ -29,11 +25,9 @@ export type ColumnReport = {
   columns: ColumnSeries[];
   totals: number[];
   total: number;
-  tankOutflowLiters: number;
-  kkmTotalLiters: number;
-  ofdTotalLiters: number;
+  tankOutflowLiters: number | null;
   opsTotal: number;
-  discrepancyLiters: number;
+  discrepancyLiters: number | null;
   status: "ok" | "warn";
   source: "edge" | "level";
   labels: string[];
@@ -105,7 +99,7 @@ export function columnDispenseReport(
   now = new Date(),
   fallbackOutflow = 0,
   realDispenses: DispenseReading[] = [],
-  options?: { columnCount?: number; mode?: ColumnsMode },
+  options?: { columnCount?: number; mode?: ColumnsMode; sensorOutflowLiters?: number | null },
 ): ColumnReport {
   const colCount = Math.max(1, Math.min(8, Math.round(options?.columnCount ?? CONNECTED_COLUMNS)));
   const mode: ColumnsMode = options?.mode ?? "virtual";
@@ -114,15 +108,11 @@ export function columnDispenseReport(
     number: index + 1,
     code: `ТРК-${index + 1}`,
     name: `Колонка ${index + 1}`,
-    kkmSerial: `ККМ-ТРК-0${index + 1}`,
     liters: Array(range.labels.length).fill(0),
     total: 0,
     opsCount: 0,
     lastLiters: null,
     lastAt: null,
-    kkmLiters: 0,
-    ofdLiters: 0,
-    discrepancyLiters: 0,
   }));
 
   const inRangeDispenses = realDispenses
@@ -219,25 +209,38 @@ export function columnDispenseReport(
     }
   }
 
-  for (const column of columns) {
-    column.kkmLiters = column.total;
-    column.ofdLiters = column.total;
-    column.discrepancyLiters = 0;
-  }
-
   const totals = range.labels.map((_, index) =>
     Math.round(columns.reduce((sum, column) => sum + column.liters[index], 0) * 1000) / 1000,
   );
   const total = Math.round(columns.reduce((sum, column) => sum + column.total, 0) * 1000) / 1000;
   const opsTotal = columns.reduce((sum, column) => sum + column.opsCount, 0);
-  const tankOutflowLiters =
-    source === "edge" && fallbackOutflow > 0
-      ? Math.round(fallbackOutflow * 1000) / 1000
-      : total;
-  const discrepancyLiters =
-    source === "edge" && fallbackOutflow > 0 ? Math.round(total - tankOutflowLiters) : 0;
-  const status: "ok" | "warn" =
-    source === "edge" && Math.abs(discrepancyLiters) > 50 ? "warn" : "ok";
+
+  let tankOutflowLiters: number | null;
+  let discrepancyLiters: number | null;
+  let status: "ok" | "warn";
+
+  if (source === "edge") {
+    const rawSensorOutflow =
+      options?.sensorOutflowLiters !== undefined ? options.sensorOutflowLiters : fallbackOutflow;
+    if (rawSensorOutflow == null || !Number.isFinite(rawSensorOutflow)) {
+      tankOutflowLiters = null;
+      discrepancyLiters = null;
+      status = total > 0 ? "warn" : "ok";
+    } else {
+      const normalizedOutflow = Math.round(rawSensorOutflow * 1000) / 1000;
+      tankOutflowLiters = normalizedOutflow === 0 ? 0 : normalizedOutflow;
+      const diff = Math.round(total - tankOutflowLiters);
+      discrepancyLiters = diff === 0 ? 0 : diff;
+      status =
+        (tankOutflowLiters === 0 && total > 0) || Math.abs(discrepancyLiters) > 50
+          ? "warn"
+          : "ok";
+    }
+  } else {
+    tankOutflowLiters = total;
+    discrepancyLiters = 0;
+    status = "ok";
+  }
 
   return {
     columnCount: colCount,
@@ -245,8 +248,6 @@ export function columnDispenseReport(
     totals,
     total,
     tankOutflowLiters,
-    kkmTotalLiters: total,
-    ofdTotalLiters: total,
     opsTotal,
     discrepancyLiters,
     status,

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   api,
+  type ColumnsMode,
   type DispenseReading,
   type TankDevice,
   type TankIngestState,
@@ -65,7 +66,6 @@ export default function StationDetailPage({
   const { range, historyLoading } = useViewPeriod();
   const day = useSensorDay([stationId]);
   const [tab, setTab] = useState<DetailTab>("overview");
-  const [copiedTankId, setCopiedTankId] = useState<string | null>(null);
 
   const [devices, setDevices] = useState<TankDevice[]>([]);
   const [tankStates, setTankStates] = useState<Record<string, TankIngestState>>({});
@@ -141,9 +141,11 @@ export default function StationDetailPage({
     const points = series?.points ?? [];
     const liveTanks = buildLiveTankSamples(live, devices, points, range.includesNow);
     const fallbackOutflow = series?.opening != null ? series.outflow : 0;
+    const sensorOutflowLiters = series?.opening != null ? series.outflow : null;
     return columnDispenseReport(points, range, liveTanks, new Date(), fallbackOutflow, dispenses, {
       columnCount: colCount,
       mode: colMode,
+      sensorOutflowLiters,
     });
   }, [showColumns, series, live, devices, range, dispenses, colCount, colMode]);
 
@@ -199,14 +201,22 @@ export default function StationDetailPage({
     hasTanks && live ? safeRefillLiters(live.capacity, live.remainder) : null;
   const onlineTanksCount = live?.tanks.filter((t) => t.online && t.remainder_liters != null).length ?? 0;
   const totalTanksCount = live?.tanks.length ?? devices.length;
-  const isVirtualColumns = showColumns && columnReport?.source === "level";
-  const isEdgeColumns = showColumns && columnReport?.source === "edge";
+  const savedColumnsMode: ColumnsMode =
+    station.columns_mode === "none" ||
+    station.columns_mode === "virtual" ||
+    station.columns_mode === "edge"
+      ? station.columns_mode
+      : showColumns
+        ? "virtual"
+        : "none";
+  const isVirtualMode = savedColumnsMode === "virtual";
+  const isEdgeMode = savedColumnsMode === "edge";
   const expenseLiters =
-    isVirtualColumns && columnReport && (hasDay || columnReport.total > 0)
+    isVirtualMode && columnReport && (hasDay || columnReport.total > 0)
       ? columnReport.total
       : hasDay && series
         ? series.outflow
-        : isEdgeColumns && columnReport && columnReport.total > 0
+        : isEdgeMode && columnReport && columnReport.total > 0
           ? columnReport.total
           : null;
   const rekonBookLiters =
@@ -221,7 +231,7 @@ export default function StationDetailPage({
           station_id: station.id,
           code: t.code,
           capacity_liters: t.capacity_liters,
-          ingest_token: "",
+          ingest_token: null,
           level_path: "",
           shelly: null,
         }));
@@ -310,8 +320,12 @@ export default function StationDetailPage({
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
           {expenseLiters != null ? <span className="badge">расход {liters(expenseLiters)}</span> : null}
           {showColumns ? (
-            <span className={`badge ${isEdgeColumns ? "ok" : "warn"}`}>
-              {isEdgeColumns ? `ТРК edge (${colCount})` : `вирт. колонки (${colCount})`}
+            <span className={`badge ${isEdgeMode ? "ok" : "warn"}`}>
+              {isEdgeMode
+                ? `ТРК edge (${colCount})`
+                : columnReport?.source === "edge"
+                  ? `вирт. колонки · есть наливы edge (${colCount})`
+                  : `вирт. колонки (${colCount})`}
             </span>
           ) : null}
         </div>
@@ -370,7 +384,7 @@ export default function StationDetailPage({
         <div className="dash-kpi">
           <span>Книжный баланс и ТРК</span>
           <strong>
-            {isVirtualColumns && columnReport
+            {isVirtualMode
               ? rekonBookLiters != null
                 ? liters(rekonBookLiters)
                 : "—"
@@ -379,8 +393,12 @@ export default function StationDetailPage({
                 : "—"}
           </strong>
           <em>
-            {isVirtualColumns && columnReport
-              ? `отпуск ТРК: ${liters(columnReport.total)}`
+            {isVirtualMode
+              ? columnReport
+                ? columnReport.source === "edge"
+                  ? `отпуск ТРК: ${liters(columnReport.total)} · есть наливы edge`
+                  : `отпуск ТРК: ${liters(columnReport.total)}`
+                : "виртуальный расчёт по датчику"
               : bookSummary?.delta != null
                 ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
                 : bookSummary && bookSummary.dispenseSum > 0
@@ -584,7 +602,7 @@ export default function StationDetailPage({
                             </div>
                           </td>
                           <td>
-                            {isVirtualColumns && columnReport ? (
+                            {isVirtualMode ? (
                               rem != null ? (
                                 <>
                                   <strong>{liters(rem)}</strong>
@@ -609,7 +627,7 @@ export default function StationDetailPage({
                             )}
                           </td>
                           <td>
-                            {isVirtualColumns && columnReport ? (
+                            {isVirtualMode ? (
                               rem != null ? (
                                 <>
                                   <strong>0 л</strong>
@@ -672,7 +690,7 @@ export default function StationDetailPage({
             outflow={hasDay && series ? series.outflow : 0}
             dispenses={dispenses}
             report={columnReport}
-            columnsMode={colMode}
+            columnsMode={savedColumnsMode}
             onConfigureColumns={onOpenAdmin ? () => onOpenAdmin(station.id) : undefined}
           />
         ) : (
@@ -704,7 +722,7 @@ export default function StationDetailPage({
             {!hasTanks || !live ? (
               <p className="empty">
                 {canManage
-                  ? "К этой АГЗС ещё не подключён резервуар. Добавьте его ниже и привяжите датчик."
+                  ? "К этой АГЗС ещё не подключён резервуар. Настройте его в кабинете администратора."
                   : "К этой АГЗС ещё не подключён резервуар."}
               </p>
             ) : (
@@ -762,12 +780,12 @@ export default function StationDetailPage({
                             {tank.measured_at ? dateTime(tank.measured_at) : "ожидание"}
                           </strong>
                         </div>
-                        {st || (isVirtualColumns && tank.remainder_liters != null) ? (
+                        {st || (isVirtualMode && tank.remainder_liters != null) ? (
                           <>
                             <div>
                               <span>Книжный остаток</span>
                               <strong>
-                                {isVirtualColumns && tank.remainder_liters != null
+                                {isVirtualMode && tank.remainder_liters != null
                                   ? liters(tank.remainder_liters)
                                   : st?.calculated_remainder_liters == null
                                     ? "—"
@@ -814,50 +832,15 @@ export default function StationDetailPage({
                 ) : null}
               </div>
             </section>
-          ) : devices.length > 0 ? (
+          ) : (
             <section className="dash-card">
-              <h3>Параметры подключения телеметрии (только чтение)</h3>
-              <p className="dash-muted">
-                Карточку резервуара, Shelly и калибровку настраивает администратор платформы.
+              <h3 style={{ marginTop: 0 }}>Обслуживание датчиков и телеметрии</h3>
+              <p className="dash-muted" style={{ marginBottom: 0 }}>
+                Карточки резервуаров работают в режиме только для чтения. Добавление резервуаров,
+                настройку Shelly, калибровку и токены доступа выполняет администратор платформы.
               </p>
-              <div className="tank-rows">
-                {devices.map((dev) => {
-                  const url = dev.ingest_url?.startsWith("http")
-                    ? dev.ingest_url
-                    : `${window.location.origin}${dev.ingest_url || dev.level_path}`;
-                  return (
-                    <div key={dev.id} className="tank-block">
-                      <div>
-                        <strong>Резервуар {dev.code}</strong> · {liters(dev.capacity_liters)}
-                        {dev.shelly ? ` · Shelly ${dev.shelly.host}` : ""}
-                      </div>
-                      <div className="tank-api">
-                        <span>API датчика</span>
-                        <code>{url}</code>
-                        <code>X-Device-Token: {dev.ingest_token}</code>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          onClick={async () => {
-                            try {
-                              await navigator.clipboard.writeText(
-                                `${url}\nX-Device-Token: ${dev.ingest_token}`
-                              );
-                              setCopiedTankId(dev.id);
-                            } catch {
-                              setCopiedTankId(null);
-                            }
-                          }}
-                        >
-                          {copiedTankId === dev.id ? "Скопировано" : "Копировать"}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </section>
-          ) : null}
+          )}
         </>
       ) : null}
 

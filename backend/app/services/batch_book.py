@@ -8,16 +8,13 @@ from uuid import UUID, uuid4
 
 from app.domain.errors import ConflictError, NotFoundError
 from app.models.batch import TrailNodeType
-from app.services.account_helpers import parse_iso_utc
+from app.services.account_helpers import (
+    batch_status_node_value,
+    batch_status_title,
+    parse_iso_utc,
+)
 from app.services.memory_state import persist, register_store
 from app.services.trail import make_trail_event_payload
-
-_STATUS_TITLES = {
-    "formed": "Партия сформирована",
-    "in_transit": "Газовоз в пути",
-    "delivered": "Партия слита на АГЗС",
-    "closed": "Партия закрыта по балансу",
-}
 
 _lock = threading.Lock()
 _BATCHES: dict[UUID, dict] = {}
@@ -120,13 +117,11 @@ def add_batch_event(
 
 
 def update_batch_status(batch_id: UUID, status: str, note: str | None = None) -> dict:
-    node = TrailNodeType.route if status == "in_transit" else (
-        TrailNodeType.tank if status == "delivered" else TrailNodeType.batch
-    )
+    node = TrailNodeType(batch_status_node_value(status))
     now = datetime.now(timezone.utc)
     payload = make_trail_event_payload(
         node_type=node,
-        title=_STATUS_TITLES.get(status, f"Статус: {status}"),
+        title=batch_status_title(status),
         description=note.strip() if note else None,
         ref_entity_type="batch",
         ref_entity_id=batch_id,

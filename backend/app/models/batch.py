@@ -46,7 +46,8 @@ class Batch(Base):
     volume_liters: Mapped[float] = mapped_column(Float, nullable=False)
     mass_kg: Mapped[float | None] = mapped_column(Float)
     status: Mapped[BatchStatus] = mapped_column(
-        Enum(BatchStatus, name="batch_status"), default=BatchStatus.formed
+        Enum(BatchStatus, name="batch_status", native_enum=False, length=32),
+        default=BatchStatus.formed,
     )
     formed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -68,7 +69,8 @@ class BatchTrailEvent(Base):
         UUID(as_uuid=True), ForeignKey("batches.id", ondelete="CASCADE"), nullable=False
     )
     node_type: Mapped[TrailNodeType] = mapped_column(
-        Enum(TrailNodeType, name="trail_node_type"), nullable=False
+        Enum(TrailNodeType, name="trail_node_type", native_enum=False, length=32),
+        nullable=False,
     )
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)

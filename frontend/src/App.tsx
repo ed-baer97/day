@@ -64,6 +64,13 @@ export default function App() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
+
+  useEffect(() => {
+    const canonical = routePath(route);
+    if (canonical !== window.location.pathname) {
+      window.history.replaceState(null, "", canonical);
+    }
+  }, [route]);
   const [batches, setBatches] = useState<BatchRecord[]>([]);
   const dashRef = useRef<HTMLElement>(null);
 

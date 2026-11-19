@@ -105,7 +105,7 @@ cd ../station-edge && PYTHONPATH=. pytest tests/ -q
 
 - `admin` из env (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) видит все АГЗС и создаёт логины станций.
 - Логин станции: `POST /api/v1/stations/{station_id}/users` (только admin). Пароль в ответе один раз, в базе — pbkdf2.
-- Пользователь станции видит только свою заправку и свой `X-Device-Token`.
+- Пользователь или владелец станции видит только привязанные к нему заправки без закрытых ключей `X-Device-Token` (ключи телеметрии доступны только администратору платформы).
 - `GET /api/v1/auth/me` отдаёт `role` (`admin` \| `station`) и `station_id`.
 
 ## Публичная витрина

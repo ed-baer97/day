@@ -55,7 +55,14 @@ def test_station_token_sees_own_devices_only(monkeypatch):
     )
     own = client.get(f"/api/v1/stations/{STATION}/devices", headers={"Authorization": f"Bearer {station_token}"})
     assert own.status_code == 200
-    assert own.json()[0]["ingest_token"] == token_value
+    assert own.json()[0]["code"] == "R-1"
+    assert own.json()[0]["ingest_token"] is None
+    assert own.json()[0]["ingest_url"] is None
+    assert own.json()[0]["shelly"] is None
+
+    admin_devices = client.get(f"/api/v1/stations/{STATION}/devices", headers=admin_h)
+    assert admin_devices.status_code == 200
+    assert admin_devices.json()[0]["ingest_token"] == token_value
 
     foreign = client.get(
         f"/api/v1/stations/{OTHER}/devices",

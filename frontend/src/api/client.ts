@@ -46,9 +46,9 @@ export interface TankDevice {
   station_id: string;
   code: string;
   capacity_liters: number;
-  ingest_token: string;
+  ingest_token: string | null;
   level_path: string;
-  ingest_url?: string;
+  ingest_url?: string | null;
   shelly: ShellyLink | null;
 }
 

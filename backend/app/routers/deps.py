@@ -81,15 +81,15 @@ def require_existing_station_access(station_id: UUID, principal: Principal) -> S
     return station
 
 
-def device_to_out(device: TankDevice) -> TankDeviceOut:
+def device_to_out(device: TankDevice, *, include_secret: bool = True) -> TankDeviceOut:
     settings = get_settings()
     return TankDeviceOut(
         id=device.tank_id,
         station_id=device.station_id,
         code=device.code,
         capacity_liters=device.capacity_liters,
-        ingest_token=device.token,
+        ingest_token=device.token if include_secret else None,
         level_path=settings.ingest_level_path,
-        ingest_url=settings.ingest_level_url,
-        shelly=shelly_view(device.tank_id),
+        ingest_url=settings.ingest_level_url if include_secret else None,
+        shelly=shelly_view(device.tank_id) if include_secret else None,
     )

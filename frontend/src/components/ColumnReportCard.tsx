@@ -83,7 +83,13 @@ export default function ColumnReportCard({
       <div className="fiscal-chain">
         <div className="fiscal-step">
           <span>Расход резервуара</span>
-          <strong>{loading && points.length === 0 ? "…" : liters(report.tankOutflowLiters)}</strong>
+          <strong>
+            {loading && points.length === 0
+              ? "…"
+              : report.tankOutflowLiters != null
+                ? liters(report.tankOutflowLiters)
+                : "нет данных"}
+          </strong>
           <em>уход газа по датчику</em>
         </div>
         <div className="fiscal-link">→</div>
@@ -92,15 +98,25 @@ export default function ColumnReportCard({
           <strong>{loading && points.length === 0 ? "…" : liters(report.total)}</strong>
           <em>{report.columns.map((column) => `${column.name}: ${liters(column.total)}`).join(" · ")}</em>
         </div>
-        {report.source === "edge" && report.discrepancyLiters !== 0 ? (
+        {report.source === "edge" ? (
           <>
             <div className="fiscal-link">=</div>
             <div className="fiscal-step">
               <span>Разница (ТРК − уровень)</span>
               <strong className={report.status === "warn" ? "text-danger" : ""}>
-                {signedLiters(report.discrepancyLiters)}
+                {report.discrepancyLiters != null ? signedLiters(report.discrepancyLiters) : "—"}
               </strong>
-              <em>{report.status === "warn" ? "есть расхождение" : "в пределах допуска"}</em>
+              <em>
+                {report.discrepancyLiters == null
+                  ? "нет данных датчика для сверки"
+                  : report.tankOutflowLiters === 0 && report.total > 0
+                    ? "датчик не зафиксировал расход"
+                    : report.status === "warn"
+                      ? "есть расхождение"
+                      : report.discrepancyLiters === 0
+                        ? "совпадает с датчиком"
+                        : "в пределах допуска"}
+              </em>
             </div>
           </>
         ) : null}
@@ -115,7 +131,8 @@ export default function ColumnReportCard({
               </h3>
             </div>
             <p className="stage-vol" style={{ marginBottom: 10 }}>
-              Уход газа: <strong>{liters(column.total)}</strong>
+              {report.source === "edge" ? "Отпуск ТРК:" : "Уход газа:"}{" "}
+              <strong>{liters(column.total)}</strong>
             </p>
             <dl className="kv">
               <dt>Операций отпуска</dt>
@@ -137,8 +154,9 @@ export default function ColumnReportCard({
           <thead>
             <tr>
               <th>Колонка</th>
-              <th>Уход из резервуара</th>
-              <th>Счётчик ТРК</th>
+              <th>Операций</th>
+              <th>Последний отпуск</th>
+              <th>{report.source === "edge" ? "Счётчик ТРК" : "Расчётный отпуск (по уровню)"}</th>
             </tr>
           </thead>
           <tbody>
@@ -149,18 +167,44 @@ export default function ColumnReportCard({
                     {column.name} ({column.code})
                   </strong>
                 </td>
-                <td>{liters(column.total)}</td>
+                <td>{column.opsCount}</td>
+                <td className="dash-muted">
+                  {column.lastLiters != null
+                    ? `${liters(column.lastLiters)}${column.lastAt ? ` · ${dateTime(column.lastAt)}` : ""}`
+                    : "нет данных"}
+                </td>
                 <td>
                   <strong>{liters(column.total)}</strong>
-                  <div className="dash-muted">операций: {column.opsCount}</div>
                 </td>
               </tr>
             ))}
             <tr className="dash-total">
               <td>Итого</td>
-              <td>{liters(report.tankOutflowLiters)}</td>
+              <td>{report.opsTotal}</td>
+              <td />
               <td>{liters(report.total)}</td>
             </tr>
+            {report.source === "edge" ? (
+              <tr>
+                <td colSpan={3} className="dash-muted">
+                  Уход газа из резервуара (по датчику уровня)
+                </td>
+                <td>
+                  {report.tankOutflowLiters != null ? (
+                    <>
+                      <strong>{liters(report.tankOutflowLiters)}</strong>
+                      {report.discrepancyLiters != null ? (
+                        <div className={report.status === "warn" ? "text-danger" : "dash-muted"}>
+                          разница: {signedLiters(report.discrepancyLiters)}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="dash-muted">нет данных</span>
+                  )}
+                </td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>

@@ -460,18 +460,82 @@ def list_dispense_records(station_id: UUID, **kwargs):
     return backend().list_dispense_records(station_id, **kwargs)
 
 
+def list_batches() -> list[dict]:
+    return backend().list_batches()
+
+
+def create_batch(
+    *,
+    trail_code: str,
+    supplier_id: UUID | None,
+    factory_id: UUID | None,
+    product_grade: str | None,
+    density_kg_per_liter: float | None,
+    volume_liters: float,
+    mass_kg: float | None,
+    notes: str | None,
+) -> dict:
+    return backend().create_batch(
+        trail_code=trail_code,
+        supplier_id=supplier_id,
+        factory_id=factory_id,
+        product_grade=product_grade,
+        density_kg_per_liter=density_kg_per_liter,
+        volume_liters=volume_liters,
+        mass_kg=mass_kg,
+        notes=notes,
+    )
+
+
+def get_batch_by_code(trail_code: str) -> dict | None:
+    return backend().get_batch_by_code(trail_code)
+
+
+def get_batch_by_id(batch_id: UUID) -> dict | None:
+    return backend().get_batch_by_id(batch_id)
+
+
+def add_batch_event(
+    batch_id: UUID,
+    *,
+    node_type: str,
+    title: str,
+    description: str | None = None,
+    ref_entity_type: str | None = None,
+    ref_entity_id: UUID | None = None,
+    volume_liters: float | None = None,
+    status: str | None = None,
+) -> dict:
+    return backend().add_batch_event(
+        batch_id,
+        node_type=node_type,
+        title=title,
+        description=description,
+        ref_entity_type=ref_entity_type,
+        ref_entity_id=ref_entity_id,
+        volume_liters=volume_liters,
+        status=status,
+    )
+
+
+def update_batch_status(batch_id: UUID, status: str, note: str | None = None) -> dict:
+    return backend().update_batch_status(batch_id, status, note)
+
+
 __all__ = [
     "accept_dispense",
     "accept_dispenses_batch",
     "accept_level",
     "accept_levels_batch",
     "accept_receipt",
+    "add_batch_event",
     "authenticate_station_user",
     "backend",
     "bind_calibration",
     "bind_dispense",
     "bind_level",
     "bind_receipt",
+    "create_batch",
     "create_owner_account",
     "create_station",
     "create_station_user",
@@ -481,6 +545,8 @@ __all__ = [
     "delete_tank_device",
     "delete_truck",
     "detach_station_user",
+    "get_batch_by_code",
+    "get_batch_by_id",
     "get_station",
     "get_tank_device",
     "get_truck",
@@ -489,6 +555,7 @@ __all__ = [
     "list_active_stations_with_tanks",
     "list_all_owners",
     "list_all_stations_with_overview",
+    "list_batches",
     "list_dispense_records",
     "list_level_readings",
     "list_station_tanks_out",
@@ -505,6 +572,7 @@ __all__ = [
     "tank_by_token",
     "tank_remainder",
     "tank_state",
+    "update_batch_status",
     "update_owner_account",
     "update_station",
     "update_tank_device",

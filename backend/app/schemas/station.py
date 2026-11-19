@@ -88,7 +88,7 @@ class TankDeviceOut(BaseModel):
     station_id: UUID
     code: str
     capacity_liters: float
-    ingest_token: str
+    ingest_token: str | None = None
     level_path: str
     ingest_url: str | None = None
     shelly: ShellyLinkOut | None = None

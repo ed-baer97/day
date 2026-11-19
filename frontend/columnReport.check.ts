@@ -60,19 +60,11 @@ assert.equal(report.columns[0].total, 499);
 assert.equal(report.columns[1].total, 200);
 assert.equal(report.total, 699);
 assert.equal(report.tankOutflowLiters, report.total);
-assert.equal(report.kkmTotalLiters, report.total);
-assert.equal(report.ofdTotalLiters, report.total);
 assert.equal(report.discrepancyLiters, 0);
 assert.equal(report.status, "ok");
 assert.equal(report.opsTotal, 3);
 assert.equal(report.columns[0].opsCount, 2);
 assert.equal(report.columns[1].opsCount, 1);
-assert.equal(report.columns[0].kkmLiters, report.columns[0].total);
-assert.equal(report.columns[0].ofdLiters, report.columns[0].total);
-assert.equal(report.columns[0].discrepancyLiters, 0);
-assert.equal(report.columns[1].kkmLiters, report.columns[1].total);
-assert.equal(report.columns[1].ofdLiters, report.columns[1].total);
-assert.equal(report.columns[1].discrepancyLiters, 0);
 assert.equal(report.columns[0].liters[2], 300);
 assert.equal(report.columns[1].liters[4], 200);
 assert.equal(report.columns[0].liters[8], 199);
@@ -110,8 +102,6 @@ assert.equal(fallbackReport.columns[0].total, 126);
 assert.equal(fallbackReport.columns[1].total, 125);
 assert.equal(fallbackReport.total, 251);
 assert.equal(fallbackReport.tankOutflowLiters, 251);
-assert.equal(fallbackReport.kkmTotalLiters, 251);
-assert.equal(fallbackReport.ofdTotalLiters, 251);
 assert.equal(fallbackReport.discrepancyLiters, 0);
 assert.equal(fallbackReport.opsTotal, 2);
 
@@ -200,5 +190,119 @@ assert.equal(virtualFourCols.source, "level");
 assert.equal(virtualFourCols.columnCount, 4);
 assert.equal(virtualFourCols.total, 400);
 assert.equal(virtualFourCols.columns[3].total, 100);
+
+const zeroSensorEdge = columnDispenseReport(
+  [],
+  today,
+  [],
+  now,
+  0,
+  [
+    {
+      ...realDispenses[0],
+      id: "d-zero-1",
+      volume_liters: 80,
+      external_txn_id: "aska-zero-1",
+    },
+  ],
+  { columnCount: 2, mode: "edge", sensorOutflowLiters: 0 },
+);
+assert.equal(zeroSensorEdge.source, "edge");
+assert.equal(zeroSensorEdge.total, 80);
+assert.equal(zeroSensorEdge.tankOutflowLiters, 0);
+assert.equal(zeroSensorEdge.discrepancyLiters, 80);
+assert.equal(zeroSensorEdge.status, "warn");
+
+const silentSensorEdge = columnDispenseReport([], today, [], now, 0, realDispenses, {
+  columnCount: 2,
+  mode: "edge",
+  sensorOutflowLiters: null,
+});
+assert.equal(silentSensorEdge.source, "edge");
+assert.equal(silentSensorEdge.total, 32.75);
+assert.equal(silentSensorEdge.tankOutflowLiters, null);
+assert.equal(silentSensorEdge.discrepancyLiters, null);
+assert.equal(silentSensorEdge.status, "warn");
+
+const silentSensorIdle = columnDispenseReport([], today, [], now, 0, [], {
+  columnCount: 2,
+  mode: "edge",
+  sensorOutflowLiters: null,
+});
+assert.equal(silentSensorIdle.tankOutflowLiters, null);
+assert.equal(silentSensorIdle.discrepancyLiters, null);
+assert.equal(silentSensorIdle.status, "ok");
+
+const zeroSensorUnder50 = columnDispenseReport(
+  [],
+  today,
+  [],
+  now,
+  0,
+  [
+    {
+      ...realDispenses[0],
+      id: "d-zero-40",
+      volume_liters: 40,
+      external_txn_id: "aska-zero-40",
+    },
+  ],
+  { columnCount: 2, mode: "edge", sensorOutflowLiters: 0 },
+);
+assert.equal(zeroSensorUnder50.total, 40);
+assert.equal(zeroSensorUnder50.tankOutflowLiters, 0);
+assert.equal(zeroSensorUnder50.discrepancyLiters, 40);
+assert.equal(zeroSensorUnder50.status, "warn");
+
+const zeroSensorIdle = columnDispenseReport([], today, [], now, 0, [], {
+  columnCount: 2,
+  mode: "edge",
+  sensorOutflowLiters: 0,
+});
+assert.equal(zeroSensorIdle.tankOutflowLiters, 0);
+assert.equal(zeroSensorIdle.discrepancyLiters, 0);
+assert.equal(zeroSensorIdle.status, "ok");
+
+const activeSensorWithinTolerance = columnDispenseReport(
+  [],
+  today,
+  [],
+  now,
+  0,
+  [
+    {
+      ...realDispenses[0],
+      id: "d-act-140",
+      volume_liters: 140,
+      external_txn_id: "aska-act-140",
+    },
+  ],
+  { columnCount: 2, mode: "edge", sensorOutflowLiters: 100 },
+);
+assert.equal(activeSensorWithinTolerance.total, 140);
+assert.equal(activeSensorWithinTolerance.tankOutflowLiters, 100);
+assert.equal(activeSensorWithinTolerance.discrepancyLiters, 40);
+assert.equal(activeSensorWithinTolerance.status, "ok");
+
+const activeSensorOverTolerance = columnDispenseReport(
+  [],
+  today,
+  [],
+  now,
+  0,
+  [
+    {
+      ...realDispenses[0],
+      id: "d-act-160",
+      volume_liters: 160,
+      external_txn_id: "aska-act-160",
+    },
+  ],
+  { columnCount: 2, mode: "edge", sensorOutflowLiters: 100 },
+);
+assert.equal(activeSensorOverTolerance.total, 160);
+assert.equal(activeSensorOverTolerance.tankOutflowLiters, 100);
+assert.equal(activeSensorOverTolerance.discrepancyLiters, 60);
+assert.equal(activeSensorOverTolerance.status, "warn");
 
 console.log("columnReport.check ok");

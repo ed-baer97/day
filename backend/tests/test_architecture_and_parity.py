@@ -56,6 +56,7 @@ def test_services_do_not_import_fastapi():
 
 def test_postgres_adapter_does_not_import_memory_adapters_or_shelly():
     forbidden = (
+        "app.services.batch_book",
         "app.services.catalog",
         "app.services.device_ingest",
         "app.services.station_accounts",

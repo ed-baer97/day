@@ -12,11 +12,11 @@ from app.schemas.batch import (
     BatchTrailEventOut,
     BatchTrailOut,
 )
-from app.services.batch_book import (
+from app.services.account import (
     add_batch_event,
-    by_code,
-    by_id,
     create_batch,
+    get_batch_by_code,
+    get_batch_by_id,
     list_batches,
     update_batch_status,
 )
@@ -40,8 +40,8 @@ def create_batch_card(body: BatchCreate) -> BatchOut:
 
 
 @router.get("/by-code/{trail_code}", response_model=BatchOut)
-def get_batch_by_code(trail_code: str) -> BatchOut:
-    row = by_code(trail_code)
+def get_batch(trail_code: str) -> BatchOut:
+    row = get_batch_by_code(trail_code)
     if row is None:
         raise _missing()
     return BatchOut(**{key: value for key, value in row.items() if key != "events"})
@@ -49,15 +49,15 @@ def get_batch_by_code(trail_code: str) -> BatchOut:
 
 @router.get("/by-code/{trail_code}/trail", response_model=BatchTrailOut)
 def get_trail_by_code(trail_code: str) -> BatchTrailOut:
-    row = by_code(trail_code)
+    row = get_batch_by_code(trail_code)
     if row is None:
         raise _missing()
     return _trail(row)
 
 
 @router.get("/{batch_id}", response_model=BatchOut)
-def get_batch(batch_id: UUID) -> BatchOut:
-    row = by_id(batch_id)
+def get_batch_by_uuid(batch_id: UUID) -> BatchOut:
+    row = get_batch_by_id(batch_id)
     if row is None:
         raise _missing()
     return BatchOut(**{key: value for key, value in row.items() if key != "events"})
@@ -65,7 +65,7 @@ def get_batch(batch_id: UUID) -> BatchOut:
 
 @router.get("/{batch_id}/trail", response_model=BatchTrailOut)
 def get_batch_trail(batch_id: UUID) -> BatchTrailOut:
-    row = by_id(batch_id)
+    row = get_batch_by_id(batch_id)
     if row is None:
         raise _missing()
     return _trail(row)

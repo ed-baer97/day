@@ -47,7 +47,10 @@ def list_station_devices(
     principal: Principal = Depends(require_principal),
 ) -> list[TankDeviceOut]:
     require_existing_station_access(station_id, principal)
-    return [device_to_out(device) for device in list_tank_devices(station_id)]
+    return [
+        device_to_out(device, include_secret=principal.is_admin)
+        for device in list_tank_devices(station_id)
+    ]
 
 
 @router.post("/devices", response_model=TankDeviceOut, status_code=201)

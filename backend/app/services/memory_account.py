@@ -10,6 +10,14 @@ from uuid import UUID
 
 from app.domain.entities import TankDevice
 from app.schemas.ingest import IngestAck
+from app.services.batch_book import (
+    add_batch_event,
+    by_code as get_batch_by_code,
+    by_id as get_batch_by_id,
+    create_batch,
+    list_batches,
+    update_batch_status,
+)
 from app.services.catalog import (
     create_station,
     create_truck,
@@ -140,7 +148,9 @@ __all__ = [
     "accept_level",
     "accept_levels_batch",
     "accept_receipt",
+    "add_batch_event",
     "authenticate_station_user",
+    "create_batch",
     "create_owner_account",
     "create_station",
     "create_station_user",
@@ -150,6 +160,8 @@ __all__ = [
     "delete_tank_device",
     "delete_truck",
     "detach_station_user",
+    "get_batch_by_code",
+    "get_batch_by_id",
     "get_station",
     "get_tank_device",
     "get_truck",
@@ -158,6 +170,7 @@ __all__ = [
     "list_active_stations_with_tanks",
     "list_all_owners",
     "list_all_stations_with_overview",
+    "list_batches",
     "list_dispense_records",
     "list_level_readings",
     "list_station_tanks_out",
@@ -171,6 +184,7 @@ __all__ = [
     "tank_by_token",
     "tank_remainder",
     "tank_state",
+    "update_batch_status",
     "update_owner_account",
     "update_station",
     "update_tank_device",

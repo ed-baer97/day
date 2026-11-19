@@ -20,6 +20,7 @@ def run_migrations() -> None:
         return
     root = Path(__file__).resolve().parents[2]
     cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
     cfg.set_main_option("sqlalchemy.url", settings.database_url)
     command.upgrade(cfg, "head")
     logger.info("миграции применены")
@@ -38,6 +39,19 @@ def restore_memory_state() -> None:
     restore()
 
 
+def _read_state_snapshot(state_path: str) -> dict | None:
+    path = state_path.strip()
+    file_path = Path(path) if path else None
+    if file_path is None or not file_path.is_file():
+        return None
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.exception("state.json не прочитан")
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def import_state_if_empty() -> None:
     settings = get_settings()
     if not settings.use_postgres:
@@ -47,24 +61,29 @@ def import_state_if_empty() -> None:
     from sqlalchemy import select
 
     from app.database import SessionLocal
+    from app.models.batch import Batch
     from app.models.station import Station
     from app.services import postgres_account
 
     with SessionLocal() as db:
-        if db.scalar(select(Station).limit(1)) is not None:
-            return
+        has_stations = db.scalar(select(Station.id).limit(1)) is not None
+        has_batches = db.scalar(select(Batch.id).limit(1)) is not None
 
-    path = settings.state_path.strip()
-    file_path = Path(path) if path else None
-    if file_path is not None and file_path.is_file():
-        try:
-            data = json.loads(file_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.exception("state.json не прочитан")
-            data = None
-        if isinstance(data, dict):
-            postgres_account.import_memory_snapshot(data)
-            return
+    if has_stations and has_batches:
+        return
+
+    data = _read_state_snapshot(settings.state_path)
+    if has_stations:
+        raw_batches = data.get("batches") if isinstance(data, dict) else None
+        if isinstance(raw_batches, list) and raw_batches:
+            imported = postgres_account.import_batches_snapshot(raw_batches)
+            if imported > 0:
+                logger.info("перенесены партии из state.json в Postgres: %d", imported)
+        return
+
+    if data is not None:
+        postgres_account.import_memory_snapshot(data)
+        return
 
     with SessionLocal() as db:
         db.add(

@@ -219,7 +219,7 @@ export default function TankDeviceRows({
       const updated = await api.rotateTankToken(stationId, row.id);
       setRows((current) =>
         current.map((item) =>
-          item.id === row.id ? { ...item, token: updated.ingest_token } : item
+          item.id === row.id ? { ...item, token: updated.ingest_token ?? "" } : item
         )
       );
       setPendingAction(null);
@@ -669,14 +669,14 @@ export default function TankDeviceRows({
               <p className="dash-muted">Shelly: {row.shellyHost}</p>
             ) : null}
 
-            <div className="tank-api">
-              <span>API датчика</span>
-              <code>{ingestUrl(row.path)}</code>
-              <code>X-Device-Token: {row.token}</code>
-              <button type="button" className="btn secondary small" onClick={() => copyApi(row)}>
-                {copied === row.id ? "Скопировано" : "Копировать"}
-              </button>
-              {canManage ? (
+            {canManage ? (
+              <div className="tank-api">
+                <span>API датчика</span>
+                <code>{ingestUrl(row.path)}</code>
+                <code>X-Device-Token: {row.token}</code>
+                <button type="button" className="btn secondary small" onClick={() => copyApi(row)}>
+                  {copied === row.id ? "Скопировано" : "Копировать"}
+                </button>
                 <button
                   type="button"
                   className="btn secondary small"
@@ -685,8 +685,8 @@ export default function TankDeviceRows({
                 >
                   Перевыпустить токен
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
           </div>
         );
       })}
@@ -765,7 +765,7 @@ function toRow(
     id: device.id,
     code: device.code,
     capacity: String(device.capacity_liters),
-    token: device.ingest_token,
+    token: device.ingest_token ?? "",
     path: device.ingest_url || device.level_path,
     shellyHost: device.shelly?.host ?? "",
     shelly: device.shelly,

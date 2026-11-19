@@ -289,3 +289,24 @@ def extract_book_fields(row: dict) -> dict[str, object]:
         "last_measured_at": parse_iso_utc(row.get("last_measured_at")),
         "calibration": calibration_from_dict(row.get("calibration")),
     }
+
+
+BATCH_STATUS_TITLES = {
+    "formed": "Партия сформирована",
+    "in_transit": "Газовоз в пути",
+    "delivered": "Партия слита на АГЗС",
+    "closed": "Партия закрыта по балансу",
+}
+
+
+def batch_status_title(status: str) -> str:
+    return BATCH_STATUS_TITLES.get(status, f"Статус: {status}")
+
+
+def batch_status_node_value(status: str) -> str:
+    if status == "in_transit":
+        return "route"
+    if status == "delivered":
+        return "tank"
+    return "batch"
+

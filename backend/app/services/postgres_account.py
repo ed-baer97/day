@@ -13,7 +13,7 @@ import secrets
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -30,6 +30,7 @@ from app.domain.tank_book import (
     build_tank_ingest_state,
     recompute_tank_book,
 )
+from app.models.batch import Batch, BatchStatus, BatchTrailEvent, TrailNodeType
 from app.models.dispenser import DispenseRecord, ReceiptRecord
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
 from app.models.truck import Truck
@@ -47,6 +48,8 @@ from app.schemas.station import DispenseReadingOut, TankOut
 from app.services.account_helpers import (
     ack_to_schema,
     batch_counts,
+    batch_status_node_value,
+    batch_status_title,
     build_dispense_out,
     build_tank_out,
     clean_optional_text,
@@ -54,6 +57,7 @@ from app.services.account_helpers import (
     dispense_event_key,
     extract_book_fields,
     level_event_key,
+    parse_iso_utc,
     receipt_event_key,
     require_calibration_points,
     require_columns_count,
@@ -65,6 +69,7 @@ from app.services.account_helpers import (
     state_to_schema,
 )
 from app.services.passwords import hash_password, verify_password
+from app.services.trail import make_trail_event_payload
 
 logger = logging.getLogger(__name__)
 
@@ -1049,11 +1054,318 @@ def delete_owner_account(username: str) -> None:
         db.commit()
 
 
+def _enum_str(value: object) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _batch_public(row: Batch) -> dict:
+    return {
+        "id": row.id,
+        "trail_code": row.trail_code,
+        "supplier_id": row.supplier_id,
+        "factory_id": row.factory_id,
+        "product_grade": row.product_grade,
+        "density_kg_per_liter": row.density_kg_per_liter,
+        "volume_liters": row.volume_liters,
+        "mass_kg": row.mass_kg,
+        "status": _enum_str(row.status),
+        "formed_at": row.formed_at,
+        "notes": row.notes,
+        "created_at": row.created_at,
+    }
+
+
+def _batch_event_dict(ev: BatchTrailEvent) -> dict:
+    return {
+        "id": ev.id,
+        "node_type": _enum_str(ev.node_type),
+        "occurred_at": ev.occurred_at,
+        "title": ev.title,
+        "description": ev.description,
+        "ref_entity_type": ev.ref_entity_type,
+        "ref_entity_id": ev.ref_entity_id,
+        "volume_liters": ev.volume_liters,
+        "lat": ev.lat,
+        "lon": ev.lon,
+    }
+
+
+def _batch_with_events(row: Batch) -> dict:
+    ordered = sorted(
+        row.trail_events,
+        key=lambda ev: (ev.occurred_at, ev.created_at or ev.occurred_at, str(ev.id)),
+    )
+    return {
+        **_batch_public(row),
+        "events": [_batch_event_dict(ev) for ev in ordered],
+    }
+
+
+def _new_trail_event_row(
+    batch_id: UUID,
+    node_type: TrailNodeType,
+    payload: dict,
+    created_at: datetime,
+) -> BatchTrailEvent:
+    return BatchTrailEvent(
+        id=uuid4(),
+        batch_id=batch_id,
+        node_type=node_type,
+        occurred_at=payload["occurred_at"],
+        title=payload["title"],
+        description=payload["description"],
+        ref_entity_type=payload["ref_entity_type"],
+        ref_entity_id=payload["ref_entity_id"],
+        volume_liters=payload["volume_liters"],
+        lat=payload["lat"],
+        lon=payload["lon"],
+        created_at=created_at,
+    )
+
+
+def list_batches() -> list[dict]:
+    with session() as db:
+        rows = db.scalars(select(Batch).order_by(Batch.created_at.desc())).all()
+        return [_batch_public(row) for row in rows]
+
+
+def create_batch(
+    *,
+    trail_code: str,
+    supplier_id: UUID | None,
+    factory_id: UUID | None,
+    product_grade: str | None,
+    density_kg_per_liter: float | None,
+    volume_liters: float,
+    mass_kg: float | None,
+    notes: str | None,
+) -> dict:
+    cleaned_code = require_non_empty(trail_code, "код партии")
+    batch_id = uuid4()
+    now = datetime.now(timezone.utc)
+    with session() as db:
+        existing = db.scalar(
+            select(Batch.id).where(func.lower(Batch.trail_code) == cleaned_code.lower())
+        )
+        if existing is not None:
+            raise ConflictError("партия с таким кодом уже зарегистрирована")
+        row = Batch(
+            id=batch_id,
+            trail_code=cleaned_code,
+            supplier_id=supplier_id,
+            factory_id=factory_id,
+            product_grade=product_grade,
+            density_kg_per_liter=density_kg_per_liter,
+            volume_liters=volume_liters,
+            mass_kg=mass_kg,
+            status=BatchStatus.formed,
+            formed_at=now,
+            notes=notes,
+            created_at=now,
+        )
+        db.add(row)
+        db.flush()
+        payload = make_trail_event_payload(
+            node_type=TrailNodeType.batch,
+            title=f"Зарегистрирована партия {cleaned_code}",
+            description=notes or f"Марка: {product_grade or 'ПБТ'}",
+            ref_entity_type="batch",
+            ref_entity_id=batch_id,
+            volume_liters=volume_liters,
+            occurred_at=now,
+        )
+        db.add(_new_trail_event_row(batch_id, TrailNodeType.batch, payload, now))
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise ConflictError("партия с таким кодом уже зарегистрирована") from exc
+        db.refresh(row)
+        return _batch_public(row)
+
+
+def get_batch_by_code(trail_code: str) -> dict | None:
+    cleaned = trail_code.strip().lower()
+    if not cleaned:
+        return None
+    with session() as db:
+        row = db.scalar(
+            select(Batch)
+            .where(func.lower(Batch.trail_code) == cleaned)
+            .options(selectinload(Batch.trail_events))
+        )
+        return None if row is None else _batch_with_events(row)
+
+
+def get_batch_by_id(batch_id: UUID) -> dict | None:
+    with session() as db:
+        row = db.scalar(
+            select(Batch)
+            .where(Batch.id == batch_id)
+            .options(selectinload(Batch.trail_events))
+        )
+        return None if row is None else _batch_with_events(row)
+
+
+def add_batch_event(
+    batch_id: UUID,
+    *,
+    node_type: str,
+    title: str,
+    description: str | None = None,
+    ref_entity_type: str | None = None,
+    ref_entity_id: UUID | None = None,
+    volume_liters: float | None = None,
+    status: str | None = None,
+) -> dict:
+    try:
+        node = TrailNodeType(node_type)
+    except ValueError as exc:
+        raise ValidationError("неизвестный тип события цепочки") from exc
+    target_status: BatchStatus | None = None
+    if status is not None:
+        try:
+            target_status = BatchStatus(status)
+        except ValueError as exc:
+            raise ValidationError("неизвестный статус партии") from exc
+
+    now = datetime.now(timezone.utc)
+    payload = make_trail_event_payload(
+        node_type=node,
+        title=title.strip(),
+        description=description.strip() if description else None,
+        ref_entity_type=ref_entity_type,
+        ref_entity_id=ref_entity_id,
+        volume_liters=volume_liters,
+        occurred_at=now,
+    )
+    with session() as db:
+        row = db.scalar(select(Batch).where(Batch.id == batch_id).with_for_update())
+        if row is None:
+            raise NotFoundError("Batch not found")
+        db.add(_new_trail_event_row(batch_id, node, payload, now))
+        if target_status is not None:
+            row.status = target_status
+        db.commit()
+        loaded = db.scalar(
+            select(Batch)
+            .where(Batch.id == batch_id)
+            .options(selectinload(Batch.trail_events))
+        )
+        assert loaded is not None
+        return _batch_with_events(loaded)
+
+
+def update_batch_status(batch_id: UUID, status: str, note: str | None = None) -> dict:
+    try:
+        target_status = BatchStatus(status)
+    except ValueError as exc:
+        raise ValidationError("неизвестный статус партии") from exc
+    node = TrailNodeType(batch_status_node_value(target_status.value))
+    now = datetime.now(timezone.utc)
+    payload = make_trail_event_payload(
+        node_type=node,
+        title=batch_status_title(target_status.value),
+        description=note.strip() if note else None,
+        ref_entity_type="batch",
+        ref_entity_id=batch_id,
+        occurred_at=now,
+    )
+    with session() as db:
+        row = db.scalar(select(Batch).where(Batch.id == batch_id).with_for_update())
+        if row is None:
+            raise NotFoundError("Batch not found")
+        row.status = target_status
+        db.add(_new_trail_event_row(batch_id, node, payload, now))
+        db.commit()
+        db.refresh(row)
+        return _batch_public(row)
+
+
+def _insert_batches_from_snapshot(
+    db: Session,
+    batches_data: list,
+    *,
+    skip_existing: bool = False,
+) -> int:
+    seen_ids: set[UUID] = set()
+    seen_codes: set[str] = set()
+    if skip_existing:
+        for existing in db.scalars(select(Batch)).all():
+            seen_ids.add(existing.id)
+            seen_codes.add(existing.trail_code.strip().lower())
+
+    imported = 0
+    for row in batches_data or []:
+        if not isinstance(row, dict):
+            continue
+        batch_id = UUID(str(row["id"]))
+        trail_code = str(row["trail_code"]).strip()
+        code_key = trail_code.lower()
+        if not trail_code or batch_id in seen_ids or code_key in seen_codes:
+            continue
+        seen_ids.add(batch_id)
+        seen_codes.add(code_key)
+
+        created_at = parse_iso_utc(row.get("created_at")) or datetime.now(timezone.utc)
+        formed_at = parse_iso_utc(row.get("formed_at"))
+        batch_row = Batch(
+            id=batch_id,
+            trail_code=trail_code,
+            supplier_id=None if not row.get("supplier_id") else UUID(str(row["supplier_id"])),
+            factory_id=None if not row.get("factory_id") else UUID(str(row["factory_id"])),
+            product_grade=row.get("product_grade"),
+            density_kg_per_liter=row.get("density_kg_per_liter"),
+            volume_liters=float(row["volume_liters"]),
+            mass_kg=row.get("mass_kg"),
+            status=BatchStatus(str(row.get("status") or "formed")),
+            formed_at=formed_at,
+            notes=row.get("notes"),
+            created_at=created_at,
+        )
+        db.add(batch_row)
+        db.flush()
+        for ev in row.get("events") or []:
+            if not isinstance(ev, dict):
+                continue
+            db.add(
+                BatchTrailEvent(
+                    id=UUID(str(ev["id"])),
+                    batch_id=batch_id,
+                    node_type=TrailNodeType(str(ev["node_type"])),
+                    occurred_at=parse_iso_utc(ev.get("occurred_at")) or created_at,
+                    title=str(ev["title"]),
+                    description=ev.get("description"),
+                    ref_entity_type=ev.get("ref_entity_type"),
+                    ref_entity_id=None
+                    if not ev.get("ref_entity_id")
+                    else UUID(str(ev["ref_entity_id"])),
+                    volume_liters=ev.get("volume_liters"),
+                    lat=ev.get("lat"),
+                    lon=ev.get("lon"),
+                    created_at=created_at,
+                )
+            )
+        imported += 1
+    return imported
+
+
+def import_batches_snapshot(batches_data: list) -> int:
+    """Доимпортирует партии из state.json в Postgres, пропуская уже существующие."""
+    if not batches_data:
+        return 0
+    with session() as db:
+        imported = _insert_batches_from_snapshot(db, batches_data, skip_existing=True)
+        db.commit()
+        return imported
+
+
 def import_memory_snapshot(data: dict) -> None:
     """Разовый импорт state.json в пустую БД Postgres при старте."""
     catalog_data = data.get("catalog") if isinstance(data.get("catalog"), dict) else {}
     devices_data = data.get("devices") if isinstance(data.get("devices"), dict) else {}
     owners_data = data.get("owners") if isinstance(data.get("owners"), list) else []
+    batches_data = data.get("batches") if isinstance(data.get("batches"), list) else []
 
     books_by_key: dict[tuple[UUID, UUID], dict] = {}
     for b in (devices_data or {}).get("books") or []:
@@ -1146,4 +1458,5 @@ def import_memory_snapshot(data: dict) -> None:
                         kind="owner",
                     )
                 )
+        _insert_batches_from_snapshot(db, batches_data, skip_existing=False)
         db.commit()
