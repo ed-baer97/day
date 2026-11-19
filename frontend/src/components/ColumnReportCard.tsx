@@ -55,9 +55,7 @@ export default function ColumnReportCard({
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           {report.source === "edge" ? (
             <span className="badge ok">Реальные ТРК · station-edge ({report.columnCount})</span>
-          ) : (
-            <span className="badge warn">Виртуальные колонки · по уровню ({report.columnCount})</span>
-          )}
+          ) : null}
           {onConfigureColumns ? (
             <button
               type="button"
@@ -69,11 +67,11 @@ export default function ColumnReportCard({
           ) : null}
         </div>
       </div>
-      <p className="dash-muted">
-        {report.source === "edge"
-          ? "Наливы поступают со станционного узла АСКА-02 / УЗСГ-01 (station-edge)."
-          : "Виртуальный расчёт: уход газа по датчику уровня резервуара разложен по колонкам. При подключении station-edge отчёт переключится автоматически."}
-      </p>
+      {report.source === "edge" ? (
+        <p className="dash-muted">
+          Наливы поступают со станционного узла АСКА-02 / УЗСГ-01 (station-edge).
+        </p>
+      ) : null}
       {effectiveMode === "virtual" && report.source === "edge" && onConfigureColumns ? (
         <p className="dash-muted" style={{ marginTop: -4 }}>
           Обнаружены реальные наливы station-edge — можно закрепить режим «Реальные ТРК» в админке.
