@@ -152,7 +152,7 @@ class EdgeSettings:
     read_only: bool = True
     auto_reset_on_stop: bool = False
     auto_reset_delay_sec: float = 15.0
-    auto_reset_stopped_delay_sec: float = 60.0
+    auto_reset_stopped_delay_sec: float = 0.0
     inter_frame_delay_sec: float = 0.05
     counter_reconcile_interval_sec: float = 0.0
     db_path: Path = field(default_factory=lambda: Path("station_edge.db"))
@@ -173,7 +173,7 @@ class EdgeSettings:
     update_channel: str = "stable"
     releases_dir: Path = field(default_factory=lambda: Path("releases"))
     update_idle_quiet_sec: float = 60.0
-    lock_buttons_on_update: bool = True
+    lock_buttons_on_update: bool = False
     pump_buttons_mode: str = "enable"
     release_signing_key: str = ""
     require_release_signature: bool = False
@@ -213,7 +213,7 @@ class EdgeSettings:
         if auto_reset_delay_sec < 0:
             raise ValueError("AGZS_AUTO_RESET_DELAY_SEC должен быть >= 0")
         auto_reset_stopped_delay_sec = float(
-            os.environ.get("AGZS_AUTO_RESET_STOPPED_DELAY_SEC", "60.0").strip() or "60.0"
+            os.environ.get("AGZS_AUTO_RESET_STOPPED_DELAY_SEC", "0").strip() or "0"
         )
         if auto_reset_stopped_delay_sec < 0:
             raise ValueError("AGZS_AUTO_RESET_STOPPED_DELAY_SEC должен быть >= 0")
@@ -278,7 +278,7 @@ class EdgeSettings:
         )
         if update_idle_quiet_sec < 0:
             raise ValueError("AGZS_UPDATE_IDLE_QUIET_SEC должен быть >= 0")
-        lock_buttons_on_update = _parse_bool(os.environ.get("AGZS_LOCK_BUTTONS_ON_UPDATE"), default=True)
+        lock_buttons_on_update = _parse_bool(os.environ.get("AGZS_LOCK_BUTTONS_ON_UPDATE"), default=False)
         pump_buttons_mode = os.environ.get("AGZS_PUMP_BUTTONS_MODE", "enable").strip().lower() or "enable"
         if pump_buttons_mode not in {"lock-reset", "enable"}:
             raise ValueError("AGZS_PUMP_BUTTONS_MODE должен быть 'lock-reset' или 'enable'")

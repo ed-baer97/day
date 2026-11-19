@@ -555,10 +555,15 @@ def test_physical_pump_buttons_locked_during_update_and_restored_on_start(tmp_pa
     restarted_service.serve(max_cycles=1)
     assert param_codes_sent == ["000018"]
 
-    # 3. По умолчанию для БП без ПУ pump_buttons_mode == "enable" (0.16);
-    # при живом кадре с Status[17]=0x70 (биты 6 и 5 уже = 1) лишний 0x38 не отправляется,
-    # а при Status[17]=0x50 (СБРОС заблокирован) отправляется 0.16 + 0x37.
-    assert EdgeSettings().pump_buttons_mode == "enable"
+    # 3. По умолчанию безопасные настройки: auto_reset_stopped_delay_sec == 0.0
+    # и lock_buttons_on_update is False (автоматическая отправка 0x38 отключена);
+    # при явном lock_buttons_on_update=True и pump_buttons_mode == "enable" (0.16):
+    # при Status[17]=0x70 (биты 6 и 5 уже = 1) лишний 0x38 не отправляется,
+    # а при Status[17]=0x50 (СБРОС заблокирован) отправляется 0.16.
+    defaults = EdgeSettings()
+    assert defaults.lock_buttons_on_update is False
+    assert defaults.auto_reset_stopped_delay_sec == 0.0
+    assert defaults.pump_buttons_mode == "enable"
     from agzs_edge.iskra import SOH, ETX, STX, CMD_TEST_ASCII, compute_bcc
 
     def _live_05_frame(byte17: int) -> bytes:
@@ -575,20 +580,33 @@ def test_physical_pump_buttons_locked_during_update_and_restored_on_start(tmp_pa
 
     live_05_enabled = _live_05_frame(0x70)
     live_05_locked_rst = _live_05_frame(0x50)
-    default_settings = EdgeSettings(
+    default_safe_settings = EdgeSettings(
         source_mode="serial",
         pump_addresses=(1,),
         poll_interval_sec=0.0,
         auto_reset_on_stop=True,
+        db_path=tmp_path / "buttons_default_safe.db",
+        sync_enabled=False,
+    )
+    param_codes_sent.clear()
+    StationEdgeService(default_safe_settings, link=_ButtonTrackingLink([live_05_locked_rst])).serve(max_cycles=1)
+    assert param_codes_sent == []
+
+    explicit_settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        poll_interval_sec=0.0,
+        auto_reset_on_stop=True,
+        lock_buttons_on_update=True,
         db_path=tmp_path / "buttons_live.db",
         sync_enabled=False,
     )
     param_codes_sent.clear()
-    StationEdgeService(default_settings, link=_ButtonTrackingLink([live_05_enabled])).serve(max_cycles=1)
+    StationEdgeService(explicit_settings, link=_ButtonTrackingLink([live_05_enabled])).serve(max_cycles=1)
     assert param_codes_sent == []
 
     param_codes_sent.clear()
-    StationEdgeService(default_settings, link=_ButtonTrackingLink([live_05_locked_rst])).serve(max_cycles=1)
+    StationEdgeService(explicit_settings, link=_ButtonTrackingLink([live_05_locked_rst])).serve(max_cycles=1)
     assert param_codes_sent == ["000016"]
 
 

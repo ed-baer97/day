@@ -194,6 +194,9 @@ def test_command_builders_and_bcc_validation() -> None:
     assert cmd_custom[5:11] == b"123456"
     with pytest.raises(ValueError, match="код параметра"):
         build_param_command(1, "9.99")
+    for forbidden_code in ("0.1", "0.10", "0.13", "000010", "000013"):
+        with pytest.raises(ValueError):
+            build_param_command(1, forbidden_code)
 
     # Неверные маркеры SOH / STX / ETX / не-ASCII поля
     good = bytearray(build_test_response_frame(address=1, state_code="05", price_digits=7200, volume_ml=0))
