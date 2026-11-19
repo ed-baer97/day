@@ -149,8 +149,8 @@ class EdgeSettings:
     source_mode: str = "serial"  # serial | emulator
     protocol: str = "iskra_172"  # только подтверждённые: iskra_172
     checksum_mode: str = "xor"
-    read_only: bool = True
-    auto_reset_on_stop: bool = False
+    read_only: bool = False
+    auto_reset_on_stop: bool = True
     auto_reset_delay_sec: float = 15.0
     auto_reset_stopped_delay_sec: float = 0.0
     inter_frame_delay_sec: float = 0.05
@@ -207,8 +207,8 @@ class EdgeSettings:
                 "AGZS_PROTOCOL: разрешён только iskra_172. "
                 "aska02_native не активирован — нет подтверждённой спецификации прошивки АСКА-02 07.2026"
             )
-        read_only = _parse_bool(os.environ.get("AGZS_READ_ONLY"), default=True)
-        auto_reset_on_stop = _parse_bool(os.environ.get("AGZS_AUTO_RESET"), default=False)
+        read_only = _parse_bool(os.environ.get("AGZS_READ_ONLY"), default=False)
+        auto_reset_on_stop = _parse_bool(os.environ.get("AGZS_AUTO_RESET"), default=True)
         auto_reset_delay_sec = float(os.environ.get("AGZS_AUTO_RESET_DELAY_SEC", "15.0").strip() or "15.0")
         if auto_reset_delay_sec < 0:
             raise ValueError("AGZS_AUTO_RESET_DELAY_SEC должен быть >= 0")

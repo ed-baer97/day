@@ -5,7 +5,7 @@
   python -m agzs_edge probe      -- разовый опрос адресов 1..8 командой «Тест»
   python -m agzs_edge listen     -- живой мониторинг 23-байтных кадров в консоли
   python -m agzs_edge watch-fill -- один налив выбранного адреса, без записи в базу
-  python -m agzs_edge serve      -- боевой демон учёта (с --auto-reset для БП без ПУ)
+  python -m agzs_edge serve      -- учёт и штатный цикл БП: опрос, запись, отправка, сброс '07' командой 0x37
   python -m agzs_edge unlock     -- снять блокировку колонки ('07'/'04' -> '05') командой 0x37
   python -m agzs_edge buttons    -- включить/выключить кнопки на колонке (0.16/0.17/0.18)
   python -m agzs_edge set-dose   -- задать дозу (0x39)
@@ -611,7 +611,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--timeout", type=float, default=0.8, help="Таймаут одного чтения")
     p_watch.add_argument("--emulator", action="store_true", help="Использовать встроенный имитатор")
 
-    p_serve = sub.add_parser("serve", help="Непрерывный опрос АСКА-02, запись в локальную БД и отправка на VPS")
+    p_serve = sub.add_parser(
+        "serve",
+        help="Опрос АСКА-02, запись в локальную БД, отправка на VPS и сброс '07' в '05'",
+    )
     p_serve.add_argument("--port", default="", help="Переопределить COM-порт")
     p_serve.add_argument("--emulator", action="store_true", help="Запустить на имитаторе кадров")
     p_serve.add_argument("--no-sync", action="store_true", help="Только локальная запись в SQLite без отправки на VPS")
@@ -619,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument(
         "--auto-reset",
         action="store_true",
-        help="Автоматически отправлять «Сброс» (0x37) после останова '07' для работы с БП без пульта",
+        help="Принудительно включить «Сброс» (0x37) после останова '07', даже если в .env он выключен",
     )
 
     def _add_psu_common(p: argparse.ArgumentParser) -> None:

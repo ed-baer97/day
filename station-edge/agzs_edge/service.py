@@ -564,13 +564,18 @@ class StationEdgeService:
     ) -> None:
         """Непрерывный цикл работы на станции с мягким завершением при остановке."""
         logger.info(
-            "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s)",
+            "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s), "
+            "сброс 07=%s через %.0f с, пауза 04=%s, кнопки 0x38=%s",
             self.settings.source_mode,
             self.settings.serial_port,
             self.settings.pump_addresses,
             self.settings.db_path,
             self.settings.vps_base_url,
             self.settings.sync_enabled,
+            self.settings.auto_reset_on_stop,
+            self.settings.auto_reset_delay_sec,
+            "выкл" if self.settings.auto_reset_stopped_delay_sec <= 0 else f"{self.settings.auto_reset_stopped_delay_sec:.0f} с",
+            self.settings.lock_buttons_on_update,
         )
         self._start_sync_thread()
         if self._can_control_buttons():

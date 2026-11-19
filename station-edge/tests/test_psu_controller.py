@@ -238,6 +238,23 @@ def test_sqlite_connections_are_closed_on_every_operation(monkeypatch, tmp_path:
     assert closed == opened
 
 
+def test_env_defaults_to_power_supply_cycle(monkeypatch, tmp_path: Path) -> None:
+    """Без явных флагов служба с блоком питания сама возвращает колонку из '07' и не шлёт 0x38."""
+    for key in (
+        "AGZS_READ_ONLY",
+        "AGZS_AUTO_RESET",
+        "AGZS_AUTO_RESET_STOPPED_DELAY_SEC",
+        "AGZS_LOCK_BUTTONS_ON_UPDATE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = EdgeSettings.from_env(tmp_path / "missing.env")
+    assert settings.auto_reset_on_stop is True
+    assert settings.read_only is False
+    assert settings.auto_reset_delay_sec == 15.0
+    assert settings.auto_reset_stopped_delay_sec == 0.0
+    assert settings.lock_buttons_on_update is False
+
+
 def test_env_allows_read_only_zero_and_auto_reset(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGZS_READ_ONLY", "0")
     monkeypatch.setenv("AGZS_AUTO_RESET", "1")

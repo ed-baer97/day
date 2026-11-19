@@ -561,6 +561,8 @@ def test_physical_pump_buttons_locked_during_update_and_restored_on_start(tmp_pa
     # при Status[17]=0x70 (биты 6 и 5 уже = 1) лишний 0x38 не отправляется,
     # а при Status[17]=0x50 (СБРОС заблокирован) отправляется 0.16.
     defaults = EdgeSettings()
+    assert defaults.auto_reset_on_stop is True
+    assert defaults.read_only is False
     assert defaults.lock_buttons_on_update is False
     assert defaults.auto_reset_stopped_delay_sec == 0.0
     assert defaults.pump_buttons_mode == "enable"
