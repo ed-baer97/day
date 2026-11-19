@@ -4,8 +4,22 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
-from app.schemas.batch import BatchCreate, BatchOut, BatchTrailEventOut, BatchTrailOut
-from app.services.batch_book import by_code, by_id, create_batch, list_batches
+from app.schemas.batch import (
+    BatchCreate,
+    BatchOut,
+    BatchStatusUpdate,
+    BatchTrailEventCreate,
+    BatchTrailEventOut,
+    BatchTrailOut,
+)
+from app.services.batch_book import (
+    add_batch_event,
+    by_code,
+    by_id,
+    create_batch,
+    list_batches,
+    update_batch_status,
+)
 from app.services.trail import trail_chain_labels
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -54,6 +68,26 @@ def get_batch_trail(batch_id: UUID) -> BatchTrailOut:
     row = by_id(batch_id)
     if row is None:
         raise _missing()
+    return _trail(row)
+
+
+@router.patch("/{batch_id}/status", response_model=BatchOut)
+def patch_batch_status(batch_id: UUID, body: BatchStatusUpdate) -> BatchOut:
+    return BatchOut(**update_batch_status(batch_id, body.status, body.note))
+
+
+@router.post("/{batch_id}/events", response_model=BatchTrailOut, status_code=201)
+def post_batch_event(batch_id: UUID, body: BatchTrailEventCreate) -> BatchTrailOut:
+    row = add_batch_event(
+        batch_id,
+        node_type=body.node_type,
+        title=body.title,
+        description=body.description,
+        ref_entity_type=body.ref_entity_type,
+        ref_entity_id=body.ref_entity_id,
+        volume_liters=body.volume_liters,
+        status=body.status,
+    )
     return _trail(row)
 
 

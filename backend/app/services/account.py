@@ -28,6 +28,8 @@ from app.services.account_helpers import (
     is_gps_seen,
     remember_gps,
     require_calibration_points,
+    require_columns_count,
+    require_columns_mode,
     require_non_empty,
     require_station_and_tank,
     require_truck_status,
@@ -90,9 +92,13 @@ def create_station(
     lat: float,
     lon: float,
     is_active: bool,
+    columns_mode: str = "none",
+    columns_count: int = 2,
 ) -> StationCard:
     cleaned_code = require_non_empty(code, "код заправки")
     cleaned_name = require_non_empty(name, "название заправки")
+    valid_mode = require_columns_mode(columns_mode)
+    valid_count = require_columns_count(columns_count)
     station = backend().create_station(
         code=cleaned_code,
         name=cleaned_name,
@@ -100,6 +106,8 @@ def create_station(
         lat=lat,
         lon=lon,
         is_active=is_active,
+        columns_mode=valid_mode,
+        columns_count=valid_count,
     )
     invalidate_public_board_cache()
     return station
@@ -114,10 +122,14 @@ def update_station(
     lat: float | None = None,
     lon: float | None = None,
     is_active: bool | None = None,
+    columns_mode: str | None = None,
+    columns_count: int | None = None,
     address_set: bool = False,
 ) -> StationCard:
     cleaned_code = None if code is None else require_non_empty(code, "код заправки")
     cleaned_name = None if name is None else require_non_empty(name, "название заправки")
+    valid_mode = None if columns_mode is None else require_columns_mode(columns_mode)
+    valid_count = None if columns_count is None else require_columns_count(columns_count)
     station = backend().update_station(
         station_id,
         code=cleaned_code,
@@ -126,6 +138,8 @@ def update_station(
         lat=lat,
         lon=lon,
         is_active=is_active,
+        columns_mode=valid_mode,
+        columns_count=valid_count,
         address_set=address_set,
     )
     invalidate_public_board_cache()
@@ -220,6 +234,14 @@ def record_truck_position(
 
 def list_active_stations_with_tanks() -> list[tuple[StationCard, list[TankOut]]]:
     return backend().list_active_stations_with_tanks()
+
+
+def list_all_stations_with_overview() -> list[tuple[StationCard, list[tuple[TankDevice, TankIngestState | None]]]]:
+    return backend().list_all_stations_with_overview()
+
+
+def rotate_tank_token(station_id: UUID, tank_id: UUID) -> TankDevice:
+    return backend().rotate_tank_token(station_id, tank_id)
 
 
 def list_tank_devices(station_id: UUID) -> list[TankDevice]:
@@ -401,6 +423,35 @@ def authenticate_station_user(username: str, password: str) -> StationOwner | No
     return backend().authenticate_station_user(username, password)
 
 
+def has_owner(username: str) -> bool:
+    return backend().has_owner(username)
+
+
+def list_all_owners() -> list[StationOwner]:
+    return backend().list_all_owners()
+
+
+def create_owner_account(username: str, password: str, station_ids: list[UUID]) -> StationOwner:
+    return backend().create_owner_account(username, password, station_ids)
+
+
+def update_owner_account(
+    username: str,
+    *,
+    station_ids: list[UUID] | None = None,
+    password: str | None = None,
+) -> StationOwner:
+    return backend().update_owner_account(username, station_ids=station_ids, password=password)
+
+
+def detach_station_user(station_id: UUID, username: str) -> None:
+    backend().detach_station_user(station_id, username)
+
+
+def delete_owner_account(username: str) -> None:
+    backend().delete_owner_account(username)
+
+
 def list_level_readings(station_id: UUID, tank_id: UUID, **kwargs):
     return backend().list_level_readings(station_id, tank_id, **kwargs)
 
@@ -421,17 +472,23 @@ __all__ = [
     "bind_dispense",
     "bind_level",
     "bind_receipt",
+    "create_owner_account",
     "create_station",
     "create_station_user",
     "create_truck",
+    "delete_owner_account",
     "delete_station",
     "delete_tank_device",
     "delete_truck",
+    "detach_station_user",
     "get_station",
     "get_tank_device",
     "get_truck",
     "has_calibration",
+    "has_owner",
     "list_active_stations_with_tanks",
+    "list_all_owners",
+    "list_all_stations_with_overview",
     "list_dispense_records",
     "list_level_readings",
     "list_station_tanks_out",
@@ -443,10 +500,12 @@ __all__ = [
     "register_calibration_hook",
     "register_tank",
     "register_tank_deleted_hook",
+    "rotate_tank_token",
     "set_calibration",
     "tank_by_token",
     "tank_remainder",
     "tank_state",
+    "update_owner_account",
     "update_station",
     "update_tank_device",
     "update_truck",

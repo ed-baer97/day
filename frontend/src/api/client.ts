@@ -90,6 +90,10 @@ export interface TankIngestState {
   calibrated: boolean;
   last_volts: number | null;
   last_measured_at: string | null;
+  cal_low_volts?: number | null;
+  cal_low_percent?: number | null;
+  cal_high_volts?: number | null;
+  cal_high_percent?: number | null;
 }
 
 export interface IngestAck {
@@ -134,6 +138,8 @@ export interface BalanceSnapshot {
   created_at: string;
 }
 
+export type ColumnsMode = "none" | "virtual" | "edge";
+
 export interface CatalogStation {
   id: string;
   code: string;
@@ -142,6 +148,36 @@ export interface CatalogStation {
   lat: number;
   lon: number;
   is_active: boolean;
+  columns_mode?: ColumnsMode;
+  columns_count?: number;
+}
+
+export interface AdminTankOverview {
+  id: string;
+  code: string;
+  capacity_liters: number;
+  ingest_token: string;
+  actual_remainder_liters: number | null;
+  calculated_remainder_liters: number | null;
+  fill_percent: number | null;
+  opening_liters: number | null;
+  receipts_liters: number;
+  dispense_liters: number;
+  delta_liters: number | null;
+  balance_status: string;
+  calibrated: boolean;
+  cal_low_volts: number | null;
+  cal_low_percent: number | null;
+  cal_high_volts: number | null;
+  cal_high_percent: number | null;
+  last_volts: number | null;
+  last_measured_at: string | null;
+  online: boolean;
+  shelly: ShellyLink | null;
+}
+
+export interface AdminStationOverview extends CatalogStation {
+  tanks: AdminTankOverview[];
 }
 
 export interface StationUser {
@@ -149,6 +185,47 @@ export interface StationUser {
   station_id: string;
   username: string;
   kind?: string;
+}
+
+export interface OwnerAccount {
+  id: string;
+  username: string;
+  kind?: string;
+  station_ids: string[];
+}
+
+export interface EdgeReleaseManifest {
+  version: string;
+  artifact_url: string;
+  sha256: string;
+  channel: string;
+  min_version?: string | null;
+  notes?: string;
+  signature?: string | null;
+}
+
+export interface EdgeNodeStatus {
+  station_code: string;
+  station_id?: string | null;
+  current_version: string;
+  target_version: string;
+  channel: string;
+  up_to_date: boolean;
+  outbox_pending: number;
+  active_pumps: number;
+  update_status: string;
+  last_error?: string | null;
+  last_seen_at: string;
+}
+
+export interface EdgeFleetSummary {
+  total_nodes: number;
+  up_to_date_nodes: number;
+  outdated_nodes: number;
+  releases: Record<string, EdgeReleaseManifest>;
+  canary_stations: string[];
+  ring1_stations: string[];
+  nodes: EdgeNodeStatus[];
 }
 
 export interface CatalogTruck {
@@ -168,6 +245,8 @@ export type StationDraft = {
   lat: number;
   lon: number;
   is_active: boolean;
+  columns_mode?: ColumnsMode;
+  columns_count?: number;
 };
 
 export type TruckDraft = {
@@ -247,9 +326,23 @@ export const api = {
   },
   mapOverview: () => getJson<MapOverview>("/map/overview"),
   stations: () => getJson<CatalogStation[]>("/stations"),
+  stationsOverview: () => getJson<AdminStationOverview[]>("/stations/overview"),
   stationUsers: (stationId: string) => getJson<StationUser[]>("/stations/" + stationId + "/users"),
   createStationUser: (stationId: string, body: { username: string; password: string }) =>
-    sendJson<StationUser & { password: string }>("POST", `/stations/${stationId}/users`, body),
+    sendJson<StationUser & { password: string; password_applied?: boolean }>(
+      "POST",
+      `/stations/${stationId}/users`,
+      body
+    ),
+  detachStationUser: (stationId: string, username: string) =>
+    sendJson<void>("DELETE", `/stations/${stationId}/users/${encodeURIComponent(username)}`),
+  owners: () => getJson<OwnerAccount[]>("/owners"),
+  createOwner: (body: { username: string; password: string; station_ids: string[] }) =>
+    sendJson<OwnerAccount & { password: string }>("POST", "/owners", body),
+  updateOwner: (username: string, body: { station_ids?: string[]; password?: string }) =>
+    sendJson<OwnerAccount>("PATCH", `/owners/${encodeURIComponent(username)}`, body),
+  deleteOwner: (username: string) =>
+    sendJson<void>("DELETE", `/owners/${encodeURIComponent(username)}`),
   createStation: (body: StationDraft) => sendJson<CatalogStation>("POST", "/stations", body),
   updateStation: (id: string, body: Partial<StationDraft>) =>
     sendJson<CatalogStation>("PATCH", `/stations/${id}`, body),
@@ -269,6 +362,8 @@ export const api = {
   ) => sendJson<TankDevice>("PATCH", `/stations/${stationId}/devices/${tankId}`, body),
   deleteTankDevice: (stationId: string, tankId: string) =>
     sendJson<void>("DELETE", `/stations/${stationId}/devices/${tankId}`),
+  rotateTankToken: (stationId: string, tankId: string) =>
+    sendJson<TankDevice>("POST", `/stations/${stationId}/devices/${tankId}/rotate-token`),
   connectShelly: (stationId: string, tankId: string, host: string) =>
     sendJson<TankDevice>("PUT", `/stations/${stationId}/devices/${tankId}/shelly`, { host }),
   disconnectShelly: (stationId: string, tankId: string) =>
@@ -353,6 +448,39 @@ export const api = {
     mass_kg?: number;
     notes?: string;
   }) => sendJson<BatchRecord>("POST", "/batches", body),
+  updateBatchStatus: (batchId: string, body: { status: string; note?: string }) =>
+    sendJson<BatchRecord>("PATCH", `/batches/${batchId}/status`, body),
+  addBatchEvent: (
+    batchId: string,
+    body: {
+      node_type: string;
+      title: string;
+      description?: string;
+      ref_entity_type?: string;
+      ref_entity_id?: string;
+      volume_liters?: number;
+      status?: string;
+    }
+  ) => sendJson<BatchTrail>("POST", `/batches/${batchId}/events`, body),
+  edgeFleet: () => getJson<EdgeFleetSummary>("/ingest/edge/fleet"),
+  publishEdgeRelease: (
+    body: EdgeReleaseManifest,
+    rings?: { canary_stations?: string[]; ring1_stations?: string[] }
+  ) => {
+    const params = new URLSearchParams();
+    for (const code of rings?.canary_stations ?? []) {
+      params.append("canary_stations", code);
+    }
+    for (const code of rings?.ring1_stations ?? []) {
+      params.append("ring1_stations", code);
+    }
+    const q = params.toString();
+    return sendJson<EdgeReleaseManifest>(
+      "PUT",
+      `/ingest/edge/release${q ? `?${q}` : ""}`,
+      body
+    );
+  },
   truck: (id: string) => getJson<TruckDetail>(`/trucks/${id}`),
   station: (id: string) => getJson<StationDetail>(`/stations/${id}`),
   trailByCode: (code: string) =>

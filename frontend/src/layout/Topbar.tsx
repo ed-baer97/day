@@ -23,12 +23,14 @@ export default function Topbar({
   isStationSide,
   screen,
   stations,
+  allStations,
   byCode,
   theme,
   onToggleTheme,
   onGoHomeDashboard,
   onSelectPage,
   onOpenStationPage,
+  onOpenAdminStation,
   onOpenAdminRoot,
   onLogout,
 }: {
@@ -38,12 +40,14 @@ export default function Topbar({
   isStationSide: boolean;
   screen: AppScreen;
   stations: CatalogStation[];
+  allStations?: CatalogStation[];
   byCode: Map<string, LiveLevel>;
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onGoHomeDashboard: () => void;
   onSelectPage: (page: AppScreen) => void;
   onOpenStationPage: (id: string) => void;
+  onOpenAdminStation?: (id: string) => void;
   onOpenAdminRoot: () => void;
   onLogout: () => void;
 }) {
@@ -73,15 +77,18 @@ export default function Topbar({
     };
   }, []);
 
+  const adminQuickMode = admin && screen === "admin" && !!onOpenAdminStation;
+  const searchableStations = adminQuickMode && allStations ? allStations : stations;
+
   const quickStations = useMemo(() => {
     const q = quickQuery.trim().toLowerCase();
-    return stations.filter((row) => {
+    return searchableStations.filter((row) => {
       if (!q) return true;
       return [row.name, row.code, row.address, stationRegion(row)].some((part) =>
         part?.toLowerCase().includes(q)
       );
     });
-  }, [stations, quickQuery]);
+  }, [searchableStations, quickQuery]);
 
   return (
     <header className="topbar">
@@ -148,10 +155,16 @@ export default function Topbar({
           type="button"
           className="quick-jumper-btn"
           onClick={() => setQuickOpen((value) => !value)}
-          title="Быстрый поиск и переход к любой АГЗС (Ctrl+K)"
+          title={
+            adminQuickMode
+              ? "Быстрый переход к карточке АГЗС в админке (Ctrl+K)"
+              : "Быстрый поиск и переход к любой АГЗС (Ctrl+K)"
+          }
         >
-          <span>Быстрый переход к АГЗС…</span>
-          <kbd>Ctrl+K · {stations.length}</kbd>
+          <span className="quick-jumper-hint">
+            {adminQuickMode ? "АГЗС в админке…" : "Быстрый переход к АГЗС…"}
+          </span>
+          <kbd>Ctrl+K · {searchableStations.length}</kbd>
         </button>
         {quickOpen ? (
           <div className="quick-jumper-popover">
@@ -175,7 +188,11 @@ export default function Topbar({
                       className="quick-jumper-main"
                       onClick={() => {
                         setQuickOpen(false);
-                        onOpenStationPage(row.id);
+                        if (adminQuickMode && onOpenAdminStation) {
+                          onOpenAdminStation(row.id);
+                        } else {
+                          onOpenStationPage(row.id);
+                        }
                       }}
                     >
                       <div>
@@ -191,15 +208,47 @@ export default function Topbar({
                           {row.code} · {stationRegion(row)} ·{" "}
                           {hasLive && live?.remainder != null
                             ? `${liters(live.remainder)} из ${liters(live.capacity)}`
-                            : "замера нет"}
+                            : row.is_active
+                              ? "замера нет"
+                              : "скрыта с витрины"}
                         </span>
                       </div>
                       <div className="quick-jumper-badges">
-                        {hasLive && live ? (
+                        {!row.is_active ? (
+                          <span className="badge warn">скрыта</span>
+                        ) : hasLive && live ? (
                           <SensorStatusBadge level={live} />
                         ) : (
                           <span className="badge warn">нет датчика</span>
                         )}
+                        {adminQuickMode && row.is_active ? (
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            title="Открыть сводку в дашборде"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQuickOpen(false);
+                              onOpenStationPage(row.id);
+                            }}
+                          >
+                            Сводка
+                          </button>
+                        ) : null}
+                        {!adminQuickMode && admin && onOpenAdminStation ? (
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            title="Настроить АГЗС в админке"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQuickOpen(false);
+                              onOpenAdminStation(row.id);
+                            }}
+                          >
+                            ⚙
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   </li>

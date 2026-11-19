@@ -495,56 +495,6 @@
   margin-bottom: 6px;
 }
 
-/* Сквозная панель хлебных крошек и быстрого переключения контекста */
-.breadcrumb-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 22px;
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-2) 75%, transparent);
-  font-size: 12px;
-  flex-wrap: wrap;
-}
-.breadcrumb-trail {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.breadcrumb-link {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  padding: 2px 4px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.breadcrumb-link:hover {
-  color: var(--sea);
-  background: var(--hover-fill);
-}
-.breadcrumb-link.current {
-  color: var(--ink);
-  font-weight: 600;
-}
-.breadcrumb-sep {
-  color: var(--muted);
-  opacity: 0.5;
-}
-.breadcrumb-current {
-  color: var(--ink);
-  font-weight: 700;
-}
-.breadcrumb-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 /* Расширенные карточки на публичной витрине и всплывающий паспорт */
 .level-card-clickable {
   cursor: pointer;
@@ -620,10 +570,7 @@
   .security-grid {
     grid-template-columns: 1fr;
   }
-  .quick-jumper {
+  .quick-jumper-hint {
     display: none;
-  }
-  .breadcrumb-bar {
-    padding: 8px 14px;
   }
 }

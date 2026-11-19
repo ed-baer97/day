@@ -1,12 +1,12 @@
 import { useMemo } from "react";
-import type { DispenseReading, LevelReading, TankDevice } from "../api/client";
+import type { ColumnsMode, DispenseReading, LevelReading, TankDevice } from "../api/client";
 import {
   bucketCaption,
   buildLiveTankSamples,
   columnDispenseReport,
   type ColumnReport,
 } from "../columnReport";
-import { dateTime, liters } from "../format";
+import { dateTime, liters, signedLiters } from "../format";
 import type { LiveLevel } from "../liveLevels";
 import type { TimeRange } from "../period";
 import { BarChart } from "./Charts";
@@ -20,6 +20,8 @@ export default function ColumnReportCard({
   outflow = 0,
   dispenses = [],
   report: precomputedReport,
+  columnsMode,
+  onConfigureColumns,
 }: {
   points: LevelReading[];
   range: TimeRange;
@@ -29,31 +31,54 @@ export default function ColumnReportCard({
   outflow?: number;
   dispenses?: DispenseReading[];
   report?: ColumnReport;
+  columnsMode?: ColumnsMode;
+  onConfigureColumns?: () => void;
 }) {
   const computedReport = useMemo(() => {
     if (precomputedReport) return precomputedReport;
     const liveTanks = buildLiveTankSamples(live, devices, points, range.includesNow);
-    return columnDispenseReport(points, range, liveTanks, new Date(), outflow, dispenses);
-  }, [precomputedReport, live, devices, points, range, outflow, dispenses]);
+    return columnDispenseReport(points, range, liveTanks, new Date(), outflow, dispenses, {
+      mode: columnsMode,
+    });
+  }, [precomputedReport, live, devices, points, range, outflow, dispenses, columnsMode]);
 
   const report = precomputedReport ?? computedReport;
   const rows = report.labels
     .map((label, index) => ({ label, index, total: report.totals[index] ?? 0 }))
     .filter((row) => row.total > 0);
+  const effectiveMode = columnsMode ?? (report.source === "edge" ? "edge" : "virtual");
 
   return (
     <section className="dash-card" style={{ marginBottom: 18 }}>
       <div className="card-head-inline">
         <h3>Колонки</h3>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <span className="badge ok">подключены {report.columnCount} колонки</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          {report.source === "edge" ? (
+            <span className="badge ok">Реальные ТРК · station-edge ({report.columnCount})</span>
+          ) : (
+            <span className="badge warn">Виртуальные колонки · по уровню ({report.columnCount})</span>
+          )}
+          {onConfigureColumns ? (
+            <button
+              type="button"
+              className="btn secondary small"
+              onClick={onConfigureColumns}
+            >
+              Настроить колонки ⚙
+            </button>
+          ) : null}
         </div>
       </div>
       <p className="dash-muted">
         {report.source === "edge"
-          ? "Наливы со станционного узла АСКА-02 / УЗСГ-01."
-          : "Уход газа по датчику уровня, разложенный по колонкам."}
+          ? "Наливы поступают со станционного узла АСКА-02 / УЗСГ-01 (station-edge)."
+          : "Виртуальный расчёт: уход газа по датчику уровня резервуара разложен по колонкам. При подключении station-edge отчёт переключится автоматически."}
       </p>
+      {effectiveMode === "virtual" && report.source === "edge" && onConfigureColumns ? (
+        <p className="dash-muted" style={{ marginTop: -4 }}>
+          Обнаружены реальные наливы station-edge — можно закрепить режим «Реальные ТРК» в админке.
+        </p>
+      ) : null}
 
       <div className="fiscal-chain">
         <div className="fiscal-step">
@@ -63,10 +88,22 @@ export default function ColumnReportCard({
         </div>
         <div className="fiscal-link">→</div>
         <div className="fiscal-step">
-          <span>Счётчики ТРК ({report.columnCount} колонки)</span>
+          <span>Счётчики ТРК ({report.columnCount})</span>
           <strong>{loading && points.length === 0 ? "…" : liters(report.total)}</strong>
           <em>{report.columns.map((column) => `${column.name}: ${liters(column.total)}`).join(" · ")}</em>
         </div>
+        {report.source === "edge" && report.discrepancyLiters !== 0 ? (
+          <>
+            <div className="fiscal-link">=</div>
+            <div className="fiscal-step">
+              <span>Разница (ТРК − уровень)</span>
+              <strong className={report.status === "warn" ? "text-danger" : ""}>
+                {signedLiters(report.discrepancyLiters)}
+              </strong>
+              <em>{report.status === "warn" ? "есть расхождение" : "в пределах допуска"}</em>
+            </div>
+          </>
+        ) : null}
       </div>
 
       <div className="col-grid" style={{ marginBottom: 16 }}>
@@ -142,7 +179,9 @@ export default function ColumnReportCard({
         />
       ) : (
         <p className="dash-muted">
-          За этот срок уровень резервуара не снижался. Отпуска через колонки нет.
+          {effectiveMode === "edge"
+            ? "Режим реальных ТРК (station-edge): наливов за выбранный период не поступало."
+            : "За этот срок уровень резервуара не снижался. Отпуска через колонки нет."}
         </p>
       )}
       {rows.length > 0 ? (

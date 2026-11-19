@@ -8,6 +8,7 @@ from uuid import UUID
 
 from app.domain.calibration import LevelCalibration
 from app.domain.entities import (
+    COLUMN_MODES,
     TRUCK_STATUSES,
     TankBookAck,
     TankBookState,
@@ -39,6 +40,18 @@ def require_non_empty(value: str, label: str) -> str:
 def require_truck_status(value: str) -> str:
     if value not in TRUCK_STATUSES:
         raise ValidationError("неизвестный статус газовоза")
+    return value
+
+
+def require_columns_mode(value: str) -> str:
+    if value not in COLUMN_MODES:
+        raise ValidationError("неизвестный режим колонок")
+    return value
+
+
+def require_columns_count(value: int) -> int:
+    if value < 0 or value > 8:
+        raise ValidationError("количество колонок от 0 до 8")
     return value
 
 
@@ -137,6 +150,10 @@ def state_to_schema(state: TankBookState) -> TankIngestState:
         calibrated=state.calibrated,
         last_volts=state.last_volts,
         last_measured_at=state.last_measured_at,
+        cal_low_volts=state.cal_low_volts,
+        cal_low_percent=state.cal_low_percent,
+        cal_high_volts=state.cal_high_volts,
+        cal_high_percent=state.cal_high_percent,
     )
 
 

@@ -8,7 +8,16 @@ import {
 import { isAdmin } from "../access";
 import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
-import { balBadge, balText, dateTime, liters, signedLiters, stationRegion } from "../format";
+import {
+  balBadge,
+  balText,
+  dateTime,
+  eventTypeLabel,
+  liters,
+  severityLabel,
+  signedLiters,
+  stationRegion,
+} from "../format";
 import {
   isLowFill,
   SensorStatusBadge,
@@ -23,6 +32,7 @@ import {
   buildLiveTankSamples,
   columnDispenseReport,
   isColumnReportStation,
+  stationColumnCount,
 } from "../columnReport";
 import { chartOf } from "../sensorDay";
 import type { DiscrepancyEvent, StationBalance } from "../types";
@@ -30,7 +40,6 @@ import { BarChart, LineChart } from "./Charts";
 import ColumnReportCard from "./ColumnReportCard";
 import LevelChangesToday from "./LevelChangesToday";
 import PeriodSwitch from "./PeriodSwitch";
-import TankDeviceRows from "./TankDeviceRows";
 
 type DetailTab = "overview" | "pumps" | "tanks" | "history";
 
@@ -40,12 +49,14 @@ export default function StationDetailPage({
   onSelectStation,
   onOpenAdmin,
   onOpenMap,
+  onOpenAdminReconcile,
 }: {
   stationId: string;
   onBack: () => void;
   onSelectStation?: (id: string) => void;
   onOpenAdmin?: (id: string) => void;
   onOpenMap?: (id: string) => void;
+  onOpenAdminReconcile?: () => void;
 }) {
   const { session } = useAuth();
   const canManage = isAdmin(session);
@@ -54,6 +65,7 @@ export default function StationDetailPage({
   const { range, historyLoading } = useViewPeriod();
   const day = useSensorDay([stationId]);
   const [tab, setTab] = useState<DetailTab>("overview");
+  const [copiedTankId, setCopiedTankId] = useState<string | null>(null);
 
   const [devices, setDevices] = useState<TankDevice[]>([]);
   const [tankStates, setTankStates] = useState<Record<string, TankIngestState>>({});
@@ -121,14 +133,19 @@ export default function StationDetailPage({
   const series = station ? day.get(station.id) : undefined;
   const fillPct = hasTanks && live?.fill != null ? Math.max(0, Math.min(100, live.fill)) : 0;
   const showColumns = station ? isColumnReportStation(station) : false;
+  const colCount = station ? stationColumnCount(station) : 2;
+  const colMode = station?.columns_mode;
 
   const columnReport = useMemo(() => {
     if (!showColumns) return null;
     const points = series?.points ?? [];
     const liveTanks = buildLiveTankSamples(live, devices, points, range.includesNow);
     const fallbackOutflow = series?.opening != null ? series.outflow : 0;
-    return columnDispenseReport(points, range, liveTanks, new Date(), fallbackOutflow, dispenses);
-  }, [showColumns, series, live, devices, range, dispenses]);
+    return columnDispenseReport(points, range, liveTanks, new Date(), fallbackOutflow, dispenses, {
+      columnCount: colCount,
+      mode: colMode,
+    });
+  }, [showColumns, series, live, devices, range, dispenses, colCount, colMode]);
 
   const bookSummary = useMemo(() => {
     const stateList = Object.values(tankStates);
@@ -182,12 +199,16 @@ export default function StationDetailPage({
     hasTanks && live ? safeRefillLiters(live.capacity, live.remainder) : null;
   const onlineTanksCount = live?.tanks.filter((t) => t.online && t.remainder_liters != null).length ?? 0;
   const totalTanksCount = live?.tanks.length ?? devices.length;
+  const isVirtualColumns = showColumns && columnReport?.source === "level";
+  const isEdgeColumns = showColumns && columnReport?.source === "edge";
   const expenseLiters =
-    showColumns && columnReport && (hasDay || columnReport.total > 0)
+    isVirtualColumns && columnReport && (hasDay || columnReport.total > 0)
       ? columnReport.total
       : hasDay && series
         ? series.outflow
-        : null;
+        : isEdgeColumns && columnReport && columnReport.total > 0
+          ? columnReport.total
+          : null;
   const rekonBookLiters =
     hasTanks && live?.remainder != null
       ? live.remainder
@@ -288,7 +309,11 @@ export default function StationDetailPage({
           )}
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
           {expenseLiters != null ? <span className="badge">расход {liters(expenseLiters)}</span> : null}
-          {showColumns ? <span className="badge ok">подключены 2 колонки</span> : null}
+          {showColumns ? (
+            <span className={`badge ${isEdgeColumns ? "ok" : "warn"}`}>
+              {isEdgeColumns ? `ТРК edge (${colCount})` : `вирт. колонки (${colCount})`}
+            </span>
+          ) : null}
         </div>
       </header>
 
@@ -345,7 +370,7 @@ export default function StationDetailPage({
         <div className="dash-kpi">
           <span>Книжный баланс и ТРК</span>
           <strong>
-            {showColumns && columnReport
+            {isVirtualColumns && columnReport
               ? rekonBookLiters != null
                 ? liters(rekonBookLiters)
                 : "—"
@@ -354,7 +379,7 @@ export default function StationDetailPage({
                 : "—"}
           </strong>
           <em>
-            {showColumns && columnReport
+            {isVirtualColumns && columnReport
               ? `отпуск ТРК: ${liters(columnReport.total)}`
               : bookSummary?.delta != null
                 ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
@@ -382,7 +407,7 @@ export default function StationDetailPage({
           className={tab === "pumps" ? "active" : ""}
           onClick={() => setTab("pumps")}
         >
-          {showColumns ? `Колонки (${columnReport?.columnCount ?? 2})` : "Колонки"}
+          {showColumns ? `Колонки (${columnReport?.columnCount ?? colCount})` : "Колонки"}
         </button>
         <button
           type="button"
@@ -559,7 +584,7 @@ export default function StationDetailPage({
                             </div>
                           </td>
                           <td>
-                            {showColumns && columnReport ? (
+                            {isVirtualColumns && columnReport ? (
                               rem != null ? (
                                 <>
                                   <strong>{liters(rem)}</strong>
@@ -584,7 +609,7 @@ export default function StationDetailPage({
                             )}
                           </td>
                           <td>
-                            {showColumns && columnReport ? (
+                            {isVirtualColumns && columnReport ? (
                               rem != null ? (
                                 <>
                                   <strong>0 л</strong>
@@ -647,11 +672,27 @@ export default function StationDetailPage({
             outflow={hasDay && series ? series.outflow : 0}
             dispenses={dispenses}
             report={columnReport}
+            columnsMode={colMode}
+            onConfigureColumns={onOpenAdmin ? () => onOpenAdmin(station.id) : undefined}
           />
         ) : (
           <section className="dash-card">
-            <h3>Колонки</h3>
-            <p className="dash-muted">Колонки не подключены. Цифр по ним нет.</p>
+            <div className="card-head-inline">
+              <h3>Колонки</h3>
+              {onOpenAdmin ? (
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => onOpenAdmin(station.id)}
+                >
+                  Настроить колонки в админке →
+                </button>
+              ) : null}
+            </div>
+            <p className="dash-muted">
+              Колонки для этой АГЗС не подключены. Можно включить виртуальные колонки или приём
+              реальных наливов station-edge в карточке станции.
+            </p>
           </section>
         )
       ) : null}
@@ -721,12 +762,12 @@ export default function StationDetailPage({
                             {tank.measured_at ? dateTime(tank.measured_at) : "ожидание"}
                           </strong>
                         </div>
-                        {st || (showColumns && tank.remainder_liters != null) ? (
+                        {st || (isVirtualColumns && tank.remainder_liters != null) ? (
                           <>
                             <div>
                               <span>Книжный остаток</span>
                               <strong>
-                                {showColumns && tank.remainder_liters != null
+                                {isVirtualColumns && tank.remainder_liters != null
                                   ? liters(tank.remainder_liters)
                                   : st?.calculated_remainder_liters == null
                                     ? "—"
@@ -734,9 +775,12 @@ export default function StationDetailPage({
                               </strong>
                             </div>
                             <div>
-                              <span>Напряжение датчика</span>
+                              <span>Напряжение / Калибровка</span>
                               <strong>
                                 {st?.last_volts == null ? "—" : `${st.last_volts.toFixed(2)} В`}
+                                {st?.calibrated && st.cal_low_volts != null && st.cal_high_volts != null
+                                  ? ` (${st.cal_low_volts}…${st.cal_high_volts} В)`
+                                  : ""}
                               </strong>
                             </div>
                           </>
@@ -748,10 +792,72 @@ export default function StationDetailPage({
               </div>
             )}
           </section>
-          <section className="dash-section">
-            <h3>Настройка резервуаров, Shelly и калибровка</h3>
-            <TankDeviceRows stationId={station.id} />
-          </section>
+          {canManage ? (
+            <section className="dash-card">
+              <div className="card-head-inline">
+                <div>
+                  <h3 style={{ margin: 0 }}>Настройка оборудования и токены датчиков</h3>
+                  <p className="dash-muted" style={{ margin: "6px 0 0" }}>
+                    Добавление и удаление резервуаров, подключение Shelly, калибровка вольтметра,
+                    ручной ввод остатка и перевыпуск X-Device-Token выполняются в кабинете
+                    администратора.
+                  </p>
+                </div>
+                {onOpenAdmin ? (
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => onOpenAdmin(station.id)}
+                  >
+                    Настроить АГЗС и датчики →
+                  </button>
+                ) : null}
+              </div>
+            </section>
+          ) : devices.length > 0 ? (
+            <section className="dash-card">
+              <h3>Параметры подключения телеметрии (только чтение)</h3>
+              <p className="dash-muted">
+                Карточку резервуара, Shelly и калибровку настраивает администратор платформы.
+              </p>
+              <div className="tank-rows">
+                {devices.map((dev) => {
+                  const url = dev.ingest_url?.startsWith("http")
+                    ? dev.ingest_url
+                    : `${window.location.origin}${dev.ingest_url || dev.level_path}`;
+                  return (
+                    <div key={dev.id} className="tank-block">
+                      <div>
+                        <strong>Резервуар {dev.code}</strong> · {liters(dev.capacity_liters)}
+                        {dev.shelly ? ` · Shelly ${dev.shelly.host}` : ""}
+                      </div>
+                      <div className="tank-api">
+                        <span>API датчика</span>
+                        <code>{url}</code>
+                        <code>X-Device-Token: {dev.ingest_token}</code>
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(
+                                `${url}\nX-Device-Token: ${dev.ingest_token}`
+                              );
+                              setCopiedTankId(dev.id);
+                            } catch {
+                              setCopiedTankId(null);
+                            }
+                          }}
+                        >
+                          {copiedTankId === dev.id ? "Скопировано" : "Копировать"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
         </>
       ) : null}
 
@@ -762,7 +868,18 @@ export default function StationDetailPage({
           </section>
 
           <section className="dash-card">
-            <h3>События сверки и инциденты ({discrepancyEvents.length})</h3>
+            <div className="card-head-inline">
+              <h3>События сверки и инциденты ({discrepancyEvents.length})</h3>
+              {onOpenAdminReconcile ? (
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={onOpenAdminReconcile}
+                >
+                  Сверка и закрытие в админке →
+                </button>
+              ) : null}
+            </div>
             {discrepancyEvents.length === 0 ? (
               <p className="dash-muted">
                 Расхождений книжного баланса по данной АГЗС не зафиксировано.
@@ -773,7 +890,7 @@ export default function StationDetailPage({
                   <thead>
                     <tr>
                       <th>Время</th>
-                      <th>Источник / Код</th>
+                      <th>Источник / Тип</th>
                       <th>Уровень важности</th>
                       <th>Описание события</th>
                       <th>Статус</th>
@@ -785,13 +902,13 @@ export default function StationDetailPage({
                         <td>{dateTime(ev.detected_at)}</td>
                         <td>
                           <strong>Сверка резервуара</strong>
-                          <div className="dash-muted">{ev.event_type}</div>
+                          <div className="dash-muted">{eventTypeLabel(ev.event_type)}</div>
                         </td>
                         <td>
                           <span
                             className={`badge ${ev.severity === "critical" ? "danger" : "warn"}`}
                           >
-                            {ev.severity}
+                            {severityLabel(ev.severity)}
                           </span>
                         </td>
                         <td>

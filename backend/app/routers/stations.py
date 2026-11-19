@@ -1,13 +1,15 @@
 """Роутер паспортов АГЗС (/api/v1/stations)."""
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
 
 from app.auth import Principal, require_admin, require_principal, require_station_access
 from app.domain.tank_book import summarize_station_tanks
-from app.routers.deps import station_to_out
+from app.routers.deps import overview_station_to_out, station_to_out
 from app.schemas.station import (
+    AdminStationOverviewOut,
     StationCreate,
     StationDetailOut,
     StationOut,
@@ -17,6 +19,7 @@ from app.services.account import (
     create_station,
     delete_station,
     get_station,
+    list_all_stations_with_overview,
     list_station_tanks_out,
     list_stations,
     update_station,
@@ -47,8 +50,21 @@ def create_station_card(
             lat=body.lat,
             lon=body.lon,
             is_active=body.is_active,
+            columns_mode=body.columns_mode,
+            columns_count=body.columns_count,
         )
     )
+
+
+@router.get("/overview", response_model=list[AdminStationOverviewOut])
+def list_stations_overview(
+    _admin: str = Depends(require_admin),
+) -> list[AdminStationOverviewOut]:
+    now = datetime.now(timezone.utc)
+    return [
+        overview_station_to_out(station, pairs, now)
+        for station, pairs in list_all_stations_with_overview()
+    ]
 
 
 @router.patch("/{station_id}", response_model=StationOut)
@@ -67,6 +83,8 @@ def patch_station_card(
             lat=body.lat if "lat" in fields else None,
             lon=body.lon if "lon" in fields else None,
             is_active=body.is_active if "is_active" in fields else None,
+            columns_mode=body.columns_mode if "columns_mode" in fields else None,
+            columns_count=body.columns_count if "columns_count" in fields else None,
             address_set="address" in fields,
         )
     )

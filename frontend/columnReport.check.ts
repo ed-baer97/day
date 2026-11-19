@@ -4,6 +4,7 @@ import {
   buildLiveTankSamples,
   columnDispenseReport,
   isColumnReportStation,
+  stationColumnCount,
 } from "./src/columnReport";
 import { resolveRange, todayPeriod } from "./src/period";
 
@@ -25,6 +26,21 @@ const today = resolveRange(todayPeriod(now), now);
 assert.equal(isColumnReportStation({ code: "AGZS-AKT-12", name: "REKON" }), true);
 assert.equal(isColumnReportStation({ code: "AKT-12MKR", name: "Актау" }), true);
 assert.equal(isColumnReportStation({ code: "AGZS-FILE", name: "Жетыбай" }), false);
+assert.equal(
+  isColumnReportStation({ code: "AGZS-AKT-12", name: "REKON", columns_mode: "none" }),
+  false,
+);
+assert.equal(
+  isColumnReportStation({ code: "AGZS-FILE", name: "Жетыбай", columns_mode: "virtual" }),
+  true,
+);
+assert.equal(
+  isColumnReportStation({ code: "AGZS-FILE", name: "Жетыбай", columns_mode: "edge" }),
+  true,
+);
+assert.equal(stationColumnCount({}), 2);
+assert.equal(stationColumnCount({ columns_count: 4 }), 4);
+assert.equal(stationColumnCount({ columns_count: 12 }), 8);
 
 const report = columnDispenseReport(
   [
@@ -151,5 +167,38 @@ assert.equal(edgeReport.columns[0].total, 20);
 assert.equal(edgeReport.columns[1].total, 12.75);
 assert.equal(edgeReport.total, 32.75);
 assert.equal(edgeReport.opsTotal, 2);
+
+const strictEdgeEmpty = columnDispenseReport(
+  [
+    reading(new Date(2026, 10, 18, 1, 0, 0), 10000, null),
+    reading(new Date(2026, 10, 18, 2, 10, 0), 9700, -300),
+  ],
+  today,
+  [],
+  now,
+  300,
+  [],
+  { columnCount: 3, mode: "edge" },
+);
+assert.equal(strictEdgeEmpty.source, "edge");
+assert.equal(strictEdgeEmpty.columnCount, 3);
+assert.equal(strictEdgeEmpty.total, 0);
+assert.equal(strictEdgeEmpty.tankOutflowLiters, 300);
+assert.equal(strictEdgeEmpty.discrepancyLiters, -300);
+assert.equal(strictEdgeEmpty.status, "warn");
+
+const virtualFourCols = columnDispenseReport(
+  [reading(new Date(2026, 10, 18, 1, 0, 0), 10000, null)],
+  today,
+  [],
+  now,
+  400,
+  [],
+  { columnCount: 4, mode: "virtual" },
+);
+assert.equal(virtualFourCols.source, "level");
+assert.equal(virtualFourCols.columnCount, 4);
+assert.equal(virtualFourCols.total, 400);
+assert.equal(virtualFourCols.columns[3].total, 100);
 
 console.log("columnReport.check ok");

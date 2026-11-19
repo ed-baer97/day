@@ -104,6 +104,7 @@ def build_tank_ingest_state(
     station_id: UUID,
     tank_id: UUID,
     calibrated: bool,
+    calibration: LevelCalibration | None = None,
 ) -> TankBookState:
     """Формирует доменный снимок состояния книги резервуара."""
     calculated, delta, status = recompute_tank_book(target)
@@ -121,6 +122,10 @@ def build_tank_ingest_state(
         calibrated=calibrated,
         last_volts=target.last_volts,
         last_measured_at=target.last_measured_at,
+        cal_low_volts=None if calibration is None else calibration.low_volts,
+        cal_low_percent=None if calibration is None else calibration.low_percent,
+        cal_high_volts=None if calibration is None else calibration.high_volts,
+        cal_high_percent=None if calibration is None else calibration.high_percent,
     )
 
 

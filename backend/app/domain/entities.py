@@ -10,6 +10,7 @@ from uuid import UUID
 from app.domain.calibration import LevelCalibration
 
 TRUCK_STATUSES = ("idle", "loading", "in_transit", "arrived", "unloading")
+COLUMN_MODES = ("none", "virtual", "edge")
 
 
 @dataclass
@@ -21,6 +22,8 @@ class StationCard:
     lat: float
     lon: float
     is_active: bool
+    columns_mode: str = "none"
+    columns_count: int = 2
 
 
 @dataclass
@@ -110,6 +113,10 @@ class TankBookState:
     calibrated: bool
     last_volts: float | None
     last_measured_at: datetime | None
+    cal_low_volts: float | None = None
+    cal_low_percent: float | None = None
+    cal_high_volts: float | None = None
+    cal_high_percent: float | None = None
 
 
 def parse_dispense_meta(

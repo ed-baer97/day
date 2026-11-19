@@ -17,6 +17,7 @@ from app.routers import (
     events,
     ingest,
     map as map_router,
+    owners,
     public,
     shelly,
     station_owners,
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(tanks.router, prefix=prefix, dependencies=[Depends(require_principal)])
     app.include_router(shelly.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(station_owners.router, prefix=prefix, dependencies=admin_guard)
+    app.include_router(owners.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(trucks.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(batches.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(balance.router, prefix=prefix, dependencies=admin_guard)

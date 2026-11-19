@@ -9,6 +9,8 @@ from app.domain.entities import TRUCK_STATUSES, StationCard, TruckCard
 from app.domain.errors import ConflictError, NotFoundError
 from app.services.account_helpers import (
     clean_optional_text,
+    require_columns_count,
+    require_columns_mode,
     require_non_empty,
     require_truck_status,
     reset_gps_seen,
@@ -19,13 +21,21 @@ from app.services.memory_state import persist, register_store
 _lock = threading.Lock()
 
 
+def _default_columns_mode(code: str, name: str) -> str:
+    c = code.strip().lower()
+    n = name.strip().lower()
+    if "rekon" in n or c in {"agzs-akt-12", "akt-12mkr"}:
+        return "virtual"
+    return "none"
+
+
 def _stations() -> list[StationCard]:
     rows = [
-        ("a1111111-1111-1111-1111-111111111101", "AGZS-AKT-12", "АГЗС Актау · 12 мкр", "Актау, 12 микрорайон", 43.6479, 51.2480),
+        ("a1111111-1111-1111-1111-111111111101", "AGZS-AKT-12", "АГЗС Актау · 12 мкр", "Актау, 12 микрорайон", 43.6479, 51.2480, "virtual", 2),
     ]
     return [
-        StationCard(UUID(sid), code, name, address, lat, lon, True)
-        for sid, code, name, address, lat, lon in rows
+        StationCard(UUID(sid), code, name, address, lat, lon, True, columns_mode, columns_count)
+        for sid, code, name, address, lat, lon, columns_mode, columns_count in rows
     ]
 
 
@@ -67,9 +77,13 @@ def create_station(
     lat: float,
     lon: float,
     is_active: bool,
+    columns_mode: str = "none",
+    columns_count: int = 2,
 ) -> StationCard:
     cleaned_code = require_non_empty(code, "код заправки")
     cleaned_name = require_non_empty(name, "название заправки")
+    valid_mode = require_columns_mode(columns_mode)
+    valid_count = require_columns_count(columns_count)
     with _lock:
         if any(station.code == cleaned_code for station in _station_cards):
             raise ConflictError("заправка с таким кодом уже есть")
@@ -81,6 +95,8 @@ def create_station(
             lat=lat,
             lon=lon,
             is_active=is_active,
+            columns_mode=valid_mode,
+            columns_count=valid_count,
         )
         _station_cards.append(station)
     persist()
@@ -96,6 +112,8 @@ def update_station(
     lat: float | None = None,
     lon: float | None = None,
     is_active: bool | None = None,
+    columns_mode: str | None = None,
+    columns_count: int | None = None,
     address_set: bool = False,
 ) -> StationCard:
     with _lock:
@@ -117,6 +135,10 @@ def update_station(
             station.lon = lon
         if is_active is not None:
             station.is_active = is_active
+        if columns_mode is not None:
+            station.columns_mode = require_columns_mode(columns_mode)
+        if columns_count is not None:
+            station.columns_count = require_columns_count(columns_count)
     persist()
     return station
 
@@ -228,6 +250,8 @@ def snapshot() -> dict:
                     "lat": station.lat,
                     "lon": station.lon,
                     "is_active": station.is_active,
+                    "columns_mode": station.columns_mode,
+                    "columns_count": station.columns_count,
                 }
                 for station in _station_cards
             ],
@@ -260,6 +284,11 @@ def restore_snapshot(data: dict) -> None:
             lat=float(row["lat"]),
             lon=float(row["lon"]),
             is_active=bool(row["is_active"]),
+            columns_mode=str(
+                row.get("columns_mode")
+                or _default_columns_mode(str(row.get("code") or ""), str(row.get("name") or ""))
+            ),
+            columns_count=int(row["columns_count"]) if row.get("columns_count") is not None else 2,
         )
         for row in data.get("stations") or []
     ]

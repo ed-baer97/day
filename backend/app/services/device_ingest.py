@@ -212,6 +212,18 @@ def update_tank_device(
     return device
 
 
+def rotate_tank_token(station_id: UUID, tank_id: UUID) -> TankDevice:
+    with _lock:
+        device = _devices_by_tank.get(tank_id)
+        if device is None or device.station_id != station_id:
+            raise NotFoundError("резервуар не найден")
+        _devices_by_token.pop(device.token, None)
+        device.token = secrets.token_urlsafe(24)
+        _devices_by_token[device.token] = device
+    persist()
+    return device
+
+
 def _book(station_id: UUID, tank_id: UUID) -> TankBook:
     key = (station_id, tank_id)
     book = _books.get(key)
@@ -219,6 +231,22 @@ def _book(station_id: UUID, tank_id: UUID) -> TankBook:
         book = TankBook(station_id=station_id, tank_id=tank_id)
         _books[key] = book
     return book
+
+
+def tank_state_or_none(station_id: UUID, tank_id: UUID) -> TankIngestState | None:
+    with _lock:
+        book = _books.get((station_id, tank_id))
+        if book is None:
+            return None
+        return state_to_schema(
+            build_tank_ingest_state(
+                book,
+                station_id=book.station_id,
+                tank_id=book.tank_id,
+                calibrated=book.calibration is not None,
+                calibration=book.calibration,
+            )
+        )
 
 
 def tank_state(tank_id: UUID) -> TankIngestState:
@@ -231,6 +259,7 @@ def tank_state(tank_id: UUID) -> TankIngestState:
                         station_id=book.station_id,
                         tank_id=book.tank_id,
                         calibrated=book.calibration is not None,
+                        calibration=book.calibration,
                     )
                 )
     raise NotFoundError("резервуар ещё не присылал данные")
@@ -518,10 +547,12 @@ __all__ = [
     "register_tank",
     "reset_device_ingest",
     "restore_snapshot",
+    "rotate_tank_token",
     "set_calibration",
     "snapshot",
     "tank_by_token",
     "tank_remainder",
     "tank_state",
+    "tank_state_or_none",
     "update_tank_device",
 ]

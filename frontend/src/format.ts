@@ -149,3 +149,56 @@ export function supplyStatusText(status: SupplyStatus) {
   if (status === "accepted") return "принято";
   return "реализация";
 }
+
+export function batchStatusLabel(status?: string | null): string {
+  const map: Record<string, string> = {
+    formed: "сформирована",
+    in_transit: "в пути",
+    delivered: "доставлена",
+    partially_sold: "частично продана",
+    closed: "закрыта",
+  };
+  return status ? map[status] ?? status : "—";
+}
+
+export function eventTypeLabel(eventType?: string | null): string {
+  const map: Record<string, string> = {
+    shortage: "Недостача",
+    surplus: "Излишек",
+    sensor_offline: "Нет связи",
+    calibration: "Калибровка",
+    ok: "Норма",
+  };
+  return eventType ? map[eventType] ?? eventType : "Событие";
+}
+
+export function severityLabel(severity?: string | null): string {
+  const map: Record<string, string> = {
+    critical: "критично",
+    warning: "внимание",
+    warn: "внимание",
+    info: "инфо",
+  };
+  return severity ? map[severity] ?? severity : "—";
+}
+
+export function trailNodeLabel(nodeType?: string | null): string {
+  const map: Record<string, string> = {
+    supplier: "Поставщик",
+    factory: "Завод",
+    batch: "Партия",
+    truck: "Газовоз",
+    route: "Маршрут",
+    station: "АГЗС",
+    tank: "Резервуар",
+    dispense: "ТРК",
+    sale: "Продажа",
+  };
+  return nodeType ? map[nodeType] ?? nodeType : "Этап";
+}
+
+export function columnsModeLabel(mode?: string | null): string {
+  if (mode === "virtual") return "Виртуальные";
+  if (mode === "edge") return "Реальные (Edge)";
+  return "Отключены";
+}

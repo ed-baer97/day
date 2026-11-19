@@ -1,4 +1,4 @@
-import type { CatalogStation } from "../../api/client";
+import type { AdminStationOverview, CatalogStation } from "../../api/client";
 import type { LiveLevel } from "../../liveLevels";
 
 export const TRUCK_STATUS = [
@@ -13,8 +13,15 @@ export function statusLabel(value: string) {
   return TRUCK_STATUS.find((row) => row.value === value)?.label ?? value;
 }
 
+export function truckStatusBadge(status: string): "ok" | "warn" | "" {
+  if (status === "in_transit") return "ok";
+  if (status === "loading" || status === "arrived" || status === "unloading") return "warn";
+  return "";
+}
+
 export type EnrichedStation = {
   row: CatalogStation;
+  overview: AdminStationOverview | null;
   cap: number;
   actual: number | null;
   fill: number | null;
@@ -23,14 +30,19 @@ export type EnrichedStation = {
   online: boolean;
   live: LiveLevel | null;
   region: string;
+  tanksCount: number;
+  calibratedCount: number;
+  bookCalc: number | null;
+  bookDelta: number | null;
+  balanceStatus: string;
 };
 
-export type AdminTab = "stations" | "trucks" | "supplies" | "reconcile" | "security";
+export type AdminTab = "stations" | "trucks" | "edge" | "reconcile" | "access";
 
 export const ADMIN_SECTIONS: { id: AdminTab; label: string; note: string }[] = [
-  { id: "stations", label: "АГЗС", note: "Карточки, резервуары, Shelly" },
-  { id: "trucks", label: "Газовозы", note: "Автопарк и GPS-координаты" },
-  { id: "supplies", label: "Поставки", note: "План подвоза и партии" },
-  { id: "reconcile", label: "Сверка и аудит", note: "Контроль датчиков и события" },
-  { id: "security", label: "Доступ и защита", note: "Контур безопасности" },
+  { id: "stations", label: "АГЗС и оборудование", note: "Карточки, резервуары, Shelly, ТРК" },
+  { id: "trucks", label: "Автопарк", note: "Газовозы и GPS-координаты" },
+  { id: "edge", label: "Edge-узлы и OTA", note: "Станционные узлы и кольца" },
+  { id: "reconcile", label: "Сверка и инциденты", note: "Баланс книги и датчиков" },
+  { id: "access", label: "Пользователи и доступ", note: "Владельцы и токены устройств" },
 ];

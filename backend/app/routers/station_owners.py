@@ -2,11 +2,17 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from app.auth import require_admin
 from app.schemas.auth import StationUserCreate, StationUserCreated, StationUserOut
-from app.services.account import create_station_user, get_station, list_station_users
+from app.services.account import (
+    create_station_user,
+    detach_station_user,
+    get_station,
+    has_owner,
+    list_station_users,
+)
 
 router = APIRouter(prefix="/stations/{station_id}/users", tags=["station-owners"])
 
@@ -36,11 +42,24 @@ def create_station_login(
     _admin: str = Depends(require_admin),
 ) -> StationUserCreated:
     get_station(station_id)
+    existed = has_owner(body.username)
     user = create_station_user(station_id, body.username, body.password)
     return StationUserCreated(
         id=user.id,
         station_id=station_id,
         username=user.username,
         kind=getattr(user, "kind", "owner"),
-        password=body.password,
+        password="" if existed else body.password,
+        password_applied=not existed,
     )
+
+
+@router.delete("/{username}", status_code=204)
+def remove_station_login(
+    station_id: UUID,
+    username: str,
+    _admin: str = Depends(require_admin),
+) -> Response:
+    get_station(station_id)
+    detach_station_user(station_id, username)
+    return Response(status_code=204)

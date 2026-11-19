@@ -29,6 +29,8 @@ class StationOut(BaseModel):
     lat: float
     lon: float
     is_active: bool
+    columns_mode: str = "none"
+    columns_count: int = 2
 
 
 class StationCreate(BaseModel):
@@ -38,6 +40,8 @@ class StationCreate(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
     is_active: bool = True
+    columns_mode: str = Field(default="none", pattern="^(none|virtual|edge)$")
+    columns_count: int = Field(default=2, ge=0, le=8)
 
 
 class StationUpdate(BaseModel):
@@ -47,6 +51,8 @@ class StationUpdate(BaseModel):
     lat: float | None = Field(default=None, ge=-90, le=90)
     lon: float | None = Field(default=None, ge=-180, le=180)
     is_active: bool | None = None
+    columns_mode: str | None = Field(default=None, pattern="^(none|virtual|edge)$")
+    columns_count: int | None = Field(default=None, ge=0, le=8)
 
 
 class TankDeviceCreate(BaseModel):
@@ -124,3 +130,31 @@ class LevelReadingOut(BaseModel):
     fill_percent: float | None
     recorded_at: str
     delta_liters: float | None = None
+
+
+class AdminTankOverviewOut(BaseModel):
+    id: UUID
+    code: str
+    capacity_liters: float
+    ingest_token: str
+    actual_remainder_liters: float | None = None
+    calculated_remainder_liters: float | None = None
+    fill_percent: float | None = None
+    opening_liters: float | None = None
+    receipts_liters: float = 0.0
+    dispense_liters: float = 0.0
+    delta_liters: float | None = None
+    balance_status: str = "unknown"
+    calibrated: bool = False
+    cal_low_volts: float | None = None
+    cal_low_percent: float | None = None
+    cal_high_volts: float | None = None
+    cal_high_percent: float | None = None
+    last_volts: float | None = None
+    last_measured_at: datetime | None = None
+    online: bool = False
+    shelly: ShellyLinkOut | None = None
+
+
+class AdminStationOverviewOut(StationOut):
+    tanks: list[AdminTankOverviewOut] = Field(default_factory=list)

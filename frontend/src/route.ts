@@ -1,6 +1,6 @@
 import type { AppScreen } from "./layout/Topbar";
 
-export type AdminRouteTab = "stations" | "trucks" | "supplies" | "reconcile" | "security";
+export type AdminRouteTab = "stations" | "trucks" | "edge" | "reconcile" | "access";
 
 export type AppRoute = {
   screen: AppScreen;
@@ -12,7 +12,7 @@ export type AppRoute = {
   mapId: string | null;
 };
 
-const ADMIN_TABS = new Set<AdminRouteTab>(["stations", "trucks", "supplies", "reconcile", "security"]);
+const ADMIN_TABS = new Set<AdminRouteTab>(["stations", "trucks", "edge", "reconcile", "access"]);
 
 export function emptyRoute(screen: AppScreen = "landing"): AppRoute {
   return {
@@ -50,9 +50,17 @@ export function parseRoute(pathname: string): AppRoute {
     return route;
   }
   if (head === "admin") {
-    route.screen = "admin";
     const tab = parts[1];
-    if (tab && ADMIN_TABS.has(tab as AdminRouteTab)) route.adminTab = tab as AdminRouteTab;
+    if (tab === "supplies") {
+      route.screen = "supply";
+      return route;
+    }
+    route.screen = "admin";
+    if (tab === "security") {
+      route.adminTab = "access";
+    } else if (tab && ADMIN_TABS.has(tab as AdminRouteTab)) {
+      route.adminTab = tab as AdminRouteTab;
+    }
     if (route.adminTab === "stations") route.adminStationId = parts[2] ?? null;
     if (route.adminTab === "trucks") route.adminTruckId = parts[2] ?? null;
     return route;

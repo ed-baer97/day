@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -41,6 +42,8 @@ class Station(Base):
     lat: Mapped[float] = mapped_column(Float, nullable=False)
     lon: Mapped[float] = mapped_column(Float, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    columns_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="none", server_default="none")
+    columns_count: Mapped[int] = mapped_column(Integer, nullable=False, default=2, server_default="2")
     balance_tolerance_liters: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

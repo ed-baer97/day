@@ -25,11 +25,13 @@ export default function Dashboard({
   onOpenStation,
   onOpenAdminStation,
   onOpenMapStation,
+  onOpenAdminReconcile,
 }: {
   stationId: string | null;
   onOpenStation: (id: string | null) => void;
   onOpenAdminStation?: (id: string) => void;
   onOpenMapStation?: (id: string) => void;
+  onOpenAdminReconcile?: () => void;
 }) {
   if (stationId) {
     return (
@@ -39,6 +41,7 @@ export default function Dashboard({
         onSelectStation={(id) => onOpenStation(id)}
         onOpenAdmin={onOpenAdminStation}
         onOpenMap={onOpenMapStation}
+        onOpenAdminReconcile={onOpenAdminReconcile}
       />
     );
   }

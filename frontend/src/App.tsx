@@ -71,6 +71,16 @@ export default function App() {
     dashRef.current?.scrollTo(0, 0);
   }, [dashStationId, page, adminStationId, adminTruckId]);
 
+  const reloadBatches = useCallback(async () => {
+    if (!admin) return;
+    try {
+      const rows = await api.batches();
+      setBatches(rows);
+    } catch {
+      /* игнорируем при фоновом обновлении */
+    }
+  }, [admin]);
+
   useEffect(() => {
     if (!admin || page !== "supply") return;
     let alive = true;
@@ -205,12 +215,14 @@ export default function App() {
         isStationSide={isStationSide}
         screen={screen}
         stations={stations}
+        allStations={catalog.stations}
         byCode={byCode}
         theme={theme}
         onToggleTheme={toggle}
         onGoHomeDashboard={goHomeDashboard}
         onSelectPage={setPage}
         onOpenStationPage={openStationPage}
+        onOpenAdminStation={admin ? openAdminStation : undefined}
         onOpenAdminRoot={() => {
           go({ screen: "admin", adminTab: "stations", adminStationId: null, adminTruckId: null });
         }}
@@ -244,6 +256,8 @@ export default function App() {
             batches={batches}
             byCode={byCode}
             networkStats={networkStats}
+            onBatchesChange={setBatches}
+            onReloadBatches={reloadBatches}
             onOpenTrucksOnMap={() => {
               setMapHudTab("trucks");
               setPage("map");
@@ -258,22 +272,45 @@ export default function App() {
       ) : screen === "admin" ? (
         <main className="page dash-page" ref={dashRef}>
           <AdminPage
-            initialTab={route.adminTab}
-            initialStationId={route.adminTab === "stations" ? adminStationId : null}
-            initialTruckId={route.adminTab === "trucks" ? adminTruckId : null}
-            onOpenStationDashboard={isStationSide ? undefined : openStationPage}
-            onOpenStationMap={isStationSide ? undefined : openStationOnMap}
-            onTrailChange={(trail) => {
+            tab={route.adminTab}
+            stationId={route.adminTab === "stations" ? adminStationId : null}
+            truckId={route.adminTab === "trucks" ? adminTruckId : null}
+            onSelectTab={(nextTab) =>
               go(
                 {
                   screen: "admin",
-                  adminTab: trail.tab,
-                  adminStationId: trail.tab === "stations" ? trail.stationId : adminStationId,
-                  adminTruckId: trail.tab === "trucks" ? trail.truckId : adminTruckId,
+                  adminTab: nextTab,
+                  adminStationId: null,
+                  adminTruckId: null,
                 },
-                "replace"
-              );
-            }}
+                "push"
+              )
+            }
+            onSelectStationId={(id) =>
+              go(
+                {
+                  screen: "admin",
+                  adminTab: "stations",
+                  adminStationId: id,
+                  adminTruckId: null,
+                },
+                "push"
+              )
+            }
+            onSelectTruckId={(id) =>
+              go(
+                {
+                  screen: "admin",
+                  adminTab: "trucks",
+                  adminStationId: null,
+                  adminTruckId: id,
+                },
+                "push"
+              )
+            }
+            onOpenStationDashboard={isStationSide ? undefined : openStationPage}
+            onOpenStationMap={isStationSide ? undefined : openStationOnMap}
+            onOpenTruckMap={isStationSide ? undefined : openTruckOnMap}
           />
         </main>
       ) : (
@@ -283,6 +320,20 @@ export default function App() {
             onOpenStation={setDashStationId}
             onOpenAdminStation={admin ? openAdminStation : undefined}
             onOpenMapStation={isStationSide ? undefined : openStationOnMap}
+            onOpenAdminReconcile={
+              admin
+                ? () =>
+                    go(
+                      {
+                        screen: "admin",
+                        adminTab: "reconcile",
+                        adminStationId: null,
+                        adminTruckId: null,
+                      },
+                      "push"
+                    )
+                : undefined
+            }
           />
         </main>
       )}

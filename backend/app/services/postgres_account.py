@@ -21,7 +21,7 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.domain.calibration import LevelCalibration
 from app.domain.entities import StationCard, StationOwner, TankDevice, TruckCard
-from app.domain.errors import ConflictError, NotFoundError
+from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.tank_book import (
     apply_dispense_volume,
     apply_level_reading,
@@ -56,6 +56,8 @@ from app.services.account_helpers import (
     level_event_key,
     receipt_event_key,
     require_calibration_points,
+    require_columns_count,
+    require_columns_mode,
     require_non_empty,
     require_owner_password,
     require_station_and_tank,
@@ -80,6 +82,8 @@ def _card(row: Station) -> StationCard:
         lat=row.lat,
         lon=row.lon,
         is_active=row.is_active,
+        columns_mode=getattr(row, "columns_mode", None) or "none",
+        columns_count=getattr(row, "columns_count", None) if getattr(row, "columns_count", None) is not None else 2,
     )
 
 
@@ -129,12 +133,14 @@ def _calibration(row: Tank) -> LevelCalibration | None:
 
 
 def _state(row: Tank) -> TankIngestState:
+    cal = _calibration(row)
     return state_to_schema(
         build_tank_ingest_state(
             row,
             station_id=row.station_id,
             tank_id=row.id,
-            calibrated=_calibration(row) is not None,
+            calibrated=cal is not None,
+            calibration=cal,
         )
     )
 
@@ -162,6 +168,23 @@ def list_active_stations_with_tanks() -> list[tuple[StationCard, list[TankOut]]]
         return result
 
 
+def list_all_stations_with_overview() -> list[tuple[StationCard, list[tuple[TankDevice, TankIngestState | None]]]]:
+    """Пакетно загружает все АГЗС (включая скрытые) и их резервуары для кабинета администратора."""
+    with session() as db:
+        stmt = (
+            select(Station)
+            .options(selectinload(Station.tanks))
+            .order_by(Station.code)
+        )
+        stations = db.scalars(stmt).all()
+        result: list[tuple[StationCard, list[tuple[TankDevice, TankIngestState | None]]]] = []
+        for st in stations:
+            sorted_tanks = sorted(st.tanks, key=lambda item: item.code)
+            pairs = [(_device(t), _state(t)) for t in sorted_tanks]
+            result.append((_card(st), pairs))
+        return result
+
+
 def get_station(station_id: UUID) -> StationCard:
     with session() as db:
         row = db.get(Station, station_id)
@@ -178,9 +201,13 @@ def create_station(
     lat: float,
     lon: float,
     is_active: bool,
+    columns_mode: str = "none",
+    columns_count: int = 2,
 ) -> StationCard:
     cleaned_code = require_non_empty(code, "код заправки")
     cleaned_name = require_non_empty(name, "название заправки")
+    valid_mode = require_columns_mode(columns_mode)
+    valid_count = require_columns_count(columns_count)
     with session() as db:
         if db.scalar(select(Station).where(Station.code == cleaned_code)):
             raise ConflictError("заправка с таким кодом уже есть")
@@ -192,6 +219,8 @@ def create_station(
             lat=lat,
             lon=lon,
             is_active=is_active,
+            columns_mode=valid_mode,
+            columns_count=valid_count,
         )
         db.add(row)
         db.commit()
@@ -208,6 +237,8 @@ def update_station(
     lat: float | None = None,
     lon: float | None = None,
     is_active: bool | None = None,
+    columns_mode: str | None = None,
+    columns_count: int | None = None,
     address_set: bool = False,
 ) -> StationCard:
     with session() as db:
@@ -230,6 +261,10 @@ def update_station(
             row.lon = lon
         if is_active is not None:
             row.is_active = is_active
+        if columns_mode is not None:
+            row.columns_mode = require_columns_mode(columns_mode)
+        if columns_count is not None:
+            row.columns_count = require_columns_count(columns_count)
         db.commit()
         db.refresh(row)
         return _card(row)
@@ -429,6 +464,17 @@ def delete_tank_device(station_id: UUID, tank_id: UUID) -> None:
             raise NotFoundError("резервуар не найден")
         db.delete(row)
         db.commit()
+
+
+def rotate_tank_token(station_id: UUID, tank_id: UUID) -> TankDevice:
+    with session() as db:
+        row = db.get(Tank, tank_id)
+        if row is None or row.station_id != station_id:
+            raise NotFoundError("резервуар не найден")
+        row.ingest_token = secrets.token_urlsafe(24)
+        db.commit()
+        db.refresh(row)
+        return _device(row)
 
 
 def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
@@ -848,6 +894,161 @@ def authenticate_station_user(username: str, password: str) -> StationOwner | No
         return _to_station_owner(rows)
 
 
+def has_owner(username: str) -> bool:
+    cleaned = username.strip().lower()
+    if not cleaned:
+        return False
+    with session() as db:
+        row = db.scalar(
+            select(StationUser).where(
+                StationUser.username == cleaned,
+                StationUser.kind == "owner",
+            )
+        )
+        return row is not None
+
+
+def list_all_owners() -> list[StationOwner]:
+    with session() as db:
+        rows = list(
+            db.scalars(
+                select(StationUser)
+                .where(StationUser.kind == "owner")
+                .order_by(StationUser.username, StationUser.created_at)
+            ).all()
+        )
+        grouped: dict[str, list[StationUser]] = {}
+        for row in rows:
+            grouped.setdefault(row.username, []).append(row)
+        return [_to_station_owner(grouped[name]) for name in sorted(grouped.keys())]
+
+
+def create_owner_account(username: str, password: str, station_ids: list[UUID]) -> StationOwner:
+    cleaned = clean_owner_username(
+        username,
+        get_settings().admin_username,
+        empty_detail="укажите логин владельца",
+    )
+    require_owner_password(password)
+    unique_ids = list(dict.fromkeys(station_ids))
+    if not unique_ids:
+        raise ValidationError("укажите хотя бы одну АГЗС")
+    with session() as db:
+        if db.scalar(select(StationUser).where(StationUser.username == cleaned)) is not None:
+            raise ConflictError("владелец с таким логином уже существует")
+        for sid in unique_ids:
+            if db.get(Station, sid) is None:
+                raise NotFoundError("Station not found")
+        pwd_hash = hash_password(password)
+        created_rows: list[StationUser] = []
+        for sid in unique_ids:
+            row = StationUser(
+                id=uuid4(),
+                station_id=sid,
+                username=cleaned,
+                password_hash=pwd_hash,
+                kind="owner",
+            )
+            db.add(row)
+            created_rows.append(row)
+        db.commit()
+        for row in created_rows:
+            db.refresh(row)
+        return _to_station_owner(created_rows)
+
+
+def update_owner_account(
+    username: str,
+    *,
+    station_ids: list[UUID] | None = None,
+    password: str | None = None,
+) -> StationOwner:
+    cleaned = username.strip().lower()
+    if not cleaned:
+        raise NotFoundError("владелец не найден")
+    with session() as db:
+        rows = list(
+            db.scalars(
+                select(StationUser)
+                .where(StationUser.username == cleaned, StationUser.kind == "owner")
+                .order_by(StationUser.created_at)
+            ).all()
+        )
+        if not rows:
+            raise NotFoundError("владелец не найден")
+        pwd_hash = rows[0].password_hash
+        if password is not None:
+            require_owner_password(password)
+            pwd_hash = hash_password(password)
+            for row in rows:
+                row.password_hash = pwd_hash
+        if station_ids is not None:
+            unique_ids = list(dict.fromkeys(station_ids))
+            if not unique_ids:
+                raise ValidationError("оставьте хотя бы одну АГЗС или удалите владельца")
+            for sid in unique_ids:
+                if db.get(Station, sid) is None:
+                    raise NotFoundError("Station not found")
+            target_set = set(unique_ids)
+            existing_by_sid = {row.station_id: row for row in rows}
+            for sid, row in existing_by_sid.items():
+                if sid not in target_set:
+                    db.delete(row)
+            kept = [row for row in rows if row.station_id in target_set]
+            for sid in unique_ids:
+                if sid not in existing_by_sid:
+                    new_row = StationUser(
+                        id=uuid4(),
+                        station_id=sid,
+                        username=cleaned,
+                        password_hash=pwd_hash,
+                        kind="owner",
+                    )
+                    db.add(new_row)
+                    kept.append(new_row)
+            rows = kept
+        db.commit()
+        for row in rows:
+            db.refresh(row)
+        return _to_station_owner(rows)
+
+
+def detach_station_user(station_id: UUID, username: str) -> None:
+    cleaned = username.strip().lower()
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        row = db.scalar(
+            select(StationUser).where(
+                StationUser.station_id == station_id,
+                StationUser.username == cleaned,
+                StationUser.kind == "owner",
+            )
+        )
+        if row is None:
+            raise NotFoundError("владелец не привязан к этой АГЗС")
+        db.delete(row)
+        db.commit()
+
+
+def delete_owner_account(username: str) -> None:
+    cleaned = username.strip().lower()
+    with session() as db:
+        rows = list(
+            db.scalars(
+                select(StationUser).where(
+                    StationUser.username == cleaned,
+                    StationUser.kind == "owner",
+                )
+            ).all()
+        )
+        if not rows:
+            raise NotFoundError("владелец не найден")
+        for row in rows:
+            db.delete(row)
+        db.commit()
+
+
 def import_memory_snapshot(data: dict) -> None:
     """Разовый импорт state.json в пустую БД Postgres при старте."""
     catalog_data = data.get("catalog") if isinstance(data.get("catalog"), dict) else {}
@@ -863,15 +1064,24 @@ def import_memory_snapshot(data: dict) -> None:
         for row in (catalog_data or {}).get("stations") or []:
             if not isinstance(row, dict):
                 continue
+            code = str(row["code"]).strip()
+            name = str(row["name"]).strip()
+            default_mode = (
+                "virtual"
+                if ("rekon" in name.lower() or code.lower() in {"agzs-akt-12", "akt-12mkr"})
+                else "none"
+            )
             db.add(
                 Station(
                     id=UUID(str(row["id"])),
-                    code=str(row["code"]).strip(),
-                    name=str(row["name"]).strip(),
+                    code=code,
+                    name=name,
                     address=row.get("address"),
                     lat=float(row["lat"]),
                     lon=float(row["lon"]),
                     is_active=bool(row.get("is_active", True)),
+                    columns_mode=str(row.get("columns_mode") or default_mode),
+                    columns_count=int(row["columns_count"]) if row.get("columns_count") is not None else 2,
                 )
             )
         for row in (catalog_data or {}).get("trucks") or []:

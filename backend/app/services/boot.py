@@ -30,6 +30,7 @@ def restore_memory_state() -> None:
     settings = get_settings()
     if settings.use_postgres:
         return
+    import app.services.batch_book  # noqa: F401
     import app.services.memory_account  # noqa: F401
     import app.services.shelly_link  # noqa: F401
     from app.services.memory_state import restore
@@ -75,6 +76,8 @@ def import_state_if_empty() -> None:
                 lat=43.6479,
                 lon=51.2480,
                 is_active=True,
+                columns_mode="virtual",
+                columns_count=2,
             )
         )
         db.commit()

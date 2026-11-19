@@ -101,6 +101,10 @@ class TankIngestState(BaseModel):
     calibrated: bool
     last_volts: float | None
     last_measured_at: datetime | None
+    cal_low_volts: float | None = None
+    cal_low_percent: float | None = None
+    cal_high_volts: float | None = None
+    cal_high_percent: float | None = None
 
 
 class DispenseBatchIngest(BaseModel):

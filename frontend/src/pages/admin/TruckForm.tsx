@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CatalogTruck, TruckDraft } from "../../api/client";
 import { messageOf, useCatalog } from "../../catalog";
+import ConfirmModal from "../../components/ConfirmModal";
 import { TRUCK_STATUS } from "./types";
 
 export default function TruckForm({
@@ -21,6 +22,7 @@ export default function TruckForm({
   const [lon, setLon] = useState(initial?.lon != null ? String(initial.lon) : "");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   async function submit() {
     const volume = Number(capacity.replace(",", "."));
@@ -63,6 +65,7 @@ export default function TruckForm({
     setError(null);
     try {
       await deleteTruck(initial.id);
+      setConfirmDelete(false);
       onDeleted();
     } catch (err) {
       setError(messageOf(err));
@@ -72,67 +75,80 @@ export default function TruckForm({
   }
 
   return (
-    <form
-      className="admin-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submit();
-      }}
-    >
-      <h3 className="span-3">Карточка газовоза</h3>
-      <label>
-        Номер
-        <input value={plate} onChange={(event) => setPlate(event.target.value)} />
-      </label>
-      <label>
-        Объём цистерны, л
-        <input
-          inputMode="decimal"
-          value={capacity}
-          onChange={(event) => setCapacity(event.target.value)}
-        />
-      </label>
-      <label>
-        Статус
-        <select value={status} onChange={(event) => setStatus(event.target.value)}>
-          {TRUCK_STATUS.map((row) => (
-            <option key={row.value} value={row.value}>
-              {row.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="span-3">
-        Перевозчик
-        <input value={carrier} onChange={(event) => setCarrier(event.target.value)} />
-      </label>
-      <label>
-        Широта
-        <input inputMode="decimal" value={lat} onChange={(event) => setLat(event.target.value)} />
-      </label>
-      <label>
-        Долгота
-        <input inputMode="decimal" value={lon} onChange={(event) => setLon(event.target.value)} />
-      </label>
-      <p className="dash-muted span-3">
-        Для нового газовоза координаты ставят его на карту. Уже едущий рейс координаты не сдвигает.
-      </p>
-      {error ? <p className="tank-error span-3">{error}</p> : null}
-      <div className="admin-actions span-3">
-        <button type="submit" className="btn small" disabled={saving}>
-          Сохранить
-        </button>
-        {initial && (
-          <button
-            type="button"
-            className="btn secondary small text-danger"
-            disabled={saving}
-            onClick={() => void handleDelete()}
-          >
-            Удалить газовоз
+    <>
+      <form
+        className="admin-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <h3 className="span-3">Карточка газовоза</h3>
+        <label>
+          Номер
+          <input value={plate} onChange={(event) => setPlate(event.target.value)} />
+        </label>
+        <label>
+          Объём цистерны, л
+          <input
+            inputMode="decimal"
+            value={capacity}
+            onChange={(event) => setCapacity(event.target.value)}
+          />
+        </label>
+        <label>
+          Статус
+          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+            {TRUCK_STATUS.map((row) => (
+              <option key={row.value} value={row.value}>
+                {row.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="span-3">
+          Перевозчик
+          <input value={carrier} onChange={(event) => setCarrier(event.target.value)} />
+        </label>
+        <label>
+          Широта
+          <input inputMode="decimal" value={lat} onChange={(event) => setLat(event.target.value)} />
+        </label>
+        <label>
+          Долгота
+          <input inputMode="decimal" value={lon} onChange={(event) => setLon(event.target.value)} />
+        </label>
+        <p className="dash-muted span-3">
+          Для нового газовоза координаты ставят его на карту. Уже едущий рейс координаты не сдвигает.
+        </p>
+        {error ? <p className="tank-error span-3">{error}</p> : null}
+        <div className="admin-actions span-3">
+          <button type="submit" className="btn small" disabled={saving}>
+            Сохранить
           </button>
-        )}
-      </div>
-    </form>
+          {initial && (
+            <button
+              type="button"
+              className="btn secondary small text-danger"
+              disabled={saving}
+              onClick={() => setConfirmDelete(true)}
+            >
+              Удалить газовоз
+            </button>
+          )}
+        </div>
+      </form>
+
+      <ConfirmModal
+        open={confirmDelete}
+        title="Удалить газовоз?"
+        message={`Газовоз «${initial?.plate_number ?? ""}» будет удалён из каталога автопарка.`}
+        confirmLabel="Удалить газовоз"
+        danger
+        busy={saving}
+        onConfirm={() => void handleDelete()}
+        onCancel={() => setConfirmDelete(false)}
+      />
+    </>
   );
 }

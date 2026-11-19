@@ -24,6 +24,7 @@ from app.services.account import (
     list_station_tanks_out,
     list_tank_devices,
     register_tank,
+    rotate_tank_token,
     update_tank_device,
 )
 from app.services.level_journal import published_levels
@@ -86,6 +87,16 @@ def remove_station_device(
     get_station(station_id)
     delete_tank_device(station_id, tank_id)
     return Response(status_code=204)
+
+
+@router.post("/devices/{tank_id}/rotate-token", response_model=TankDeviceOut)
+def rotate_station_device_token(
+    station_id: UUID,
+    tank_id: UUID,
+    _admin: str = Depends(require_admin),
+) -> TankDeviceOut:
+    get_station(station_id)
+    return device_to_out(rotate_tank_token(station_id, tank_id))
 
 
 @router.get("/devices/{tank_id}/levels", response_model=list[LevelReadingOut])

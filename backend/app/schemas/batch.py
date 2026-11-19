@@ -65,3 +65,20 @@ class BatchTrailOut(BaseModel):
         ]
     )
     events: list[BatchTrailEventOut] = Field(default_factory=list)
+
+
+class BatchStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(formed|in_transit|delivered|closed)$")
+    note: str | None = Field(default=None, max_length=512)
+
+
+class BatchTrailEventCreate(BaseModel):
+    node_type: str = Field(
+        pattern="^(supplier|factory|batch|truck|route|station|tank|dispense|sale)$"
+    )
+    title: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=512)
+    ref_entity_type: str | None = Field(default=None, max_length=64)
+    ref_entity_id: UUID | None = None
+    volume_liters: float | None = Field(default=None, ge=0)
+    status: str | None = Field(default=None, pattern="^(formed|in_transit|delivered|closed)$")
