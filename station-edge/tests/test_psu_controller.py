@@ -370,3 +370,74 @@ def test_psu_controller_guards_and_edge_cases() -> None:
     assert stopped.state_code == STATE_STOPPED
     with pytest.raises(PsuControlError, match="невозможен"):
         ctrl.stop_pump(1)
+
+
+def test_set_price_handshake_retries_cancel_and_read_counters_reset_retry() -> None:
+    """set_price проверяет 0x16/0x30 с повтором и отменяет через 0x37 при отказе; read_counters повторяет 0x37 до 0x10."""
+    from agzs_edge.iskra import (
+        CMD_PARAMS_ASCII,
+        CMD_RESET_ASCII,
+        CMD_STOP_ASCII,
+        CMD_TEST_ASCII,
+        ETX,
+        SOH,
+        STX,
+        compute_bcc,
+    )
+    from agzs_edge.psu_controller import send_buttons_param_to_pumps
+
+    def _raw(cmd: int, price: bytes, vol: bytes, b17: int, b18: int, state: str = "05") -> bytes:
+        body = b"01" + bytes([cmd, STX]) + price + vol + bytes([b17, b18]) + state.encode("ascii") + bytes([ETX])
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    idle_05 = _raw(CMD_TEST_ASCII, b"007200", b"000000", 0x50, 0x8A)
+    not_ready_yet = _raw(CMD_TEST_ASCII, b"007200", b"000000", 0x50, 0x8A)
+    ready_16 = _raw(CMD_TEST_ASCII, b"007200", b"000000", 0x16, 0x8A)
+    stop_not_30 = _raw(CMD_STOP_ASCII, b"007200", b"000000", 0x16, 0x8A)
+    stop_30 = _raw(CMD_STOP_ASCII, b"007200", b"000000", 0x30, 0x8A)
+    idle_new_price = _raw(CMD_TEST_ASCII, b"000670", b"000000", 0x50, 0x8A)
+
+    # 1. set_price с повтором на шаге 2 (0x16) и шаге 3 (0x30) + цена < 10.00 (6.70)
+    link_retry = _ScriptedLink([idle_05, b"", not_ready_yet, ready_16, stop_not_30, stop_30, idle_new_price])
+    ctrl_retry = Uzsg01PsuController(link_retry)
+    res_price = ctrl_retry.set_price(1, 6.70, max_retries=3, retry_delay_sec=0.0)
+    assert res_price.price_kzt_per_liter == pytest.approx(6.70)
+    assert [req[3] for req in link_retry.sent] == [
+        CMD_TEST_ASCII,
+        CMD_PARAMS_ASCII,
+        CMD_TEST_ASCII,
+        CMD_TEST_ASCII,
+        CMD_STOP_ASCII,
+        CMD_STOP_ASCII,
+        CMD_TEST_ASCII,
+    ]
+
+    # 2. Если 0x16 не пришёл — отправляется СБРОС (0x37) и выбрасывается PsuControlError
+    link_fail = _ScriptedLink([idle_05, b"", not_ready_yet, not_ready_yet, idle_05])
+    ctrl_fail = Uzsg01PsuController(link_fail)
+    with pytest.raises(PsuControlError, match="0x16"):
+        ctrl_fail.set_price(1, 75.0, max_retries=2, retry_delay_sec=0.0)
+    assert link_fail.sent[-1][3] == CMD_RESET_ASCII
+
+    # 3. _reset_to_idle_bits повторяет 0x37, пока биты 0..4 байта 17 не станут 0x10
+    not_idle_bits = _raw(CMD_RESET_ASCII, b"007200", b"000000", 0x5A, 0x8A)
+    idle_bits = _raw(CMD_RESET_ASCII, b"007200", b"000000", 0x50, 0x8A)
+    link_rst = _ScriptedLink([not_idle_bits, idle_bits])
+    ctrl_rst = Uzsg01PsuController(link_rst)
+    reply = ctrl_rst._reset_to_idle_bits(1, max_retries=3, retry_delay_sec=0.0)  # noqa: SLF001
+    assert reply is not None and reply.dose_type_bits == 0x10
+    assert len(link_rst.sent) == 2
+
+    # 4. send_buttons_param_to_pumps(..., last_frames=None) опрашивает колонку и отказывает при '03'
+    disp_03 = _raw(CMD_TEST_ASCII, b"090000", b"001000", 0xD0, 0x8F, state="03")
+    link_busy = _ScriptedLink([disp_03])
+    ok_addrs, errs = send_buttons_param_to_pumps(
+        link_busy,
+        (1,),
+        "0.17",
+        checksum_mode="xor",
+        last_frames=None,
+    )
+    assert ok_addrs == []
+    assert len(errs) == 1 and "налив" in errs[0][1]
+    assert len(link_busy.sent) == 1 and link_busy.sent[0][3] == CMD_TEST_ASCII

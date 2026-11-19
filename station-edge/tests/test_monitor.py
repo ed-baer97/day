@@ -257,7 +257,7 @@ def test_config_case_insensitive_booleans_and_validations(monkeypatch, tmp_path:
     assert direct.read_only is False
 
     monkeypatch.setenv("AGZS_DISPENSER_MAP", "9:a2222222-2222-2222-2222-222222222201")
-    with pytest.raises(ValueError, match="1..6"):
+    with pytest.raises(ValueError, match="1..8"):
         EdgeSettings.from_env(tmp_path / "missing.env")
     monkeypatch.delenv("AGZS_DISPENSER_MAP", raising=False)
 

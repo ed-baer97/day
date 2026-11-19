@@ -32,7 +32,8 @@ def test_mid_fill_completed_frame_is_reported_separately() -> None:
     report = consume_frames(1, frames)
     assert report.column_total_ml == 7460
     assert len(report.tracker_dispenses) == 2
-    assert report.tracker_total_ml != report.column_total_ml
+    assert [item.dispensed_ml for item in report.tracker_dispenses] == [4740, 2720]
+    assert report.tracker_total_ml == report.column_total_ml
     text = report.render()
     assert "7460 мл" in text
     assert "не складывать" in text

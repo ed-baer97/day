@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agzs_edge.config import FrameLayout
+from agzs_edge.config import FrameLayout, MAX_PUMP_ADDRESS, MIN_PUMP_ADDRESS
 
 SOH = 0x01
 STX = 0x02
@@ -94,10 +94,59 @@ class IskraTelemetryFrame:
         return self.completed_volume_ml if self.completed_volume_ml is not None else self.volume_ml
 
     @property
+    def is_v310_status(self) -> bool:
+        return self.flags_raw.startswith("P")
+
+    @property
+    def is_mass_mode(self) -> bool:
+        """Биты 7–6 байта 19 (Sost) == 0;1 (0x40) по табл. 3.2.2: объём в кг, в Price — плотность."""
+        return len(self.raw_bytes) > 19 and (self.sost_byte19 & 0xC0) == 0x40
+
+    @property
+    def density_kg_per_l(self) -> float | None:
+        """Плотность СУГ (кг/л) из поля Price в режиме килограммов."""
+        if self.is_mass_mode and self.price_raw.isdigit():
+            val = int(self.price_raw)
+            if val <= 0:
+                return None
+            return val / 100_000.0 if val > 1000 else val / 1000.0
+        return None
+
+    @property
+    def effective_volume_ml(self) -> int:
+        """Объём в миллилитрах (при отпуске в килограммах пересчитывается через плотность)."""
+        vol = self.reported_volume_ml
+        if not self.is_mass_mode:
+            return vol
+        density = self.density_kg_per_l
+        if density is not None and 0.3 <= density <= 1.0:
+            return int(round(vol / density))
+        return vol
+
+    @property
     def preset_dose_ml(self) -> int | None:
         """Заданная доза в миллилитрах, когда в состоянии != '05' поле Price несёт уставку по п. 3.2.1."""
-        if self.state_code != STATE_IDLE and self.flags_raw.startswith("P") and self.price_raw.isdigit():
+        if (
+            self.state_code != STATE_IDLE
+            and self.is_v310_status
+            and not self.is_mass_mode
+            and self.dose_type_bits not in {0x12, 0x15}
+            and self.price_raw.isdigit()
+        ):
             return int(self.price_raw) * 10
+        return None
+
+    @property
+    def preset_amount(self) -> float | None:
+        """Заданная доза в деньгах (биты 0..4 байта 17 == 12h/15h по табл. 3.2.1)."""
+        if (
+            self.state_code != STATE_IDLE
+            and self.is_v310_status
+            and not self.is_mass_mode
+            and self.dose_type_bits in {0x12, 0x15}
+            and self.price_raw.isdigit()
+        ):
+            return int(self.price_raw) / 100.0
         return None
 
     @property
@@ -220,8 +269,10 @@ def build_command_frame(
     checksum_mode: str = "xor",
 ) -> bytes:
     """Собирает 23-байтный кадр команды управления АСУ → АСКА по Протоколу v3.10."""
-    if not isinstance(address, int) or isinstance(address, bool) or address < 1 or address > 6:
-        raise ValueError(f"Адрес колонки должен быть целым числом 1..6, получено: {address!r}")
+    if not isinstance(address, int) or isinstance(address, bool) or address < MIN_PUMP_ADDRESS or address > MAX_PUMP_ADDRESS:
+        raise ValueError(
+            f"Адрес колонки должен быть целым числом {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {address!r}"
+        )
     if not isinstance(command_ascii, int) or not 0 <= command_ascii <= 0xFF:
         raise ValueError(f"Код команды должен быть байтом 0..255, получено: {command_ascii!r}")
     if len(status_ascii) != 2 or len(sost_ascii) != 2:
@@ -241,7 +292,7 @@ def build_command_frame(
 
 
 def build_test_command(address: int, *, checksum_mode: str = "xor") -> bytes:
-    """Собирает запрос «Тест» (код 0x34) протокола v3.10 для адреса 1..6."""
+    """Собирает запрос «Тест» (код 0x34) протокола v3.10 для адреса 1..8."""
     return build_command_frame(
         address,
         CMD_TEST_ASCII,
@@ -357,8 +408,8 @@ def build_test_response_frame(
     Параметр flags оставлен для старых вызовов и в кадр не входит.
     """
     del flags
-    if address < 1 or address > 6:
-        raise ValueError("Адрес должен быть в диапазоне 1..6")
+    if address < MIN_PUMP_ADDRESS or address > MAX_PUMP_ADDRESS:
+        raise ValueError(f"Адрес должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}")
     if len(state_code) != 2 or len(error_code) != 2:
         raise ValueError("Поля state_code и error_code должны состоять ровно из 2 ASCII-символов")
     if volume_ml < 0 or volume_ml > 999_999:
@@ -381,32 +432,28 @@ def build_test_response_frame(
     return frame
 
 
-def _read_error_field(field: bytes) -> tuple[str, str]:
+def _read_error_field(field: bytes, *, cmd_code: int = CMD_TEST_ASCII) -> tuple[str, str]:
     """Возвращает `(код ошибки, слово статуса линии)`.
 
-    Две цифры — код ошибки протокола («00» — нет аварии, «06» — авария).
+    В legacy-ответах две ASCII-цифры 00..06 — код ошибки протокола («00» — нет аварии, «06» — авария).
     На УЗСГ-01 через АСКА-02 байт 17 является битовой маской Status (табл. 3.2.1):
     биты 7 (клапан), 6 (кнопки пуск/стоп), 5 (кнопка сброс), 0–4 (тип дозы / маркер параметра),
     а байт 18 содержит дополнительный флаг (например `0x88`…`0x9F` или `0x00`).
     """
-    if len(field) == 2 and all(0x30 <= byte <= 0x39 for byte in field):
+    if cmd_code != CMD_PARAMS_ASCII and len(field) == 2 and field[0] == 0x30 and 0x30 <= field[1] <= 0x36:
         return field.decode("ascii"), ""
-    if len(field) == 2 and ((field[1] & 0x80) == 0x80 or 0x10 <= (field[0] & 0x7F) <= 0x7F):
+    if len(field) == 2 and (
+        (field[1] & 0x80) == 0x80
+        or (field[0] & 0x10) == 0x10
+        or 0x10 <= (field[0] & 0x7F) <= 0x7F
+    ):
         return "00", f"P{field[1]:02X}"
     return field.hex().upper(), field.hex().upper()
 
 
 def _decode_price(price_raw: str) -> float:
-    """Переводит 6 цифр цены из кадра в рубли/тенге за литр.
-
-    По таблице 2 Протокола v3.10 цена передаётся в копейках/тиынах ('007200' -> 72.00,
-    '008550' -> 85.50). Для совместимости с устаревшим форматом целых единиц ('000100' -> 100)
-    значения < 1000 возвращаются без деления.
-    """
-    raw_val = int(price_raw)
-    if raw_val >= 1000:
-        return raw_val / 100.0
-    return float(raw_val)
+    """Переводит 6 цифр цены из кадра в рубли/тенге за литр (табл. 3.1/3.2: цена в копейках/тиынах)."""
+    return int(price_raw) / 100.0
 
 
 def _completed_volume_in_price_field(state_code: str, flags_raw: str, price_raw: str, volume_raw: str) -> int | None:
@@ -448,8 +495,8 @@ def _validate_frame_envelope(raw: bytes, cfg: FrameLayout) -> int:
             f"Некорректный адрес колонки в байтах [{cfg.addr_offset}:{cfg.addr_offset + 2}]: "
             f"{raw[cfg.addr_offset : cfg.addr_offset + 2].hex(' ').upper()}"
         ) from exc
-    if address < 1 or address > 6:
-        raise IskraFrameError(f"Адрес колонки вне диапазона 1..6: {address}")
+    if address < MIN_PUMP_ADDRESS or address > MAX_PUMP_ADDRESS:
+        raise IskraFrameError(f"Адрес колонки вне диапазона {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}: {address}")
     return address
 
 
@@ -476,7 +523,10 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
         volume_raw = raw[cfg.volume_slice[0] : cfg.volume_slice[1]].decode("ascii")
     except UnicodeDecodeError as exc:
         raise IskraFrameError(f"Не-ASCII символы в полях данных кадра: {raw.hex(' ').upper()}") from exc
-    error_code, flags_raw = _read_error_field(raw[cfg.error_slice[0] : cfg.error_slice[1]])
+    error_code, flags_raw = _read_error_field(
+        raw[cfg.error_slice[0] : cfg.error_slice[1]],
+        cmd_code=cmd_code,
+    )
 
     if cmd_code != CMD_PARAMS_ASCII:
         if not price_raw.isdigit() or len(price_raw) != 6:
@@ -486,12 +536,15 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
 
     volume_ml = int(volume_raw) if volume_raw.isdigit() else 0
     completed_volume_ml = _completed_volume_in_price_field(state_code, flags_raw, price_raw, volume_raw) if price_raw.isdigit() and volume_raw.isdigit() else None
+    is_mass_frame = len(raw) > 19 and (raw[19] & 0xC0) == 0x40
     # На живой колонке УЗСГ-01 (статус P..) по п. 3.2.1 Протокола v3.10 цена за литр передаётся
-    # только в состоянии сброса ('05'), а в состояниях '01'/'03'/'04'/'07' в поле Price стоит уставка дозы.
+    # только в состоянии сброса ('05'), а в состояниях '01'/'03'/'04'/'07' в поле Price стоит уставка дозы
+    # (или плотность СУГ при режиме массы в байте 19).
     is_volume_in_price_slot = (
         cmd_code == CMD_PARAMS_ASCII
         or not price_raw.isdigit()
         or completed_volume_ml is not None
+        or is_mass_frame
         or (state_code != STATE_IDLE and flags_raw.startswith("P"))
     )
     price_kzt = 0.0 if is_volume_in_price_slot else _decode_price(price_raw)

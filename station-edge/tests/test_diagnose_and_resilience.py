@@ -356,3 +356,344 @@ def test_auto_reset_respects_delay_after_real_dispense(monkeypatch, tmp_path: Pa
     assert svc.poll_cycle_once() == []  # время 102.5 >= 100.0 + 2.0 -> отправка 0x37
     assert len(link.commands) == 1
     assert link.commands[0][3] == CMD_RESET_ASCII
+
+
+def test_foreign_address_frame_ignored_without_reset(tmp_path: Path) -> None:
+    """Запоздавший кадр от адреса #1 ('07') при опросе адреса #2 игнорируется и не шлёт 0x37 на #2."""
+    from agzs_edge.iskra import STATE_COMPLETED
+    from agzs_edge.serial_link import PollRawResult
+
+    foreign_stop_07 = build_test_response_frame(
+        address=1, state_code=STATE_COMPLETED, error_code="00", price_digits=7200, volume_ml=0
+    )
+
+    class _ForeignLink:
+        def __init__(self) -> None:
+            self.commands: list[tuple[int, bytes]] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            del checksum_mode
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=foreign_stop_07)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.commands.append((address, request))
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    link = _ForeignLink()
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(2,),
+        db_path=tmp_path / "foreign.db",
+        sync_enabled=False,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=0.0,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, link=link, db=db)
+
+    assert svc.poll_cycle_once() == []
+    assert link.commands == []
+    assert db.summary()["pumps"] == []
+
+
+def test_slow_sync_worker_does_not_block_poll_loop_and_batch_net_error_skips_single(monkeypatch, tmp_path: Path) -> None:
+    """Медленный sync_worker не тормозит цикл опроса в serve(), а сетевой сбой пакета не перебирает поштучно."""
+    import time as _time
+    from agzs_edge.serial_link import PollRawResult
+    from agzs_edge.sync import OutboxSyncWorker, VpsSendResult
+    from agzs_edge.tracker import CompletedDispense
+
+    idle_frame = build_test_response_frame(address=1, state_code=STATE_IDLE, price_digits=7200, volume_ml=0)
+
+    class _FastLink:
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=idle_frame)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            return PollRawResult(address=address, request_bytes=request, response_bytes=idle_frame)
+
+    poll_times: list[float] = []
+    flush_calls = 0
+
+    class _SlowWorker:
+        def flush_due(self, *, limit: int = 25, now=None):
+            nonlocal flush_calls
+            flush_calls += 1
+            _time.sleep(0.25)
+            return (0, 0)
+
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        poll_interval_sec=0.01,
+        db_path=tmp_path / "nonblock.db",
+        sync_enabled=True,
+        sync_interval_sec=0.05,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, link=_FastLink(), db=db, sync_worker=_SlowWorker())  # type: ignore[arg-type]
+    monkeypatch.setattr("agzs_edge.service.probe_vps_link", lambda *a, **kw: VpsSendResult(ok=True))
+
+    orig_poll = svc.poll_cycle_once
+
+    def _timed_poll():
+        poll_times.append(_time.monotonic())
+        return orig_poll()
+
+    svc.poll_cycle_once = _timed_poll  # type: ignore[method-assign]
+    t_start = _time.monotonic()
+    svc.serve(max_cycles=4)
+    total_elapsed = _time.monotonic() - t_start
+
+    assert len(poll_times) == 4
+    assert (poll_times[-1] - poll_times[0]) < 0.15
+    assert total_elapsed >= 0.25
+    assert flush_calls >= 1
+
+    # Проверка OutboxSyncWorker: status_code=0 на batch не вызывает single_sender
+    t0 = datetime.now(timezone.utc)
+    for idx in range(3):
+        db.record_completed_dispense(
+            CompletedDispense(
+                external_txn_id=f"net-err-{idx}",
+                pump_address=1,
+                mode="dose",
+                preset_ml=5000,
+                dispensed_ml=5000,
+                volume_liters=5.0,
+                price_kzt_per_liter=72.0,
+                final_state_code="07",
+                error_code="00",
+                started_at=t0,
+                finished_at=t0,
+                last_raw_frame_hex="01",
+            ),
+            station_id=settings.station_id,
+            dispenser_id=settings.dispenser_uuid(1),
+            tank_id=settings.tank_id,
+            now=t0,
+        )
+    single_calls = 0
+
+    def _fail_single(*_a):
+        nonlocal single_calls
+        single_calls += 1
+        return VpsSendResult(ok=False, status_code=0, error_text="net")
+
+    worker = OutboxSyncWorker(
+        db,
+        vps_base_url=settings.vps_base_url,
+        device_token="tok",
+        sender=_fail_single,
+        batch_sender=lambda *_a: VpsSendResult(ok=False, status_code=0, error_text="timed out"),
+    )
+    sent, failed = worker.flush_due(now=t0)
+    assert sent == 0
+    assert failed == 3
+    assert single_calls == 0
+
+
+def test_missed_03_recovered_before_auto_reset_and_no_duplicate_on_restart(tmp_path: Path) -> None:
+    """Потерянный '03': первый кадр '07' (15000 мл) пишется до 0x37 и не задваивается после рестарта."""
+    from agzs_edge.iskra import STATE_COMPLETED
+    from agzs_edge.serial_link import PollRawResult
+
+    stop_07 = build_test_response_frame(
+        address=1, state_code=STATE_COMPLETED, error_code="00", price_digits=7200, volume_ml=15000
+    )
+
+    class _StopLink:
+        def __init__(self) -> None:
+            self.commands: list[bytes] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=stop_07)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.commands.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "recover.db",
+        sync_enabled=False,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=30.0,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc1 = StationEdgeService(settings, link=_StopLink(), db=db)
+    closed1 = svc1.poll_cycle_once()
+    assert len(closed1) == 1
+    assert closed1[0].dispensed_ml == 15000
+    assert db.summary()["total_dispenses"] == 1
+
+    # Имитируем перезапуск службы до отправки 0x37 — колонка всё ещё в '07' с 15000 мл
+    svc2 = StationEdgeService(settings, link=_StopLink(), db=EdgeDatabase(settings.db_path))
+    closed2 = svc2.poll_cycle_once()
+    assert closed2 == []
+    assert db.summary()["total_dispenses"] == 1
+
+
+def test_stopped_04_auto_reset_timeout_records_and_resets(monkeypatch, tmp_path: Path) -> None:
+    """Таймаут паузы '04' закрывает заправку в SQLite и только после этого отправляет 0x37."""
+    from agzs_edge.iskra import CMD_RESET_ASCII, STATE_DISPENSING, STATE_STOPPED
+    from agzs_edge.serial_link import PollRawResult
+
+    f_disp = build_test_response_frame(address=1, state_code=STATE_DISPENSING, price_digits=7200, volume_ml=5000)
+    f_stop = build_test_response_frame(address=1, state_code=STATE_STOPPED, price_digits=7200, volume_ml=5000)
+    f_idle = build_test_response_frame(address=1, state_code=STATE_IDLE, price_digits=7200, volume_ml=0)
+
+    class _PauseLink:
+        def __init__(self, responses: list[bytes]) -> None:
+            self.responses = list(responses)
+            self.commands: list[bytes] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            resp = self.responses.pop(0)
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.commands.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=f_idle)
+
+    link = _PauseLink([f_disp, f_stop, f_stop])
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "pause04.db",
+        sync_enabled=False,
+        auto_reset_on_stop=True,
+        auto_reset_stopped_delay_sec=60.0,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, link=link, db=db)
+
+    ticks = iter([100.0, 165.0])
+    monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
+
+    assert svc.poll_cycle_once() == []  # 03 (5000 мл)
+    assert svc.poll_cycle_once() == []  # 04 -> старт таймера 60 с (t=100.0)
+    assert svc.is_idle_for_update() is False
+    assert link.commands == []
+    assert db.summary()["total_dispenses"] == 0
+
+    closed = svc.poll_cycle_once()      # 04 (t=165.0 >= 100.0 + 60.0) -> запись в БД + 0x37
+    assert len(closed) == 1
+    assert closed[0].dispensed_ml == 5000
+    assert len(link.commands) == 1 and link.commands[0][3] == CMD_RESET_ASCII
+    assert db.summary()["total_dispenses"] == 1
+    assert db.summary()["total_dispensed_ml"] == 5000
+
+
+def test_counter_reconciliation_writes_counter_audits(monkeypatch, tmp_path: Path) -> None:
+    """Периодическая сверка суммарного счётчика (0.11) пишет записи в таблицу counter_audits."""
+    import sqlite3
+    from datetime import timedelta
+    from agzs_edge.iskra import CMD_PARAMS_ASCII, CMD_RESET_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+    from agzs_edge.serial_link import PollRawResult
+    from agzs_edge.tracker import CompletedDispense
+
+    def _raw(cmd: int, price: bytes, vol: bytes, b17: int, state: str = "05") -> bytes:
+        body = b"01" + bytes([cmd, STX]) + price + vol + bytes([b17, 0x8A]) + state.encode("ascii") + bytes([ETX])
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    idle_05 = _raw(CMD_TEST_ASCII, b"007200", b"000000", 0x50)
+    cnt_100 = _raw(CMD_PARAMS_ASCII, b"000000", b"010000", 0x5A)  # 0000010000 -> 100.00 л
+    cnt_125 = _raw(CMD_PARAMS_ASCII, b"000000", b"012500", 0x5A)  # 0000012500 -> 125.00 л
+    rst_ok = _raw(CMD_RESET_ASCII, b"007200", b"000000", 0x50)
+
+    class _AuditLink:
+        def __init__(self, cnt_frames: list[bytes]) -> None:
+            self.cnt_frames = list(cnt_frames)
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=idle_05)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            if request[3] == CMD_PARAMS_ASCII:
+                return PollRawResult(address=address, request_bytes=request, response_bytes=self.cnt_frames.pop(0))
+            if request[3] == CMD_RESET_ASCII:
+                return PollRawResult(address=address, request_bytes=request, response_bytes=rst_ok)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=idle_05)
+
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "audit.db",
+        sync_enabled=False,
+        read_only=False,
+        lock_buttons_on_update=False,
+        counter_reconcile_interval_sec=60.0,
+    )
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, link=_AuditLink([cnt_100, cnt_125]), db=db)
+
+    t0 = datetime(2026, 11, 19, 12, 0, 0, tzinfo=timezone.utc)
+    ticks = iter([100.0, 200.0])
+    monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
+
+    svc.poll_cycle_once(observed_at=t0)
+
+    # Записываем в БД 1 заправку на 20 л (а суммарник вырос на 25 л -> расхождение +5 л)
+    db.record_completed_dispense(
+        CompletedDispense(
+            external_txn_id="audit-disp-1",
+            pump_address=1,
+            mode="dose",
+            preset_ml=20000,
+            dispensed_ml=20000,
+            volume_liters=20.0,
+            price_kzt_per_liter=72.0,
+            final_state_code="07",
+            error_code="00",
+            started_at=t0 + timedelta(seconds=10),
+            finished_at=t0 + timedelta(seconds=30),
+            last_raw_frame_hex="01",
+        ),
+        station_id=settings.station_id,
+        dispenser_id=settings.dispenser_uuid(1),
+        tank_id=settings.tank_id,
+    )
+
+    svc.poll_cycle_once(observed_at=t0 + timedelta(seconds=70))
+
+    conn = sqlite3.connect(settings.db_path)
+    rows = conn.execute(
+        "SELECT total_counter_liters, counter_delta_liters, db_dispenses_liters, discrepancy_liters "
+        "FROM counter_audits ORDER BY id ASC"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 2
+    assert rows[0] == (100.0, None, 0.0, None)
+    assert rows[1] == (125.0, 25.0, 20.0, 5.0)

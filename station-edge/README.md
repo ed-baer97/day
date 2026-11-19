@@ -42,8 +42,15 @@ Copy-Item .env.example .env
 ```ini
 AGZS_READ_ONLY=0
 AGZS_AUTO_RESET=1
-AGZS_AUTO_RESET_DELAY_SEC=2.0
+AGZS_AUTO_RESET_DELAY_SEC=15.0
+AGZS_AUTO_RESET_STOPPED_DELAY_SEC=60.0
+AGZS_INTER_FRAME_DELAY_SEC=0.05
+AGZS_COUNTER_RECONCILE_INTERVAL_SEC=3600
 ```
+
+- Адреса колонок в `AGZS_PUMP_ADDRESSES` поддерживаются в диапазоне `1..8`.
+- `AGZS_AUTO_RESET_DELAY_SEC=15.0` даёт оператору и водителю время прочитать чередующиеся литры/сумму на табло после `'07'`, а `AGZS_AUTO_RESET_STOPPED_DELAY_SEC=60.0` снимает зависшую паузу `'04'` с фиксацией объёма в SQLite перед сбросом `0x37`.
+- При `AGZS_COUNTER_RECONCILE_INTERVAL_SEC > 0` служба в простое `'05'` периодически сверяет суммарный счётчик колонки (`0.11`) с закрытыми заправками в таблице `counter_audits`.
 
 ---
 
@@ -54,7 +61,7 @@ AGZS_AUTO_RESET_DELAY_SEC=2.0
   ```powershell
   python -m agzs_edge diagnose --port COM7 --addr 1
   ```
-- `probe` — опрос выбранного адреса или всех адресов `1..6` (включая подбор BCC `--checksum all`):
+- `probe` — опрос выбранного адреса или всех адресов `1..8` (включая подбор BCC `--checksum all`):
   ```powershell
   python -m agzs_edge probe --port COM7 --all-addresses
   ```

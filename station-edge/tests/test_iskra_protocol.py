@@ -16,8 +16,8 @@ from agzs_edge.iskra import (
 )
 
 
-def test_build_test_command_addresses_1_to_6() -> None:
-    for addr in range(1, 7):
+def test_build_test_command_addresses_1_to_8() -> None:
+    for addr in range(1, 9):
         cmd = build_test_command(addr)
         assert len(cmd) == EXPECTED_FRAME_LEN
         assert cmd[0] == SOH
@@ -32,7 +32,7 @@ def test_build_test_command_rejects_out_of_range() -> None:
     with pytest.raises(ValueError):
         build_test_command(0)
     with pytest.raises(ValueError):
-        build_test_command(7)
+        build_test_command(9)
 
 
 def test_parse_valid_23_byte_iskra_frame() -> None:
@@ -230,3 +230,41 @@ def test_command_builders_and_bcc_validation() -> None:
     bad_vol[-1] = compute_bcc(bytes(bad_vol[1:22]), "xor")
     with pytest.raises(IskraFrameError, match="объёма"):
         parse_iskra_frame(bytes(bad_vol))
+
+
+def test_v310_price_below_10_mass_mode_money_dose_and_byte17_status() -> None:
+    """Цена < 10.00, режим кг/плотномера, доза в деньгах и байт 17 в диапазоне 0x31..0x35."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, STX, compute_bcc
+
+    def _raw_frame(price: bytes, vol: bytes, b17: int, b18: int, b19: int, state_ch: str) -> bytes:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + price
+            + vol
+            + bytes([b17, b18, b19, ord(state_ch), ETX])
+        )
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    # 1. Цена < 10.00 (пример из РЭ УЗСГ-01: 6.70 руб/л -> 000670)
+    low_price = parse_iskra_frame(_raw_frame(b"000670", b"000000", 0x50, 0x8A, 0x30, "5"))
+    assert low_price.price_kzt_per_liter == pytest.approx(6.70)
+
+    # 2. Режим килограммов/плотномера (байт 19: биты 7..6 = 0;1 -> 0x70 = 0x40|0x30)
+    mass_frame = parse_iskra_frame(_raw_frame(b"000540", b"005400", 0xD1, 0x8F, 0x70, "3"))
+    assert mass_frame.is_mass_mode is True
+    assert mass_frame.price_kzt_per_liter == 0.0
+    assert mass_frame.density_kg_per_l == pytest.approx(0.540)
+    assert mass_frame.effective_volume_ml == 10_000
+
+    # 3. Доза в деньгах (биты 0..4 байта 17 == 0x12)
+    money_frame = parse_iskra_frame(_raw_frame(b"002150", b"000000", 0x52, 0x8A, 0x30, "1"))
+    assert money_frame.dose_type_bits == 0x12
+    assert money_frame.preset_dose_ml is None
+    assert money_frame.preset_amount == pytest.approx(21.50)
+
+    # 4. Байт 17 в диапазоне 0x31..0x35 (напр. 0x31) не является ASCII-ошибкой
+    status_31 = parse_iskra_frame(_raw_frame(b"007200", b"000000", 0x31, 0x32, 0x30, "5"))
+    assert status_31.error_code == "00"
+    assert status_31.flags_raw == "P32"
+    assert status_31.has_protocol_alarm is False

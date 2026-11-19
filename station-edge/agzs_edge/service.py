@@ -7,22 +7,26 @@ import logging
 import signal
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
+    CMD_TEST_ASCII,
     STATE_COMPLETED,
+    STATE_IDLE,
+    STATE_STOPPED,
     IskraFrameError,
     IskraTelemetryFrame,
     build_reset_command,
     parse_iskra_frame,
 )
-from agzs_edge.psu_controller import send_buttons_param_to_pumps
+from agzs_edge.psu_controller import PsuControlError, Uzsg01PsuController, send_buttons_param_to_pumps
 from agzs_edge.serial_link import AskaLink, build_link
 from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import OutboxSyncWorker, probe_vps_link
 from agzs_edge.tracker import CompletedDispense, PumpDispenseTracker
-from agzs_edge.updater import read_update_state
+from agzs_edge.updater import read_update_state, write_update_state
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +45,12 @@ class StationEdgeService:
         self.settings = settings
         self.link = link or build_link(settings)
         self.db = db or EdgeDatabase(settings.db_path)
-        self.tracker = PumpDispenseTracker(station_code=settings.station_code)
+        initial_committed = self.db.get_recorded_stop_volumes()
+        self.tracker = PumpDispenseTracker(
+            station_code=settings.station_code,
+            pause_on_stopped=True,
+            initial_committed_by_addr=initial_committed,
+        )
         self.sync_worker = sync_worker or OutboxSyncWorker(
             self.db,
             vps_base_url=settings.vps_base_url,
@@ -51,17 +60,28 @@ class StationEdgeService:
         self._last_seen: dict[int, tuple[str, str, int]] = {}
         self._last_frame_by_addr: dict[int, IskraTelemetryFrame] = {}
         self._stop_07_since: dict[int, float] = {}
+        self._stop_04_since: dict[int, float] = {}
         self._stop_requested: bool = False
         self._pumps_locked_for_update: bool = False
         self._restore_buttons_pending: bool = False
+        self._buttons_restore_attempts: int = 0
+        self._buttons_verify_pending: set[int] = set()
+        self._last_counter_reconcile_ts: float = 0.0
+        self._sync_wake_event = threading.Event()
+        self._sync_stop_event = threading.Event()
+        self._sync_thread: threading.Thread | None = None
 
     def request_stop(self) -> None:
         """Запрашивает мягкую остановку сервиса после завершения активных наливов."""
         self._stop_requested = True
 
     def is_idle_for_update(self) -> bool:
-        """True, если нет активных наливов и нет отложенного авто-сброса 0x37."""
-        return not self.tracker.has_active_sessions() and not self._stop_07_since
+        """True, если нет активных наливов/пауз и нет отложенного авто-сброса 0x37."""
+        return (
+            not self.tracker.has_active_sessions()
+            and not self._stop_07_since
+            and not self._stop_04_since
+        )
 
     def _tx_checksum_mode(self) -> str:
         return self.settings.layout.tx_checksum_mode
@@ -101,13 +121,32 @@ class StationEdgeService:
             logger.info("Колонка #%d: кнопки на ГРК заблокированы (0.17) на время обновления ПО", address)
         self._pumps_locked_for_update = True
         self._restore_buttons_pending = False
+        self._buttons_restore_attempts = 0
+        self._buttons_verify_pending.clear()
+        if not errors:
+            cur_state = read_update_state(self.settings)
+            if cur_state is not None and cur_state.in_progress and not cur_state.buttons_locked:
+                write_update_state(self.settings, replace(cur_state, buttons_locked=True))
         return locked
 
     def restore_pump_buttons(self) -> list[int]:
-        """Включает физические кнопки на колонках (0.16 или 0.18) без лишней записи в EEPROM."""
+        """Включает физические кнопки на колонках (0.16 или 0.18) с проверкой живых битов и повторами."""
         if not self._can_control_buttons():
             return []
-        if not self._pumps_locked_for_update:
+
+        if self._buttons_verify_pending and not self._pumps_locked_for_update:
+            for addr in list(self._buttons_verify_pending):
+                frame = self._last_frame_by_addr.get(addr)
+                if frame is None or not frame.is_v310_status:
+                    self._buttons_verify_pending.discard(addr)
+                elif self._buttons_match_target_mode(frame, self.settings.pump_buttons_mode):
+                    self._buttons_verify_pending.discard(addr)
+            if not self._buttons_verify_pending and not self._restore_buttons_pending:
+                self._buttons_restore_attempts = 0
+
+        if self._pumps_locked_for_update:
+            addresses_to_update = self.settings.pump_addresses
+        elif self._restore_buttons_pending:
             addresses_to_update = tuple(
                 addr
                 for addr in self.settings.pump_addresses
@@ -116,12 +155,27 @@ class StationEdgeService:
                     self.settings.pump_buttons_mode,
                 )
             )
+        elif self._buttons_verify_pending:
+            addresses_to_update = tuple(
+                addr for addr in self.settings.pump_addresses if addr in self._buttons_verify_pending
+            )
         else:
-            addresses_to_update = self.settings.pump_addresses
+            addresses_to_update = ()
 
         if not addresses_to_update:
             self._pumps_locked_for_update = False
             self._restore_buttons_pending = False
+            self._buttons_restore_attempts = 0
+            return []
+
+        if self._buttons_restore_attempts >= 5 and not self._pumps_locked_for_update:
+            logger.warning(
+                "Кнопки на колонках %s не переключились за %d попыток (возможна прошивка УЗСГ-01 «только под ККМ»).",
+                addresses_to_update,
+                self._buttons_restore_attempts,
+            )
+            self._restore_buttons_pending = False
+            self._buttons_verify_pending.clear()
             return []
 
         param_code = "0.16" if self.settings.pump_buttons_mode == "enable" else "0.18"
@@ -136,9 +190,46 @@ class StationEdgeService:
             logger.warning("Колонка #%d: ошибка включения кнопок (%s): %s", address, param_code, err)
         for address in restored:
             logger.info("Колонка #%d: кнопки на ГРК включены (%s)", address, param_code)
+
         self._pumps_locked_for_update = False
-        self._restore_buttons_pending = False
+        self._buttons_restore_attempts += 1
+        if errors:
+            self._restore_buttons_pending = self._buttons_restore_attempts < 5
+            for addr in restored:
+                self._buttons_verify_pending.add(addr)
+        else:
+            self._restore_buttons_pending = False
+            for addr in restored:
+                self._buttons_verify_pending.add(addr)
         return restored
+
+    def _record_dispense_to_db(
+        self,
+        completed: CompletedDispense,
+        *,
+        mark_stop_vol: int | None = None,
+    ) -> bool:
+        dispenser_id = self.settings.dispenser_uuid(completed.pump_address)
+        inserted = self.db.record_completed_dispense(
+            completed,
+            station_id=self.settings.station_id,
+            dispenser_id=dispenser_id,
+            tank_id=self.settings.tank_id or None,
+        )
+        if mark_stop_vol is not None:
+            self.db.mark_stop_volume_recorded(completed.pump_address, mark_stop_vol)
+        if inserted:
+            logger.info(
+                "Зафиксирован уход по колонке #%d (%s): %d мл (%.3f л), цена %.2f ₸/л, txn=%s",
+                completed.pump_address,
+                completed.mode,
+                completed.dispensed_ml,
+                completed.volume_liters,
+                completed.price_kzt_per_liter,
+                completed.external_txn_id,
+            )
+            self._sync_wake_event.set()
+        return inserted
 
     def poll_cycle_once(self, *, observed_at: datetime | None = None) -> list[CompletedDispense]:
         """Опрашивает все адреса из `settings.pump_addresses` по одному разу (команда «Тест»)."""
@@ -172,6 +263,25 @@ class StationEdgeService:
                 )
                 continue
 
+            if frame.address != address or frame.command_code != CMD_TEST_ASCII:
+                logger.warning(
+                    "Адрес %d: получен чужой/внеплановый кадр (#%d, cmd=0x%02X) — игнорируем",
+                    address,
+                    frame.address,
+                    frame.command_code,
+                )
+                self.db.log_raw_frame(
+                    pump_address=address,
+                    request_bytes=raw_res.request_bytes,
+                    response_bytes=raw_res.response_bytes,
+                    valid=False,
+                    note=(
+                        f"несовпадение адреса/команды: ожидался #{address}/0x34, "
+                        f"получен #{frame.address}/0x{frame.command_code:02X}"
+                    ),
+                )
+                continue
+
             self._last_frame_by_addr[address] = frame
 
             if self.settings.save_raw_frames or frame.has_protocol_alarm:
@@ -180,11 +290,11 @@ class StationEdgeService:
                     request_bytes=raw_res.request_bytes,
                     response_bytes=raw_res.response_bytes,
                     valid=True,
-                    note=f"state={frame.state_code} err={frame.error_code} ml={frame.volume_ml}",
+                    note=f"state={frame.state_code} err={frame.error_code} ml={frame.effective_volume_ml}",
                 )
 
             self.db.update_live_state(frame, observed_at=now)
-            signature = (frame.state_code, frame.price_raw, frame.volume_ml)
+            signature = (frame.state_code, frame.price_raw, frame.effective_volume_ml)
             if self._last_seen.get(address) != signature:
                 self._last_seen[address] = signature
                 if frame.completed_volume_ml is not None:
@@ -202,32 +312,21 @@ class StationEdgeService:
                         frame.state_code,
                         frame.state_name,
                         frame.price_kzt_per_liter,
-                        frame.volume_ml,
+                        frame.effective_volume_ml,
                     )
             completed = self.tracker.process_frame(frame, observed_at=now)
+            if completed is None and frame.state_code == STATE_COMPLETED and not frame.valve_open:
+                completed = self.tracker.recover_untracked_stop(frame, observed_at=now)
             if completed is not None:
-                dispenser_id = self.settings.dispenser_uuid(completed.pump_address)
-                inserted = self.db.record_completed_dispense(
-                    completed,
-                    station_id=self.settings.station_id,
-                    dispenser_id=dispenser_id,
-                    tank_id=self.settings.tank_id or None,
-                )
-                if inserted:
-                    logger.info(
-                        "Зафиксирован уход по колонке #%d (%s): %d мл (%.3f л), цена %.2f ₸/л, txn=%s",
-                        completed.pump_address,
-                        completed.mode,
-                        completed.dispensed_ml,
-                        completed.volume_liters,
-                        completed.price_kzt_per_liter,
-                        completed.external_txn_id,
-                    )
+                if self._record_dispense_to_db(completed, mark_stop_vol=frame.effective_volume_ml):
                     closed_dispenses.append(completed)
 
-            self._maybe_auto_reset(address, frame, completed=completed, observed_at=now)
+            auto_closed = self._maybe_auto_reset(address, frame, completed=completed, observed_at=now)
+            if auto_closed is not None:
+                closed_dispenses.append(auto_closed)
 
         self._sync_pump_buttons_with_update_state()
+        self._maybe_reconcile_counters(observed_at=now)
         return closed_dispenses
 
     def _sync_pump_buttons_with_update_state(self) -> None:
@@ -238,11 +337,40 @@ class StationEdgeService:
             if self.is_idle_for_update() and not self._pumps_locked_for_update:
                 self.lock_pump_buttons_for_update()
                 self._restore_buttons_pending = False
-        elif self._pumps_locked_for_update or (
-            self._restore_buttons_pending and self.is_idle_for_update()
+        elif (
+            self._pumps_locked_for_update
+            or (self._restore_buttons_pending and self.is_idle_for_update())
+            or (self._buttons_verify_pending and self.is_idle_for_update())
         ):
             self.restore_pump_buttons()
-            self._restore_buttons_pending = False
+
+    def _send_auto_reset_command(self, address: int, *, observed_at: datetime, reason: str) -> None:
+        req = build_reset_command(address, checksum_mode=self._tx_checksum_mode())
+        res = self.link.send_command(address, req)
+        logger.info("Колонка #%d: отправлен автоматический СБРОС (0x37) (%s)", address, reason)
+        if res.has_response:
+            try:
+                reset_frame = parse_iskra_frame(res.response_bytes, self.settings.layout)
+                if reset_frame.address == address:
+                    self.db.update_live_state(reset_frame, observed_at=observed_at)
+                    self._last_frame_by_addr[address] = reset_frame
+                    self._last_seen[address] = (
+                        reset_frame.state_code,
+                        reset_frame.price_raw,
+                        reset_frame.effective_volume_ml,
+                    )
+                    if reset_frame.state_code == STATE_IDLE:
+                        self.tracker.mark_reset(address)
+                else:
+                    logger.warning(
+                        "Колонка #%d: ответ на автосброс пришёл от #%d — игнорируем",
+                        address,
+                        reset_frame.address,
+                    )
+            except IskraFrameError as exc:
+                logger.warning("Колонка #%d: некорректный ответ на автосброс (%s)", address, exc)
+        elif res.error_message:
+            logger.warning("Колонка #%d: ошибка при автосбросе (%s)", address, res.error_message)
 
     def _maybe_auto_reset(
         self,
@@ -251,45 +379,101 @@ class StationEdgeService:
         *,
         completed: CompletedDispense | None,
         observed_at: datetime,
-    ) -> None:
+    ) -> CompletedDispense | None:
         del completed
-        if frame.state_code != STATE_COMPLETED or frame.valve_open:
+        if frame.address != address or frame.valve_open:
             self._stop_07_since.pop(address, None)
-            return
-        if not self.settings.auto_reset_on_stop:
-            return
+            self._stop_04_since.pop(address, None)
+            return None
 
-        now_mono = time.monotonic()
-        if self.settings.auto_reset_delay_sec <= 0 or self._stop_requested:
-            should_reset = True
-        else:
-            first_seen = self._stop_07_since.setdefault(address, now_mono)
-            should_reset = (now_mono - first_seen) >= self.settings.auto_reset_delay_sec
+        if frame.state_code == STATE_COMPLETED:
+            self._stop_04_since.pop(address, None)
+            if not self.settings.auto_reset_on_stop:
+                return None
 
-        if not should_reset:
-            return
+            now_mono = time.monotonic()
+            if self.settings.auto_reset_delay_sec <= 0 or self._stop_requested:
+                should_reset = True
+            else:
+                first_seen = self._stop_07_since.setdefault(address, now_mono)
+                should_reset = (now_mono - first_seen) >= self.settings.auto_reset_delay_sec
+
+            if not should_reset:
+                return None
+
+            self._stop_07_since.pop(address, None)
+            self._send_auto_reset_command(
+                address,
+                observed_at=observed_at,
+                reason="снятие блокировки после останова 07",
+            )
+            return None
+
+        if frame.state_code == STATE_STOPPED:
+            self._stop_07_since.pop(address, None)
+            if not self.settings.auto_reset_on_stop or self.settings.auto_reset_stopped_delay_sec <= 0:
+                return None
+
+            now_mono = time.monotonic()
+            first_seen = self._stop_04_since.setdefault(address, now_mono)
+            if (now_mono - first_seen) < self.settings.auto_reset_stopped_delay_sec:
+                return None
+
+            self._stop_04_since.pop(address, None)
+            paused_done = self.tracker.finish_paused_session(address, observed_at=observed_at)
+            if paused_done is None:
+                paused_done = self.tracker.recover_untracked_stop(frame, observed_at=observed_at)
+            recorded_closed: CompletedDispense | None = None
+            if paused_done is not None:
+                if self._record_dispense_to_db(paused_done, mark_stop_vol=frame.effective_volume_ml):
+                    recorded_closed = paused_done
+            self._send_auto_reset_command(
+                address,
+                observed_at=observed_at,
+                reason="таймаут паузы 04",
+            )
+            return recorded_closed
 
         self._stop_07_since.pop(address, None)
-        req = build_reset_command(address, checksum_mode=self.settings.layout.checksum_mode)
-        res = self.link.send_command(address, req)
-        logger.info(
-            "Колонка #%d: отправлен автоматический СБРОС (0x37) для снятия блокировки после останова 07",
-            address,
-        )
-        if res.has_response:
+        self._stop_04_since.pop(address, None)
+        return None
+
+    def _maybe_reconcile_counters(self, *, observed_at: datetime) -> None:
+        if self.settings.read_only or self.settings.counter_reconcile_interval_sec <= 0:
+            return
+        if not self.is_idle_for_update():
+            return
+        now_mono = time.monotonic()
+        if (
+            self._last_counter_reconcile_ts > 0
+            and (now_mono - self._last_counter_reconcile_ts) < self.settings.counter_reconcile_interval_sec
+        ):
+            return
+        for addr in self.settings.pump_addresses:
+            frame = self._last_frame_by_addr.get(addr)
+            if frame is None or frame.state_code != STATE_IDLE:
+                return
+
+        self._last_counter_reconcile_ts = now_mono
+        ctrl = Uzsg01PsuController(self.link, layout=self.settings.layout)
+        for addr in self.settings.pump_addresses:
             try:
-                reset_frame = parse_iskra_frame(res.response_bytes, self.settings.layout)
-                self.db.update_live_state(reset_frame, observed_at=observed_at)
-                self._last_frame_by_addr[address] = reset_frame
-                self._last_seen[address] = (
-                    reset_frame.state_code,
-                    reset_frame.price_raw,
-                    reset_frame.volume_ml,
-                )
-            except IskraFrameError as exc:
-                logger.warning("Колонка #%d: некорректный ответ на автосброс (%s)", address, exc)
-        elif res.error_message:
-            logger.warning("Колонка #%d: ошибка при автосбросе (%s)", address, res.error_message)
+                total_liters = ctrl.read_total_counter_1(addr)
+                if total_liters is not None:
+                    delta, discrepancy = self.db.record_counter_audit(
+                        addr,
+                        total_liters,
+                        observed_at=observed_at,
+                    )
+                    if discrepancy is not None and abs(discrepancy) > 0.5:
+                        logger.warning(
+                            "Колонка #%d: расхождение суммарного счётчика (0.11) с БД: Δсч=%.3f л, расхождение=%.3f л",
+                            addr,
+                            delta or 0.0,
+                            discrepancy,
+                        )
+            except (PsuControlError, Exception) as exc:
+                logger.warning("Колонка #%d: ошибка сверки суммарного счётчика (0.11): %s", addr, exc)
 
     def _announce_vps(self) -> None:
         """Один раз при старте проверяет, что центральный сервер узнаёт токен станции."""
@@ -332,6 +516,46 @@ class StationEdgeService:
         self._last_sync_ts = now_mono
         return self.sync_worker.flush_due()
 
+    def _start_sync_thread(self) -> None:
+        if not self.settings.sync_enabled:
+            logger.info("Отправка на центральный сервер выключена")
+            return
+        self._sync_stop_event.clear()
+        self._sync_wake_event.clear()
+
+        def _sync_loop() -> None:
+            self._announce_vps()
+            wait_sec = max(0.1, self.settings.sync_interval_sec) if self.settings.sync_interval_sec > 0 else 0.1
+            while not self._sync_stop_event.is_set():
+                self._sync_wake_event.wait(timeout=wait_sec)
+                self._sync_wake_event.clear()
+                if self._sync_stop_event.is_set():
+                    break
+                try:
+                    self.sync_worker.flush_due()
+                except Exception as exc:
+                    logger.warning("Ошибка фоновой синхронизации с VPS: %s", exc)
+            try:
+                self.sync_worker.flush_due()
+            except Exception as exc:
+                logger.warning("Ошибка финальной синхронизации с VPS: %s", exc)
+
+        self._sync_thread = threading.Thread(
+            target=_sync_loop,
+            name="agzs-vps-sync",
+            daemon=True,
+        )
+        self._sync_thread.start()
+
+    def _stop_sync_thread(self) -> None:
+        thread = self._sync_thread
+        if thread is None:
+            return
+        self._sync_stop_event.set()
+        self._sync_wake_event.set()
+        thread.join(timeout=15.0)
+        self._sync_thread = None
+
     def serve(
         self,
         *,
@@ -348,7 +572,7 @@ class StationEdgeService:
             self.settings.vps_base_url,
             self.settings.sync_enabled,
         )
-        self._announce_vps()
+        self._start_sync_thread()
         if self._can_control_buttons():
             initial_update = read_update_state(self.settings)
             if initial_update is None or not initial_update.in_progress:
@@ -393,7 +617,8 @@ class StationEdgeService:
             while max_cycles is None or cycle < max_cycles:
                 cycle += 1
                 closed = self.poll_cycle_once()
-                self.maybe_sync_outbox(force=bool(closed))
+                if closed and self.settings.sync_enabled:
+                    self._sync_wake_event.set()
 
                 if self._stop_requested:
                     if stop_deadline is None:
@@ -406,7 +631,6 @@ class StationEdgeService:
                             and not self._pumps_locked_for_update
                         ):
                             self.lock_pump_buttons_for_update()
-                        self.maybe_sync_outbox(force=True)
                         logger.info("Станционный узел безопасно остановлен: все наливы завершены.")
                         break
                     if time.monotonic() >= stop_deadline:
@@ -415,7 +639,6 @@ class StationEdgeService:
                             graceful_timeout_sec,
                             self.tracker.active_addresses(),
                         )
-                        self.maybe_sync_outbox(force=True)
                         break
 
                 if max_cycles is None or cycle < max_cycles:
@@ -423,6 +646,7 @@ class StationEdgeService:
         except KeyboardInterrupt:
             logger.info("Остановка станционного узла по сигналу оператора...")
         finally:
+            self._stop_sync_thread()
             if is_main_thread:
                 for sig, prev in previous_handlers.items():
                     try:

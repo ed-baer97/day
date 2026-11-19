@@ -8,6 +8,8 @@ from pathlib import Path
 from uuid import UUID, uuid5
 
 _DEFAULT_DISPENSER_NS = UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+MIN_PUMP_ADDRESS = 1
+MAX_PUMP_ADDRESS = 8
 
 
 def load_dotenv(path: Path) -> None:
@@ -62,12 +64,16 @@ def _parse_addresses(raw: str) -> tuple[int, ...]:
         if not token:
             continue
         addr = int(token)
-        if addr < 1 or addr > 6:
-            raise ValueError(f"Адрес колонки Искра 1.72 должен быть в диапазоне 1..6, получено: {addr}")
+        if addr < MIN_PUMP_ADDRESS or addr > MAX_PUMP_ADDRESS:
+            raise ValueError(
+                f"Адрес колонки Искра 1.72 должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {addr}"
+            )
         if addr not in items:
             items.append(addr)
     if not items:
-        raise ValueError("Укажите хотя бы один адрес колонки в AGZS_PUMP_ADDRESSES (1..6)")
+        raise ValueError(
+            f"Укажите хотя бы один адрес колонки в AGZS_PUMP_ADDRESSES ({MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS})"
+        )
     return tuple(items)
 
 
@@ -79,13 +85,15 @@ def _parse_dispenser_map(raw: str, station_id: str) -> dict[int, str]:
             continue
         addr_str, disp_uuid = item.split(":", 1)
         addr = int(addr_str.strip())
-        if addr < 1 or addr > 6:
-            raise ValueError(f"Адрес колонки в AGZS_DISPENSER_MAP должен быть в диапазоне 1..6, получено: {addr}")
+        if addr < MIN_PUMP_ADDRESS or addr > MAX_PUMP_ADDRESS:
+            raise ValueError(
+                f"Адрес колонки в AGZS_DISPENSER_MAP должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {addr}"
+            )
         UUID(disp_uuid.strip())  # валидация UUID
         mapping[addr] = disp_uuid.strip()
-    # Для всех адресов 1..6 гарантируем детерминированный UUID, если он не задан явно
+    # Для всех адресов 1..8 гарантируем детерминированный UUID, если он не задан явно
     base_uuid = UUID(station_id)
-    for addr in range(1, 7):
+    for addr in range(MIN_PUMP_ADDRESS, MAX_PUMP_ADDRESS + 1):
         if addr not in mapping:
             mapping[addr] = str(uuid5(_DEFAULT_DISPENSER_NS, f"{base_uuid}:pump:{addr}"))
     return mapping
@@ -97,7 +105,7 @@ class FrameLayout:
 
     Кадр «Тест» Искра 1.72, 23 байта:
       [0]      : 0x01 (SOH)
-      [1..3]   : номер ТРК, две ASCII-цифры ('01'..'06')
+      [1..3]   : номер ТРК, две ASCII-цифры ('01'..'08')
       [3]      : код команды ASCII ('4')
       [4]      : 0x02 (STX)
       [5..11]  : цена, 6 ASCII-цифр
@@ -143,7 +151,10 @@ class EdgeSettings:
     checksum_mode: str = "xor"
     read_only: bool = True
     auto_reset_on_stop: bool = False
-    auto_reset_delay_sec: float = 2.0
+    auto_reset_delay_sec: float = 15.0
+    auto_reset_stopped_delay_sec: float = 60.0
+    inter_frame_delay_sec: float = 0.05
+    counter_reconcile_interval_sec: float = 0.0
     db_path: Path = field(default_factory=lambda: Path("station_edge.db"))
     save_raw_frames: bool = False
     vps_base_url: str = "http://93.171.232.47"
@@ -198,9 +209,22 @@ class EdgeSettings:
             )
         read_only = _parse_bool(os.environ.get("AGZS_READ_ONLY"), default=True)
         auto_reset_on_stop = _parse_bool(os.environ.get("AGZS_AUTO_RESET"), default=False)
-        auto_reset_delay_sec = float(os.environ.get("AGZS_AUTO_RESET_DELAY_SEC", "2.0").strip() or "2.0")
+        auto_reset_delay_sec = float(os.environ.get("AGZS_AUTO_RESET_DELAY_SEC", "15.0").strip() or "15.0")
         if auto_reset_delay_sec < 0:
             raise ValueError("AGZS_AUTO_RESET_DELAY_SEC должен быть >= 0")
+        auto_reset_stopped_delay_sec = float(
+            os.environ.get("AGZS_AUTO_RESET_STOPPED_DELAY_SEC", "60.0").strip() or "60.0"
+        )
+        if auto_reset_stopped_delay_sec < 0:
+            raise ValueError("AGZS_AUTO_RESET_STOPPED_DELAY_SEC должен быть >= 0")
+        inter_frame_delay_sec = float(os.environ.get("AGZS_INTER_FRAME_DELAY_SEC", "0.05").strip() or "0.05")
+        if inter_frame_delay_sec < 0:
+            raise ValueError("AGZS_INTER_FRAME_DELAY_SEC должен быть >= 0")
+        counter_reconcile_interval_sec = float(
+            os.environ.get("AGZS_COUNTER_RECONCILE_INTERVAL_SEC", "0").strip() or "0"
+        )
+        if counter_reconcile_interval_sec < 0:
+            raise ValueError("AGZS_COUNTER_RECONCILE_INTERVAL_SEC должен быть >= 0")
         if auto_reset_on_stop:
             read_only = False
 
@@ -280,6 +304,9 @@ class EdgeSettings:
             read_only=read_only,
             auto_reset_on_stop=auto_reset_on_stop,
             auto_reset_delay_sec=auto_reset_delay_sec,
+            auto_reset_stopped_delay_sec=auto_reset_stopped_delay_sec,
+            inter_frame_delay_sec=inter_frame_delay_sec,
+            counter_reconcile_interval_sec=counter_reconcile_interval_sec,
             db_path=db_path,
             save_raw_frames=save_raw,
             vps_base_url=vps_base_url,

@@ -22,6 +22,7 @@ from typing import overload
 from agzs_edge.iskra import (
     STATE_DISPENSING,
     STATE_DOSE_SET,
+    STATE_IDLE,
     STATE_REMAINDER,
     IskraTelemetryFrame,
 )
@@ -195,7 +196,19 @@ class EdgeDatabase:
                     price_kzt_per_liter REAL NOT NULL,
                     volume_ml INTEGER NOT NULL,
                     raw_hex TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    recorded_stop_volume_ml INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS counter_audits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pump_address INTEGER NOT NULL,
+                    total_counter_liters REAL NOT NULL,
+                    prev_counter_liters REAL,
+                    counter_delta_liters REAL,
+                    db_dispenses_liters REAL NOT NULL,
+                    discrepancy_liters REAL,
+                    recorded_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS raw_frames (
@@ -215,16 +228,27 @@ class EdgeDatabase:
                     ON outbox_queue(status, next_retry_at);
                 """
             )
+            cols = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(pump_live_state)").fetchall()
+            }
+            if "recorded_stop_volume_ml" not in cols:
+                conn.execute(
+                    "ALTER TABLE pump_live_state ADD COLUMN recorded_stop_volume_ml INTEGER NOT NULL DEFAULT 0"
+                )
 
     def update_live_state(self, frame: IskraTelemetryFrame, *, observed_at: datetime | None = None) -> None:
         stamp = (observed_at or datetime.now(timezone.utc)).isoformat()
+        is_idle = 1 if frame.state_code == STATE_IDLE else 0
+        is_disp = 1 if frame.is_dispensing else 0
         with self._lock, self._session() as conn:
             conn.execute(
                 """
                 INSERT INTO pump_live_state (
                     pump_address, state_code, state_name, error_code,
-                    price_kzt_per_liter, volume_ml, raw_hex, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    price_kzt_per_liter, volume_ml, raw_hex, updated_at,
+                    recorded_stop_volume_ml
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
                 ON CONFLICT(pump_address) DO UPDATE SET
                     state_code = excluded.state_code,
                     state_name = excluded.state_name,
@@ -235,7 +259,12 @@ class EdgeDatabase:
                     END,
                     volume_ml = excluded.volume_ml,
                     raw_hex = excluded.raw_hex,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    recorded_stop_volume_ml = CASE
+                        WHEN ? THEN 0
+                        WHEN ? AND excluded.volume_ml < pump_live_state.recorded_stop_volume_ml THEN 0
+                        ELSE pump_live_state.recorded_stop_volume_ml
+                    END
                 """,
                 (
                     frame.address,
@@ -243,11 +272,99 @@ class EdgeDatabase:
                     frame.state_name,
                     frame.error_code,
                     frame.price_kzt_per_liter,
-                    frame.reported_volume_ml,
+                    frame.effective_volume_ml,
                     frame.raw_hex,
                     stamp,
+                    is_idle,
+                    is_disp,
                 ),
             )
+
+    def mark_stop_volume_recorded(self, pump_address: int, volume_ml: int) -> None:
+        """Запоминает зафиксированный в БД объём текущего останова до сброса в '05'."""
+        with self._lock, self._session() as conn:
+            conn.execute(
+                "UPDATE pump_live_state SET recorded_stop_volume_ml = ? WHERE pump_address = ?",
+                (max(0, int(volume_ml)), pump_address),
+            )
+
+    def get_recorded_stop_volumes(self) -> dict[int, int]:
+        """Возвращает карту `{pump_address: recorded_stop_volume_ml}` для защиты от дублей после рестарта."""
+        if self._read_only and not self.db_path.is_file():
+            return {}
+        try:
+            with self._lock, self._session() as conn:
+                rows = conn.execute(
+                    "SELECT pump_address, recorded_stop_volume_ml FROM pump_live_state WHERE recorded_stop_volume_ml > 0"
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {int(row["pump_address"]): int(row["recorded_stop_volume_ml"]) for row in rows}
+
+    def record_counter_audit(
+        self,
+        pump_address: int,
+        total_counter_liters: float,
+        *,
+        observed_at: datetime | None = None,
+    ) -> tuple[float | None, float | None]:
+        """Сохраняет сверку суммарного счётчика (0.11) с закрытыми заправками в SQLite."""
+        stamp_dt = parse_iso_datetime(observed_at or datetime.now(timezone.utc))
+        stamp_iso = stamp_dt.isoformat()
+        with self._lock, self._session() as conn:
+            prev = conn.execute(
+                "SELECT total_counter_liters, recorded_at FROM counter_audits WHERE pump_address = ? ORDER BY id DESC LIMIT 1",
+                (pump_address,),
+            ).fetchone()
+
+            if prev is None:
+                prev_val: float | None = None
+                counter_delta: float | None = None
+                rows = conn.execute(
+                    "SELECT COALESCE(SUM(volume_liters), 0.0) AS total_vol FROM dispenses WHERE pump_address = ?",
+                    (pump_address,),
+                ).fetchone()
+                db_liters = round(float(rows["total_vol"]) if rows else 0.0, 3)
+                discrepancy: float | None = None
+            else:
+                prev_val = float(prev["total_counter_liters"])
+                prev_dt = parse_iso_datetime(str(prev["recorded_at"]))
+                counter_delta = round(total_counter_liters - prev_val, 3)
+                disp_rows = conn.execute(
+                    "SELECT finished_at, volume_liters FROM dispenses WHERE pump_address = ?",
+                    (pump_address,),
+                ).fetchall()
+                acc = 0.0
+                for d_row in disp_rows:
+                    fin_dt = parse_iso_datetime(str(d_row["finished_at"]))
+                    if fin_dt is None:
+                        continue
+                    if prev_dt is not None and fin_dt <= prev_dt:
+                        continue
+                    if fin_dt > stamp_dt:
+                        continue
+                    acc += float(d_row["volume_liters"])
+                db_liters = round(acc, 3)
+                discrepancy = round(counter_delta - db_liters, 3)
+
+            conn.execute(
+                """
+                INSERT INTO counter_audits (
+                    pump_address, total_counter_liters, prev_counter_liters,
+                    counter_delta_liters, db_dispenses_liters, discrepancy_liters, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pump_address,
+                    round(float(total_counter_liters), 3),
+                    prev_val,
+                    counter_delta,
+                    db_liters,
+                    discrepancy,
+                    stamp_iso,
+                ),
+            )
+            return counter_delta, discrepancy
 
     def mark_no_response(self, pump_address: int, *, observed_at: datetime | None = None) -> None:
         """Помечает колонку как NO_RESPONSE без постановки фиктивного объёма в outbox/VPS.

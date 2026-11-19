@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from agzs_edge import __version__
-from agzs_edge.config import EdgeSettings
+from agzs_edge.config import EdgeSettings, MAX_PUMP_ADDRESS
 from agzs_edge.psu_controller import send_buttons_param_to_pumps
 from agzs_edge.serial_link import build_link
 from agzs_edge.storage import EdgeDatabase
@@ -76,6 +76,7 @@ class UpdateProgressState:
     previous_wheel: str = ""
     interrupted_count: int = 0
     updated_at: str = ""
+    buttons_locked: bool = False
 
 
 def update_state_path(settings: EdgeSettings) -> Path:
@@ -110,6 +111,7 @@ def read_update_state(settings: EdgeSettings) -> UpdateProgressState | None:
             previous_wheel=str(raw.get("previous_wheel") or ""),
             interrupted_count=int(raw.get("interrupted_count", 0) or 0),
             updated_at=str(raw.get("updated_at") or ""),
+            buttons_locked=bool(raw.get("buttons_locked", False)),
         )
     except Exception:
         return None
@@ -137,6 +139,7 @@ def write_update_state(settings: EdgeSettings, state: UpdateProgressState) -> No
             previous_wheel=state.previous_wheel,
             interrupted_count=state.interrupted_count,
             updated_at=datetime.now(timezone.utc).isoformat(),
+            buttons_locked=state.buttons_locked,
         )
     )
     tmp_path = path.with_suffix(".tmp")
@@ -290,7 +293,7 @@ def report_edge_heartbeat(
         "current_version": current_version,
         "channel": channel,
         "outbox_pending": max(0, int(outbox_pending)),
-        "active_pumps": max(0, min(6, int(active_pumps))),
+        "active_pumps": max(0, min(MAX_PUMP_ADDRESS, int(active_pumps))),
         "update_status": update_status,
         "last_error": last_error[:1024] if last_error else None,
     }
@@ -506,6 +509,7 @@ class EdgeUpdater:
         artifact_path: str = "",
         previous_wheel: str = "",
         interrupted_count: int = 0,
+        buttons_locked: bool = False,
     ) -> None:
         banner_msg = "ОБНОВЛЕНИЕ — КОЛОНКИ НЕДОСТУПНЫ"
         if interrupted_count > 0:
@@ -526,6 +530,7 @@ class EdgeUpdater:
                 artifact_path=artifact_path,
                 previous_wheel=previous_wheel,
                 interrupted_count=interrupted_count,
+                buttons_locked=buttons_locked,
             ),
         )
 
@@ -564,9 +569,14 @@ class EdgeUpdater:
         if self.settings.read_only or not self.settings.lock_buttons_on_update:
             return
         if not self._send_buttons_param("0.17"):
-            # Порт занят работающим station-edge.service: даём ему один цикл увидеть файл состояния и отправить 0.17.
-            wait_sec = min(1.0, max(0.1, self.settings.poll_interval_sec * 2))
-            self._sleep_fn(wait_sec)
+            # Порт занят работающим station-edge.service: ждём подтверждения buttons_locked от службы.
+            wait_budget = max(3.0, self.settings.poll_interval_sec * 4 + self.settings.serial_timeout_sec)
+            deadline = time.monotonic() + wait_budget
+            while time.monotonic() < deadline:
+                state = read_update_state(self.settings)
+                if state is not None and state.buttons_locked:
+                    return
+                self._sleep_fn(0.2)
 
     def _unlock_pumps_after_install(self) -> None:
         if self._unlock_pumps_fn is not None:
@@ -673,6 +683,7 @@ class EdgeUpdater:
             if not self._self_test_fn():
                 raise RuntimeError("smoke-тест `python -m agzs_edge --help` завершился с ошибкой")
             if restart_cmd.strip():
+                cur_state = read_update_state(self.settings)
                 self._write_progress(
                     phase="restarting",
                     target_version=target_version,
@@ -684,6 +695,7 @@ class EdgeUpdater:
                     artifact_path=str(wheel_path),
                     previous_wheel=prev_str,
                     interrupted_count=interrupted_count,
+                    buttons_locked=bool(cur_state.buttons_locked) if cur_state else False,
                 )
                 self._restart_fn(restart_cmd)
         except Exception as exc:

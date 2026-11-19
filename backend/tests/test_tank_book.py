@@ -231,3 +231,20 @@ def test_accept_dispense_and_list_dispense_records_roundtrip():
     restored = account.list_dispense_records(station_id)
     assert len(restored) == 1
     assert restored[0].external_txn_id == "aska02-akt12-p2-1"
+
+    # Колонка с адресом 8 (многопостовая АГЗС) не сбрасывается на 1/2
+    ack_p8 = account.accept_dispense(
+        DispenseIngest(
+            station_id=station_id,
+            dispenser_id=uuid4(),
+            tank_id=tank_id,
+            volume_liters=11.0,
+            started_at=datetime(2026, 11, 18, 9, 16, 0, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 11, 18, 9, 17, 0, tzinfo=timezone.utc),
+            external_txn_id="aska02-akt12-p8-1",
+            raw_payload=json.dumps({"pump_address": 8, "mode": "dose", "price_kzt_per_liter": 72.0}),
+        )
+    )
+    assert ack_p8.duplicate is False
+    rows_with_p8 = account.list_dispense_records(station_id)
+    assert any(r.pump_address == 8 and r.volume_liters == 11.0 for r in rows_with_p8)

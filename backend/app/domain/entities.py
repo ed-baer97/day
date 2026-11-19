@@ -116,7 +116,7 @@ def parse_dispense_meta(
     dispenser_id: UUID,
     raw_payload: str | None,
 ) -> tuple[int, str | None, float | None]:
-    """Извлекает номер колонки (1..6), режим налива и цену из JSON raw_payload или dispenser_id."""
+    """Извлекает номер колонки (1..8), режим налива и цену из JSON raw_payload или dispenser_id."""
     fallback_addr = 2 if dispenser_id.int % 2 == 0 else 1
     if not raw_payload:
         return fallback_addr, None, None
@@ -128,7 +128,7 @@ def parse_dispense_meta(
         return fallback_addr, None, None
 
     raw_addr = meta.get("pump_address")
-    if isinstance(raw_addr, int) and not isinstance(raw_addr, bool) and 1 <= raw_addr <= 6:
+    if isinstance(raw_addr, int) and not isinstance(raw_addr, bool) and 1 <= raw_addr <= 8:
         pump_address = raw_addr
     else:
         pump_address = fallback_addr

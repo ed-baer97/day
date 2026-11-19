@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 
 from agzs_edge.config import FrameLayout
@@ -39,6 +41,8 @@ from agzs_edge.iskra import (
 )
 from agzs_edge.serial_link import AskaLink, PollRawResult
 
+logger = logging.getLogger(__name__)
+
 
 def send_buttons_param_to_pumps(
     link: AskaLink,
@@ -53,6 +57,20 @@ def send_buttons_param_to_pumps(
     errors: list[tuple[int, str]] = []
     for address in addresses:
         frame = last_frames.get(address) if last_frames else None
+        if frame is None and last_frames is None:
+            poll_res = link.poll_test(address, checksum_mode=checksum_mode)
+            if poll_res.error_message:
+                errors.append((address, poll_res.error_message))
+                continue
+            if poll_res.has_response:
+                try:
+                    frame = parse_iskra_frame(
+                        poll_res.response_bytes,
+                        FrameLayout(checksum_mode=checksum_mode),
+                    )
+                except IskraFrameError as exc:
+                    errors.append((address, str(exc)))
+                    continue
         if frame is not None and (frame.is_dispensing or frame.valve_open):
             errors.append((address, "колонка выполняет налив"))
             continue
@@ -69,7 +87,10 @@ def send_buttons_param_to_pumps(
             continue
         if param_code == "0.16":
             reset_req = build_reset_command(address, checksum_mode=checksum_mode)
-            link.send_command(address, reset_req)
+            reset_after = link.send_command(address, reset_req)
+            if reset_after.error_message:
+                errors.append((address, reset_after.error_message))
+                continue
         succeeded.append(address)
     return succeeded, errors
 
@@ -154,7 +175,8 @@ class CountersReport:
         if self.temperature_c is not None:
             lines.append(f"  Средняя температура (0.12): {self.temperature_c:+.1f} °C")
         if self.density_kg_m3 is not None:
-            lines.append(f"  Средняя плотность   (0.12): {self.density_kg_m3:.3f} кг/м³")
+            unit_d = "кг/л" if self.density_kg_m3 < 2.0 else "кг/м³"
+            lines.append(f"  Средняя плотность   (0.12): {self.density_kg_m3:.3f} {unit_d}")
         if self.tpr_liters_per_pulse is not None or self.propane_percent is not None:
             lines.append(
                 f"  Параметры ТПР       (0.14): коэф={self.tpr_liters_per_pulse} л/имп, "
@@ -199,9 +221,23 @@ def format_detailed_status(frame: IskraTelemetryFrame) -> str:
         f"  Байт 18 (доп. статус)      : 0x{frame.status_byte18:02X}",
         f"  Ошибка колонки (байт 19)   : {err_text} (Sost[19]=0x{frame.sost_byte19:02X})",
     ]
-    if frame.state_code == STATE_IDLE:
+    if frame.is_mass_mode:
+        density_text = (
+            f"{frame.density_kg_per_l:.3f} кг/л"
+            if frame.density_kg_per_l is not None
+            else f"raw={frame.price_raw}"
+        )
+        lines.append(
+            f"  Единицы измерения          : КГ (плотность={density_text}, "
+            f"расчётный объём={frame.effective_volume_ml} мл)"
+        )
+    elif frame.state_code == STATE_IDLE:
         lines.append(
             f"  Поле Price (цена)          : {frame.price_kzt_per_liter:.2f} (raw={frame.price_raw})"
+        )
+    elif frame.preset_amount is not None:
+        lines.append(
+            f"  Поле Price (доза в деньгах): {frame.preset_amount:.2f} (raw={frame.price_raw})"
         )
     else:
         dose_val = int(frame.price_raw) / 100.0 if frame.price_raw.isdigit() else 0.0
@@ -362,6 +398,12 @@ class Uzsg01PsuController:
             volume_ml = int(round(liters * 1000))
             if volume_ml <= 0 or volume_ml > 999_999:
                 raise ValueError(f"Доза в миллилитрах должна быть 1..999999, получено: {volume_ml}")
+            if volume_ml < 5000:
+                logger.warning(
+                    "Колонка #%d: задана доза %d мл < 5000 мл (минимальная по РЭ УЗСГ-01 — 5 л)",
+                    address,
+                    volume_ml,
+                )
 
         status = self.get_status(address)
         if status.state_code == STATE_DISPENSING or status.valve_open:
@@ -430,8 +472,37 @@ class Uzsg01PsuController:
         assert reply is not None
         return reply
 
-    def set_price(self, address: int, price_per_liter: float) -> IskraTelemetryFrame:
-        """Устанавливает цену за литр командой 0x38 (код 0.15, п. 2.4 параметров)."""
+    def _reset_to_idle_bits(
+        self,
+        address: int,
+        *,
+        status_ascii: str = "00",
+        max_retries: int = 5,
+        retry_delay_sec: float = 0.05,
+    ) -> IskraTelemetryFrame | None:
+        """Повторяет «Сброс» (0x37) по п. 1.1–1.6 Протокола v3.10, пока биты 0–4 байта 17 не станут 0x10."""
+        mode = self._tx_checksum_mode()
+        last_reply: IskraTelemetryFrame | None = None
+        for attempt in range(max(1, max_retries)):
+            req = build_reset_command(address, status_ascii=status_ascii, checksum_mode=mode)
+            reply = self._send_and_parse(address, req, allow_empty=True)
+            if reply is not None:
+                last_reply = reply
+                if reply.dose_type_bits == 0x10:
+                    return reply
+            if attempt + 1 < max_retries and retry_delay_sec > 0:
+                time.sleep(retry_delay_sec)
+        return last_reply
+
+    def set_price(
+        self,
+        address: int,
+        price_per_liter: float,
+        *,
+        max_retries: int = 5,
+        retry_delay_sec: float = 0.1,
+    ) -> IskraTelemetryFrame:
+        """Устанавливает цену за литр командой 0x38 (код 0.15, п. 2.4 параметров Протокола v3.10)."""
         if price_per_liter <= 0:
             raise ValueError("Цена за литр должна быть больше 0")
         price_kop = int(round(price_per_liter * 100))
@@ -446,23 +517,106 @@ class Uzsg01PsuController:
             if not reset_res.unlocked:
                 raise PsuControlError(reset_res.message)
 
+        mode = self._tx_checksum_mode()
         req_price = build_param_command(
             address,
             "0.15",
             volume_digits=price_kop,
-            checksum_mode=self._tx_checksum_mode(),
+            checksum_mode=mode,
         )
         # П. 2.4 шаг 1: ответ в таблице указан как «нет»
         self._send_and_parse(address, req_price, allow_empty=True)
-        # П. 2.4 шаг 2: Тест
-        self.get_status(address)
-        # П. 2.4 шаг 3: Останов
-        req_stop = build_stop_command(address, checksum_mode=self._tx_checksum_mode())
-        self._send_and_parse(address, req_stop, allow_empty=True)
-        # Возвращаем колонку в '05'
-        req_reset = build_reset_command(address, checksum_mode=self._tx_checksum_mode())
-        self._send_and_parse(address, req_reset, allow_empty=True)
-        return self.get_status(address)
+        if retry_delay_sec > 0:
+            time.sleep(retry_delay_sec)
+
+        # П. 2.4 шаг 2: Тест, повторять пока (byte17 & 0x7F) != 0x16
+        test_req = build_test_command(address, checksum_mode=mode)
+        step2_ok = False
+        for attempt in range(max(1, max_retries)):
+            frame = self._send_and_parse(address, test_req, allow_empty=True)
+            if frame is not None and (frame.status_byte17 & 0x7F) == 0x16:
+                step2_ok = True
+                break
+            if attempt + 1 < max_retries and retry_delay_sec > 0:
+                time.sleep(retry_delay_sec)
+        if not step2_ok:
+            self._send_and_parse(
+                address,
+                build_reset_command(address, checksum_mode=mode),
+                allow_empty=True,
+            )
+            raise PsuControlError(
+                f"Колонка #{address} не подтвердила режим установки цены (ожидалось 0x16 в байте 17 после 0.15)."
+            )
+
+        # П. 2.4 шаг 3: Останов (запись цены в память), повторять пока (byte17 & 0x7F) != 0x30
+        stop_req = build_stop_command(address, checksum_mode=mode)
+        step3_ok = False
+        for attempt in range(max(1, max_retries)):
+            reply = self._send_and_parse(address, stop_req, allow_empty=True)
+            if reply is not None and (reply.status_byte17 & 0x7F) == 0x30:
+                step3_ok = True
+                break
+            if attempt + 1 < max_retries and retry_delay_sec > 0:
+                time.sleep(retry_delay_sec)
+        if not step3_ok:
+            self._send_and_parse(
+                address,
+                build_reset_command(address, checksum_mode=mode),
+                allow_empty=True,
+            )
+            raise PsuControlError(
+                f"Колонка #{address} не подтвердила запись цены командой Останов (ожидалось 0x30 в байте 17)."
+            )
+
+        final = self.get_status(address)
+        if final.state_code != STATE_IDLE:
+            self._reset_to_idle_bits(address)
+            final = self.get_status(address)
+
+        expected_price = price_kop / 100.0
+        if (
+            final.state_code == STATE_IDLE
+            and final.price_kzt_per_liter > 0
+            and abs(final.price_kzt_per_liter - expected_price) > 0.02
+        ):
+            raise PsuControlError(
+                f"Цена на колонке #{address} после установки ({final.price_kzt_per_liter:.2f}) "
+                f"не совпала с заданной ({expected_price:.2f})."
+            )
+        return final
+
+    def read_total_counter_1(self, address: int, *, mass: bool = False) -> float | None:
+        """Считывает суммарный счётчик 1 (0x38, код 0.11) с гарантированным возвратом в '05'."""
+        status = self.get_status(address)
+        if status.state_code == STATE_DISPENSING or status.valve_open:
+            raise PsuControlError(f"Нельзя считывать счётчик во время налива на колонке #{address}.")
+        if status.state_code != STATE_IDLE:
+            reset_res = self.reset_column(address)
+            if not reset_res.unlocked:
+                raise PsuControlError(reset_res.message)
+
+        mode = self._tx_checksum_mode()
+        status_ascii = "01" if mass else "00"
+        req = build_param_command(
+            address,
+            "0.11",
+            volume_digits=0,
+            status_ascii=status_ascii,
+            checksum_mode=mode,
+        )
+        try:
+            frame = self._send_and_parse(address, req, allow_empty=False)
+        except PsuControlError:
+            frame = None
+        finally:
+            self._reset_to_idle_bits(address, status_ascii=status_ascii)
+
+        if frame is not None and frame.dose_type_bits == 0x1A:
+            raw_s = frame.raw_bytes[7:17].decode("ascii", errors="replace")
+            if raw_s.isdigit():
+                return int(raw_s) / 100.0
+        return None
 
     def read_counters(self, address: int, *, mass: bool = False) -> CountersReport:
         """Считывает суммарные, суточный счётчики и ТПР (0x38, разделы 1.1–1.5) со сбросом в '05'."""
@@ -483,8 +637,8 @@ class Uzsg01PsuController:
                 frame = self._send_and_parse(address, req, allow_empty=False)
             except PsuControlError:
                 frame = None
-            # По таблицам 1.1–1.5 после чтения параметров обязательно отправляется «Сброс».
-            self._send_and_parse(address, build_reset_command(address, checksum_mode=mode), allow_empty=True)
+            # По таблицам 1.1–1.5 после чтения параметров повторяем «Сброс», пока биты 0..4 != 0x10.
+            self._reset_to_idle_bits(address, status_ascii=st)
             return frame
 
         # 1.1 Суммарный счётчик 1 (0.11, маркер 1Ah, байты 7..16)
@@ -522,11 +676,11 @@ class Uzsg01PsuController:
             extra_s = extra.decode("ascii", errors="replace")
             if not mass:
                 sign = -1.0 if extra[0] == 0x31 else 1.0
-                digits_t = extra_s[1:].replace(".", "")
+                digits_t = extra_s[1:].strip().replace(".", "")
                 if digits_t.isdigit():
                     temp_c = sign * (int(digits_t) / 10.0)
             else:
-                digits_p = extra_s.replace(".", "")
+                digits_p = extra_s.strip().replace(".", "")
                 if digits_p.isdigit():
                     density = int(digits_p) / 1000.0
 
@@ -544,7 +698,7 @@ class Uzsg01PsuController:
 
         final_status = self.get_status(address)
         if final_status.state_code != STATE_IDLE:
-            self._send_and_parse(address, build_reset_command(address, checksum_mode=mode), allow_empty=True)
+            self._reset_to_idle_bits(address)
             final_status = self.get_status(address)
 
         return CountersReport(

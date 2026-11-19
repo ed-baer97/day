@@ -213,6 +213,16 @@ class OutboxSyncWorker:
                         sent_count += len(chunk)
                         logger.info("Пакет из %d наливов успешно доставлен на VPS в 1 запросе", len(chunk))
                         continue
+                    if batch_res.status_code == 0:
+                        for it in chunk:
+                            self.db.mark_outbox_failed(it.external_txn_id, batch_res.error_text, now=now)
+                            failed_count += 1
+                        logger.warning(
+                            "Сетевая ошибка пакетной отправки (%s): отложено %d записей без поштучного перебора",
+                            batch_res.error_text,
+                            len(chunk),
+                        )
+                        break
                     logger.warning("Пакетная отправка отклонена (%s), переход на поштучную", batch_res.error_text)
                 except Exception as exc:
                     logger.warning("Ошибка пакетной отправки (%s), переход на поштучную", exc)

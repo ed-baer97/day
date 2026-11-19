@@ -830,4 +830,78 @@ def test_updater_does_not_import_service_cycle() -> None:
     assert not any(mod == "agzs_edge.service" or mod.startswith("agzs_edge.service.") for mod in imported)
 
 
+def test_restore_pump_buttons_retries_after_partial_error(tmp_path: Path) -> None:
+    """Если восстановление кнопок (0.16) упало с ошибкой COM на цикле 1, цикл 2 повторяет попытку."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+
+    def _live_05(byte17: int) -> bytes:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + b"007200"
+            + b"000000"
+            + bytes([byte17, 0x8A])
+            + b"05"
+            + bytes([ETX])
+        )
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    frame_locked_rst = _live_05(0x50)
+    frame_enabled = _live_05(0x70)
+
+    class _FlakyButtonLink:
+        def __init__(self) -> None:
+            self.poll_calls = 0
+            self.param_calls: list[str] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            del checksum_mode
+            self.poll_calls += 1
+            raw = frame_locked_rst if self.poll_calls <= 2 else frame_enabled
+            return PollRawResult(address=address, request_bytes=b"req", response_bytes=raw)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            if request[3] == CMD_PARAMS_ASCII:
+                self.param_calls.append(request[5:11].decode("ascii"))
+                if len(self.param_calls) == 1:
+                    return PollRawResult(
+                        address=address,
+                        request_bytes=request,
+                        response_bytes=b"",
+                        error_message="temporary COM error",
+                    )
+            return PollRawResult(address=address, request_bytes=request, response_bytes=frame_enabled)
+
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        poll_interval_sec=0.0,
+        read_only=False,
+        lock_buttons_on_update=True,
+        pump_buttons_mode="enable",
+        db_path=tmp_path / "retry_buttons.db",
+        sync_enabled=False,
+    )
+    link = _FlakyButtonLink()
+    svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
+    svc._restore_buttons_pending = True  # noqa: SLF001
+
+    svc.poll_cycle_once()  # попытка 1 -> ошибка COM на 0.16
+    assert link.param_calls == ["000016"]
+    assert svc._restore_buttons_pending is True  # noqa: SLF001
+
+    svc.poll_cycle_once()  # попытка 2 -> повтор 0.16 успешен
+    assert link.param_calls == ["000016", "000016"]
+    assert svc._restore_buttons_pending is False  # noqa: SLF001
+
+    svc.poll_cycle_once()  # попытка 3 -> биты уже 0x70, повторного спама нет
+    assert link.param_calls == ["000016", "000016"]
+
+
 

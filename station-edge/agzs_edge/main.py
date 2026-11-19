@@ -2,7 +2,7 @@
 
 Доступные команды:
   python -m agzs_edge diagnose   -- USB/FTDI/протокол/TX-RX (только чтение «Тест»)
-  python -m agzs_edge probe      -- разовый опрос адресов 1..6 командой «Тест»
+  python -m agzs_edge probe      -- разовый опрос адресов 1..8 командой «Тест»
   python -m agzs_edge listen     -- живой мониторинг 23-байтных кадров в консоли
   python -m agzs_edge watch-fill -- один налив выбранного адреса, без записи в базу
   python -m agzs_edge serve      -- боевой демон учёта (с --auto-reset для БП без ПУ)
@@ -30,7 +30,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from agzs_edge.config import EdgeSettings, FrameLayout
+from agzs_edge.config import EdgeSettings, FrameLayout, MAX_PUMP_ADDRESS, MIN_PUMP_ADDRESS
 from agzs_edge.iskra import IskraFrameError, parse_iskra_frame
 from agzs_edge.psu_controller import (
     PsuControlError,
@@ -84,7 +84,7 @@ def _build_diagnostic_link(
 
 
 def _cmd_probe(args: argparse.Namespace, settings: EdgeSettings) -> int:
-    addresses = tuple(range(1, 7)) if args.all_addresses else settings.pump_addresses
+    addresses = tuple(range(MIN_PUMP_ADDRESS, MAX_PUMP_ADDRESS + 1)) if args.all_addresses else settings.pump_addresses
     checksum_arg = getattr(args, "checksum", None)
     if checksum_arg == "all":
         tx_modes: tuple[str, ...] = ("xor", "sum7", "sum8")
@@ -165,8 +165,8 @@ def _cmd_listen(args: argparse.Namespace, settings: EdgeSettings) -> int:
     )
     step = 0
     try:
-        if addr < 1 or addr > 6:
-            raise ValueError(f"Адрес колонки должен быть в диапазоне 1..6, получено: {addr}")
+        if addr < MIN_PUMP_ADDRESS or addr > MAX_PUMP_ADDRESS:
+            raise ValueError(f"Адрес колонки должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {addr}")
         while args.count is None or step < args.count:
             step += 1
             res = link.poll_test(addr)
@@ -200,9 +200,12 @@ def _cmd_watch_fill(args: argparse.Namespace, settings: EdgeSettings) -> int:
     checksum_arg = getattr(args, "checksum", None)
     layout = replace(settings.layout, checksum_mode=checksum_arg) if checksum_arg else settings.layout
     link, _port, _baudrate, _effective_wait = _build_diagnostic_link(args, settings, layout=layout)
-    if addr < 1 or addr > 6:
+    if addr < MIN_PUMP_ADDRESS or addr > MAX_PUMP_ADDRESS:
         link.close()
-        print(f"Ошибка параметра: адрес колонки должен быть в диапазоне 1..6, получено: {addr}", file=sys.stderr)
+        print(
+            f"Ошибка параметра: адрес колонки должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {addr}",
+            file=sys.stderr,
+        )
         return 2
     print(
         f"Наблюдение налива, адрес {addr}. Команда только «Тест». "
@@ -564,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_diag = sub.add_parser("diagnose", help="Диагностика USB FTDI, порта, протокола и TX/RX (только чтение)")
     p_diag.add_argument("--port", default="", help="COM/TTY порт (по умолчанию из .env / by-id)")
-    p_diag.add_argument("--addr", type=int, default=1, help="Адрес колонки для тестового опроса (1..6)")
+    p_diag.add_argument("--addr", type=int, default=1, help="Адрес колонки для тестового опроса (1..8)")
 
     p_probe = sub.add_parser("probe", help="Разовый опрос адресов командой «Тест» (проверка связи с АСКА-02)")
     p_probe.add_argument("--port", default="", help="COM-порт (например COM7 или /dev/ttyUSB0)")
@@ -576,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Режим контрольной суммы BCC в запросе (all = перебрать xor, sum7, sum8)",
     )
-    p_probe.add_argument("--all-addresses", action="store_true", help="Опросить все адреса 1..6")
+    p_probe.add_argument("--all-addresses", action="store_true", help="Опросить все адреса 1..8")
     p_probe.add_argument("--emulator", action="store_true", help="Использовать встроенный имитатор ответа")
 
     p_listen = sub.add_parser("listen", help="Живой просмотр кадров с одного адреса без записи в БД")
@@ -589,7 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Режим контрольной суммы BCC (по умолчанию из .env)",
     )
-    p_listen.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..6)")
+    p_listen.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..8)")
     p_listen.add_argument("--count", type=int, default=None, help="Число опросов (по умолчанию бесконечно)")
     p_listen.add_argument("--emulator", action="store_true", help="Использовать встроенный имитатор")
 
@@ -602,7 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Режим контрольной суммы BCC (по умолчанию из .env)",
     )
-    p_watch.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..6)")
+    p_watch.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..8)")
     p_watch.add_argument("--seconds", type=float, default=900.0, help="Максимум секунд наблюдения")
     p_watch.add_argument("--idle", type=float, default=8.0, help="Сколько секунд тишины после налива считать концом")
     p_watch.add_argument("--timeout", type=float, default=0.8, help="Таймаут одного чтения")
@@ -623,7 +626,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--port", default="", help="COM-порт (например COM7 или /dev/ttyUSB0)")
         p.add_argument("--baudrate", type=int, default=None, help="Скорость порта (по умолчанию из .env)")
         p.add_argument("--timeout", type=float, default=None, help="Таймаут ожидания ответа в секундах")
-        p.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..6)")
+        p.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..8)")
         p.add_argument("--emulator", action="store_true", help="Использовать встроенный имитатор УЗСГ-01")
 
     p_unlock = sub.add_parser(

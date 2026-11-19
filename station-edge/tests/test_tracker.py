@@ -203,3 +203,54 @@ def test_tracker_preserves_column_error_code_from_sost_byte19() -> None:
     assert done is not None
     assert done.dispensed_ml == 2100
     assert done.error_code == "02"
+
+
+def test_tracker_pause_04_resume_manual_reset_and_recover_untracked_stop() -> None:
+    """Пауза '04' -> '03' не задваивает, '04' -> '05' закрывает факт, recover_untracked_stop не дублирует."""
+    t0 = datetime(2026, 11, 19, 10, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Пауза '04' с продолжением '03' в режиме полного бака -> одна запись 12 000 мл
+    tracker = PumpDispenseTracker(station_code="AKT-12", pause_on_stopped=True)
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("05", "007200", "000000", 0x92)), observed_at=t0) is None
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("03", "090000", "005000", 0x92)), observed_at=t0 + timedelta(seconds=5)) is None
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("04", "090000", "005000", 0x92)), observed_at=t0 + timedelta(seconds=8)) is None
+    assert tracker.has_paused_sessions() is True
+    assert tracker.has_active_sessions() is True
+    assert tracker.process_frame(parse_iskra_frame(_live_frame("03", "090000", "012000", 0x92)), observed_at=t0 + timedelta(seconds=15)) is None
+    assert tracker.has_paused_sessions() is False
+    done = tracker.process_frame(parse_iskra_frame(_live_frame("07", "090000", "012000", 0x92)), observed_at=t0 + timedelta(seconds=18))
+    assert done is not None
+    assert done.dispensed_ml == 12000
+
+    # 2. Ручной сброс после паузы '04' -> '05' (для полного бака и для обычной дозы)
+    tracker2 = PumpDispenseTracker(station_code="AKT-12", pause_on_stopped=True)
+    assert tracker2.process_frame(parse_iskra_frame(_live_frame("03", "090000", "005000", 0x92)), observed_at=t0) is None
+    assert tracker2.process_frame(parse_iskra_frame(_live_frame("04", "090000", "005000", 0x92)), observed_at=t0 + timedelta(seconds=4)) is None
+    done_reset = tracker2.process_frame(parse_iskra_frame(_live_frame("05", "007200", "000000", 0x92)), observed_at=t0 + timedelta(seconds=6))
+    assert done_reset is not None
+    assert done_reset.dispensed_ml == 5000
+
+    tracker_dose = PumpDispenseTracker(station_code="AKT-12", pause_on_stopped=True)
+    assert tracker_dose.process_frame(_frame(1, STATE_DOSE_SET, 20000), observed_at=t0) is None
+    assert tracker_dose.process_frame(_frame(1, STATE_DISPENSING, 15000), observed_at=t0 + timedelta(seconds=2)) is None
+    assert tracker_dose.process_frame(_frame(1, STATE_STOPPED, 15000), observed_at=t0 + timedelta(seconds=3)) is None
+    done_dose_reset = tracker_dose.process_frame(_frame(1, STATE_IDLE, 0), observed_at=t0 + timedelta(seconds=5))
+    assert done_dose_reset is not None
+    assert done_dose_reset.dispensed_ml == 5000
+
+    # 3. recover_untracked_stop восстанавливает пропущенный '03' и не дублирует после initial_committed_by_addr
+    tracker_rec = PumpDispenseTracker(station_code="AKT-12", pause_on_stopped=True)
+    stop_frame = parse_iskra_frame(_live_frame("07", "090000", "015000", 0x92))
+    assert tracker_rec.process_frame(stop_frame, observed_at=t0) is None
+    rec = tracker_rec.recover_untracked_stop(stop_frame, observed_at=t0)
+    assert rec is not None
+    assert rec.mode == "recovered_stop"
+    assert rec.dispensed_ml == 15000
+    assert tracker_rec.recover_untracked_stop(stop_frame, observed_at=t0 + timedelta(seconds=1)) is None
+
+    tracker_restarted = PumpDispenseTracker(
+        station_code="AKT-12",
+        pause_on_stopped=True,
+        initial_committed_by_addr={1: 15000},
+    )
+    assert tracker_restarted.recover_untracked_stop(stop_frame, observed_at=t0 + timedelta(seconds=2)) is None

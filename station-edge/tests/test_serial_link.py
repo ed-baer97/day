@@ -166,3 +166,53 @@ def test_cli_probe_checksum_all_tries_xor_sum7_and_sum8(monkeypatch, capsys) -> 
     assert "timeout=1.50с" in out
     assert "[Адрес 1, sum8]" in out
     assert "ОК: адрес=1" in out
+
+
+def test_serial_link_noise_before_delayed_frame_false_soh_and_inter_frame_delay(monkeypatch) -> None:
+    """Шум без SOH, ложный SOH 0x01 в шуме и пауза полудуплекса inter_frame_delay_sec."""
+    frame = build_test_response_frame(address=1, state_code=STATE_IDLE, price_digits=7200, volume_ml=0)
+
+    # 1. Одиночный шумовой байт b"\x00" перед задержанным ответом не обрывает чтение
+    fake_noise = _FakeSerial([b"\x00", b"", b"", frame])
+    link_noise = SerialAskaLink(
+        port="COM7",
+        timeout_sec=0.3,
+        min_wait_sec=0.3,
+        inter_byte_timeout_sec=0.05,
+        inter_frame_delay_sec=0.0,
+    )
+    link_noise._serial = fake_noise  # noqa: SLF001
+    res_noise = link_noise.poll_test(1)
+    assert res_noise.response_bytes == frame
+
+    # 2. Ложный байт 0x01 в ведущем шуме (в т.ч. пришедший отдельным чанком) пропускается ради валидного кадра
+    fake_soh_noise = _FakeSerial([b"\xFF\x01\x02", frame[:12], frame[12:]])
+    link_soh = SerialAskaLink(
+        port="COM7",
+        timeout_sec=0.3,
+        min_wait_sec=0.3,
+        inter_byte_timeout_sec=0.05,
+        inter_frame_delay_sec=0.0,
+    )
+    link_soh._serial = fake_soh_noise  # noqa: SLF001
+    res_soh = link_soh.poll_test(1)
+    assert res_soh.response_bytes == frame
+
+    # 3. Проверка соблюдения паузы inter_frame_delay_sec между двумя send_command
+    sleeps: list[float] = []
+    clock = [10.00]
+    monkeypatch.setattr("agzs_edge.serial_link.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("agzs_edge.serial_link.time.sleep", lambda s: (sleeps.append(s), clock.__setitem__(0, clock[0] + s)))
+
+    fake_two = _FakeSerial([frame, frame])
+    link_gap = SerialAskaLink(
+        port="COM7",
+        timeout_sec=0.2,
+        min_wait_sec=0.2,
+        inter_frame_delay_sec=0.05,
+    )
+    link_gap._serial = fake_two  # noqa: SLF001
+    assert link_gap.poll_test(1).response_bytes == frame
+    clock[0] += 0.02
+    assert link_gap.poll_test(1).response_bytes == frame
+    assert any(abs(s - 0.03) < 1e-6 for s in sleeps)

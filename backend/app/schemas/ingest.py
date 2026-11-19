@@ -148,7 +148,7 @@ class EdgeHeartbeatIn(BaseModel):
     current_version: str = Field(min_length=1, max_length=64)
     channel: str = Field(default="stable", pattern="^(stable|canary|ring0|ring1|ring2)$")
     outbox_pending: int = Field(default=0, ge=0)
-    active_pumps: int = Field(default=0, ge=0, le=6)
+    active_pumps: int = Field(default=0, ge=0, le=8)
     update_status: str = Field(default="ok", max_length=64)
     last_error: str | None = Field(default=None, max_length=1024)
 

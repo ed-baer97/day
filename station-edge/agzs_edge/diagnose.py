@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agzs_edge.config import EdgeSettings, resolve_preferred_port
+from agzs_edge.config import EdgeSettings, MAX_PUMP_ADDRESS, MIN_PUMP_ADDRESS, resolve_preferred_port
 from agzs_edge.iskra import IskraFrameError, build_test_command, parse_iskra_frame
 from agzs_edge.serial_link import SerialAskaLink, list_available_serial_ports
 
@@ -133,8 +133,10 @@ def collect_usb_info(
 
 
 def run_diagnose(settings: EdgeSettings, *, address: int = 1) -> DiagnoseReport:
-    if address < 1 or address > 6:
-        raise ValueError(f"Адрес колонки должен быть в диапазоне 1..6, получено: {address}")
+    if address < MIN_PUMP_ADDRESS or address > MAX_PUMP_ADDRESS:
+        raise ValueError(
+            f"Адрес колонки должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {address}"
+        )
 
     report = DiagnoseReport(
         protocol=getattr(settings, "protocol", "iskra_172"),

@@ -71,16 +71,26 @@ class _ActiveSession:
     last_state_code: str = STATE_DISPENSING
     last_error_code: str = "00"
     last_raw_frame_hex: str = ""
+    paused_at: datetime | None = None
+    is_mass_mode: bool = False
 
 
 class PumpDispenseTracker:
-    """Отслеживает смену кадров «Тест» по каждой колонке (адреса 1..6) и закрывает наливы."""
+    """Отслеживает смену кадров «Тест» по каждой колонке (адреса 1..8) и закрывает наливы."""
 
-    def __init__(self, station_code: str = "AGZS") -> None:
+    def __init__(
+        self,
+        station_code: str = "AGZS",
+        *,
+        pause_on_stopped: bool = False,
+        initial_committed_by_addr: dict[int, int] | None = None,
+    ) -> None:
         self._station_code = station_code.strip() or "AGZS"
+        self._pause_on_stopped = pause_on_stopped
         # Предварительно набранная доза на пульте (в состоянии DOSE_SET или IDLE с ненулевым заданием)
         self._staged_preset_ml: dict[int, int] = {}
         self._last_price_by_addr: dict[int, float] = {}
+        self._committed_since_reset: dict[int, int] = dict(initial_committed_by_addr or {})
         self._active: dict[int, _ActiveSession] = {}
         self._seq_counter: dict[int, int] = {}
 
@@ -88,12 +98,20 @@ class PumpDispenseTracker:
         return self._active.get(address)
 
     def has_active_sessions(self) -> bool:
-        """Возвращает True, если хотя бы на одной колонке сейчас идёт налив."""
+        """Возвращает True, если хотя бы на одной колонке сейчас идёт налив или пауза '04'."""
         return bool(self._active)
+
+    def has_paused_sessions(self) -> bool:
+        """Возвращает True, если хотя бы одна колонка стоит на паузе '04' с открытой сессией."""
+        return any(sess.paused_at is not None for sess in self._active.values())
 
     def active_addresses(self) -> tuple[int, ...]:
         """Возвращает отсортированный кортеж адресов колонок с активным наливом."""
         return tuple(sorted(self._active.keys()))
+
+    def mark_reset(self, address: int) -> None:
+        """Очищает учётный порог после успешного сброса колонки в '05'."""
+        self._committed_since_reset.pop(address, None)
 
     def process_frame(
         self,
@@ -114,31 +132,137 @@ class PumpDispenseTracker:
 
         self._update_session_volume(session, frame)
         if frame.is_dispensing:
+            session.paused_at = None
+            return None
+
+        if frame.state_code == STATE_STOPPED and self._pause_on_stopped:
+            self._finalize_volume_on_stop(session, frame)
+            if session.paused_at is None:
+                session.paused_at = now
             return None
 
         return self._finish_session(addr, frame, now)
 
+    def finish_paused_session(
+        self,
+        address: int,
+        *,
+        observed_at: datetime | None = None,
+    ) -> CompletedDispense | None:
+        """Принудительно закрывает заправку, стоящую на паузе '04', по истечении таймаута простоя."""
+        session = self._active.get(address)
+        if session is None or session.paused_at is None:
+            return None
+        finished_session = self._active.pop(address)
+        self._staged_preset_ml.pop(address, None)
+
+        already = self._committed_since_reset.get(address, 0) if finished_session.mode == MODE_FULL_TANK else 0
+        dispensed_ml = finished_session.current_dispensed_ml - already
+        if dispensed_ml <= 0:
+            return None
+
+        if finished_session.mode == MODE_FULL_TANK:
+            self._committed_since_reset[address] = finished_session.current_dispensed_ml
+
+        now = observed_at or datetime.now(timezone.utc)
+        final_mode = finished_session.mode if finished_session.mode != MODE_UNKNOWN else MODE_FULL_TANK
+        seq = self._seq_counter.get(address, 0) + 1
+        self._seq_counter[address] = seq
+        started_epoch_ms = int(finished_session.started_at.timestamp() * 1000)
+        txn_id = f"aska02-{self._station_code.lower()}-p{address}-{started_epoch_ms}-{seq}"
+
+        return CompletedDispense(
+            external_txn_id=txn_id,
+            pump_address=address,
+            mode=final_mode,
+            preset_ml=finished_session.preset_ml if final_mode == MODE_DOSE else None,
+            dispensed_ml=dispensed_ml,
+            volume_liters=round(dispensed_ml / 1000.0, 3),
+            price_kzt_per_liter=finished_session.price_kzt_per_liter,
+            final_state_code=finished_session.last_state_code,
+            error_code=finished_session.last_error_code,
+            started_at=finished_session.started_at,
+            finished_at=now,
+            last_raw_frame_hex=finished_session.last_raw_frame_hex,
+        )
+
+    def recover_untracked_stop(
+        self,
+        frame: IskraTelemetryFrame,
+        *,
+        observed_at: datetime | None = None,
+    ) -> CompletedDispense | None:
+        """Восстанавливает заправку, если её активная фаза '03' была пропущена (или был рестарт ПК)."""
+        addr = frame.address
+        if self._active.get(addr) is not None:
+            return None
+        if frame.state_code not in {STATE_COMPLETED, STATE_STOPPED}:
+            return None
+
+        effective_vol = frame.effective_volume_ml
+        already = self._committed_since_reset.get(addr, 0)
+        delta_ml = effective_vol - already
+        if delta_ml <= 0:
+            return None
+
+        self._committed_since_reset[addr] = effective_vol
+        now = observed_at or datetime.now(timezone.utc)
+        if frame.price_kzt_per_liter > 0:
+            self._last_price_by_addr[addr] = frame.price_kzt_per_liter
+        price = (
+            frame.price_kzt_per_liter
+            if frame.price_kzt_per_liter > 0
+            else self._last_price_by_addr.get(addr, 0.0)
+        )
+        seq = self._seq_counter.get(addr, 0) + 1
+        self._seq_counter[addr] = seq
+        started_epoch_ms = int(now.timestamp() * 1000)
+        txn_id = f"aska02-{self._station_code.lower()}-p{addr}-{started_epoch_ms}-{seq}"
+
+        return CompletedDispense(
+            external_txn_id=txn_id,
+            pump_address=addr,
+            mode="recovered_stop",
+            preset_ml=None,
+            dispensed_ml=delta_ml,
+            volume_liters=round(delta_ml / 1000.0, 3),
+            price_kzt_per_liter=price,
+            final_state_code=frame.state_code,
+            error_code=_frame_error_code(frame),
+            started_at=now,
+            finished_at=now,
+            last_raw_frame_hex=frame.raw_hex,
+        )
+
     def _handle_idle_frame(self, frame: IskraTelemetryFrame, now: datetime) -> None:
         addr = frame.address
-        if frame.state_code == STATE_DOSE_SET and frame.volume_ml > 0 and not frame.flags_raw.startswith("P"):
-            # На пульте УЗГС-01 набрали дозу перед пуском (например, 20 000 мл)
-            self._staged_preset_ml[addr] = frame.volume_ml
+        effective_vol = frame.effective_volume_ml
+        if frame.state_code == STATE_IDLE:
+            self._staged_preset_ml.pop(addr, None)
+            self._committed_since_reset.pop(addr, None)
             return
-        if frame.state_code in {STATE_IDLE, STATE_ERROR, STATE_COMPLETED, STATE_STOPPED}:
+        if frame.state_code == STATE_DOSE_SET and effective_vol > 0 and not frame.flags_raw.startswith("P"):
+            # На пульте УЗГС-01 набрали дозу перед пуском (например, 20 000 мл)
+            self._staged_preset_ml[addr] = effective_vol
+            return
+        if frame.state_code in {STATE_ERROR, STATE_COMPLETED, STATE_STOPPED}:
             self._staged_preset_ml.pop(addr, None)
             return
         if not frame.is_dispensing:
             return
 
+        if effective_vol < self._committed_since_reset.get(addr, 0):
+            self._committed_since_reset.pop(addr, None)
+
         mode, preset_ml, dispensed_ml = self._detect_initial_mode(addr, frame)
         self._active[addr] = _ActiveSession(
             pump_address=addr,
             started_at=now,
-            initial_volume_ml=frame.volume_ml,
+            initial_volume_ml=effective_vol,
             preset_ml=preset_ml,
             mode=mode,
             current_dispensed_ml=dispensed_ml,
-            last_volume_ml=frame.volume_ml,
+            last_volume_ml=effective_vol,
             price_kzt_per_liter=(
                 frame.price_kzt_per_liter
                 if frame.price_kzt_per_liter > 0
@@ -147,23 +271,25 @@ class PumpDispenseTracker:
             last_state_code=frame.state_code,
             last_error_code=_frame_error_code(frame),
             last_raw_frame_hex=frame.raw_hex,
+            is_mass_mode=frame.is_mass_mode,
         )
 
     def _detect_initial_mode(self, addr: int, frame: IskraTelemetryFrame) -> tuple[str, int | None, int]:
         staged_preset = self._staged_preset_ml.pop(addr, None)
+        effective_vol = frame.effective_volume_ml
         if frame.flags_raw.startswith("P"):
-            return MODE_FULL_TANK, None, frame.volume_ml
-        if staged_preset is not None and staged_preset > 0 and frame.volume_ml <= staged_preset:
-            return MODE_DOSE, staged_preset, max(0, staged_preset - frame.volume_ml)
+            return MODE_FULL_TANK, None, effective_vol
+        if staged_preset is not None and staged_preset > 0 and effective_vol <= staged_preset:
+            return MODE_DOSE, staged_preset, max(0, staged_preset - effective_vol)
         if frame.flags_raw == "01":
-            return MODE_DOSE, frame.volume_ml, 0
+            return MODE_DOSE, effective_vol, 0
         if frame.flags_raw == "02":
-            return MODE_FULL_TANK, None, frame.volume_ml
-        if frame.volume_ml == 0:
+            return MODE_FULL_TANK, None, effective_vol
+        if effective_vol == 0:
             return MODE_FULL_TANK, None, 0
         # Первое наблюдение налива с ненулевым числом (без кадра DOSE_SET):
         # точный режим выяснится на следующем шаге по направлению изменения числа.
-        return MODE_UNKNOWN, frame.volume_ml, 0
+        return MODE_UNKNOWN, effective_vol, 0
 
     def _finish_session(
         self,
@@ -173,14 +299,16 @@ class PumpDispenseTracker:
     ) -> CompletedDispense | None:
         finished_session = self._active.pop(addr)
         self._staged_preset_ml.pop(addr, None)
+        effective_vol = frame.effective_volume_ml
 
         # Учитываем финальный остаток при COMPLETED/STOPPED/ERROR, не затирая сбросом в 0 при IDLE
         if frame.state_code in {STATE_COMPLETED, STATE_STOPPED, STATE_ERROR}:
             self._finalize_volume_on_stop(finished_session, frame)
         elif (
             frame.state_code == STATE_IDLE
+            and finished_session.paused_at is None
             and finished_session.mode == MODE_DOSE
-            and frame.volume_ml == 0
+            and effective_vol == 0
             and finished_session.preset_ml is not None
         ):
             finished_session.current_dispensed_ml = max(
@@ -188,10 +316,21 @@ class PumpDispenseTracker:
                 finished_session.preset_ml,
             )
 
-        if finished_session.current_dispensed_ml <= 0:
+        final_mode = finished_session.mode if finished_session.mode != MODE_UNKNOWN else MODE_FULL_TANK
+        if final_mode == MODE_FULL_TANK:
+            already = self._committed_since_reset.get(addr, 0)
+            dispensed_ml = finished_session.current_dispensed_ml - already
+        else:
+            dispensed_ml = finished_session.current_dispensed_ml
+
+        if frame.state_code == STATE_IDLE:
+            self._committed_since_reset.pop(addr, None)
+        elif dispensed_ml > 0 and final_mode == MODE_FULL_TANK:
+            self._committed_since_reset[addr] = finished_session.current_dispensed_ml
+
+        if dispensed_ml <= 0:
             return None
 
-        final_mode = finished_session.mode if finished_session.mode != MODE_UNKNOWN else MODE_FULL_TANK
         seq = self._seq_counter.get(addr, 0) + 1
         self._seq_counter[addr] = seq
         started_epoch_ms = int(finished_session.started_at.timestamp() * 1000)
@@ -203,8 +342,8 @@ class PumpDispenseTracker:
             pump_address=addr,
             mode=final_mode,
             preset_ml=finished_session.preset_ml if final_mode == MODE_DOSE else None,
-            dispensed_ml=finished_session.current_dispensed_ml,
-            volume_liters=round(finished_session.current_dispensed_ml / 1000.0, 3),
+            dispensed_ml=dispensed_ml,
+            volume_liters=round(dispensed_ml / 1000.0, 3),
             price_kzt_per_liter=finished_session.price_kzt_per_liter,
             final_state_code=frame.state_code,
             error_code=final_err if final_err != "00" else finished_session.last_error_code,
@@ -221,11 +360,13 @@ class PumpDispenseTracker:
         if err_code != "00":
             session.last_error_code = err_code
         session.last_raw_frame_hex = frame.raw_hex
+        if frame.is_mass_mode:
+            session.is_mass_mode = True
 
         if not frame.is_dispensing:
             return
 
-        curr = frame.volume_ml
+        curr = frame.effective_volume_ml
         if session.mode == MODE_UNKNOWN:
             self._resolve_unknown_mode(session, curr)
 
@@ -251,7 +392,7 @@ class PumpDispenseTracker:
         if frame.completed_volume_ml is not None:
             session.current_dispensed_ml = frame.completed_volume_ml
             return
-        curr = frame.volume_ml
+        curr = frame.effective_volume_ml
         if session.mode == MODE_UNKNOWN:
             if curr < session.initial_volume_ml:
                 session.mode = MODE_DOSE

@@ -33,6 +33,7 @@ from agzs_edge.iskra import (
     build_test_command,
     build_test_response_frame,
     compute_bcc,
+    verify_frame_checksum,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class SerialAskaLink:
         *,
         min_wait_sec: float = 1.0,
         inter_byte_timeout_sec: float = 0.15,
+        inter_frame_delay_sec: float = 0.05,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
@@ -81,8 +83,10 @@ class SerialAskaLink:
         self.layout = layout or FrameLayout()
         self.min_wait_sec = min_wait_sec
         self.inter_byte_timeout_sec = inter_byte_timeout_sec
+        self.inter_frame_delay_sec = max(0.0, inter_frame_delay_sec)
         self._serial: object | None = None
         self._lock = _PORT_LOCK
+        self._last_io_done_mono: float = 0.0
 
     def open(self) -> None:
         with self._lock:
@@ -126,6 +130,11 @@ class SerialAskaLink:
         """Отправляет произвольный 23-байтный кадр Протокола v3.10 и читает ответ (если есть)."""
         with self._lock:
             try:
+                if self.inter_frame_delay_sec > 0 and self._last_io_done_mono > 0:
+                    gap = time.monotonic() - self._last_io_done_mono
+                    if gap < self.inter_frame_delay_sec:
+                        time.sleep(self.inter_frame_delay_sec - gap)
+
                 self.open()
                 assert self._serial is not None
                 ser = self._serial
@@ -148,39 +157,106 @@ class SerialAskaLink:
                     response_bytes=b"",
                     error_message=str(exc),
                 )
+            finally:
+                self._last_io_done_mono = time.monotonic()
+
+    def _extract_valid_frame(self, buf: bytearray, expected_len: int) -> bytes | None:
+        soh = self.layout.soh_byte
+        etx_off = self.layout.etx_offset
+        etx_val = self.layout.etx_byte
+        start = 0
+        while start <= len(buf) - expected_len:
+            try:
+                idx = buf.index(soh, start)
+            except ValueError:
+                return None
+            if idx + expected_len > len(buf):
+                return None
+            candidate = bytes(buf[idx : idx + expected_len])
+            if (
+                len(candidate) > 4
+                and candidate[4] == STX
+                and 0 <= etx_off < len(candidate)
+                and candidate[etx_off] == etx_val
+                and verify_frame_checksum(candidate, self.layout)
+            ):
+                return candidate
+            start = idx + 1
+        return None
+
+    def _next_read_size(self, buf: bytearray, expected_len: int) -> int:
+        soh = self.layout.soh_byte
+        for pos in range(len(buf) - 1, -1, -1):
+            if buf[pos] == soh and (len(buf) - pos) < expected_len:
+                return expected_len - (len(buf) - pos)
+        return expected_len
 
     def _read_aligned_frame(self, ser: object, expected_len: int) -> bytes:
         deadline = time.monotonic() + max(self.timeout_sec, self.min_wait_sec)
+        soh = self.layout.soh_byte
         buf = bytearray()
+        last_rx_mono = 0.0
+
         while True:
-            soh_idx = buf.index(SOH) if SOH in buf else -1
-            target_len = (soh_idx + expected_len) if soh_idx >= 0 else expected_len
-            if len(buf) >= target_len or time.monotonic() >= deadline:
+            valid = self._extract_valid_frame(buf, expected_len)
+            if valid is not None:
+                return valid
+
+            now = time.monotonic()
+            if now >= deadline:
                 break
 
+            read_size = self._next_read_size(buf, expected_len)
             t_before = time.monotonic()
-            chunk: bytes = ser.read(target_len - len(buf))  # type: ignore[attr-defined]
-            if not chunk:
-                # Если данные уже начали поступать и линия замолчала — отдаём то, что успело прийти
-                if buf:
-                    break
-                if time.monotonic() - t_before < 0.005:
-                    time.sleep(0.01)
+            chunk: bytes = ser.read(read_size)  # type: ignore[attr-defined]
+            if chunk:
+                buf.extend(chunk)
+                last_rx_mono = time.monotonic()
                 continue
-            buf.extend(chunk)
 
-        if SOH in buf:
-            soh_idx = buf.index(SOH)
-            tail = buf[soh_idx:]
-            if soh_idx == 0:
-                return bytes(tail[:expected_len])
-            # Срезаем ведущий шум до SOH только если за ним действительно лежит полный кадр Искра
-            if (
-                len(tail) >= expected_len
-                and 0 <= self.layout.etx_offset < len(tail)
-                and tail[self.layout.etx_offset] == self.layout.etx_byte
-            ):
-                return bytes(tail[:expected_len])
+            now = time.monotonic()
+            if soh not in buf:
+                # До реального SOH может прилететь шум; не обрываем чтение раньше deadline
+                if now - t_before < 0.005:
+                    time.sleep(min(0.01, max(0.0, deadline - now)))
+                continue
+
+            # После приёма SOH ждём до завершения межбайтового таймаута
+            since_last_rx = now - last_rx_mono
+            if since_last_rx >= self.inter_byte_timeout_sec:
+                break
+            if now - t_before < 0.005:
+                wait_left = min(
+                    0.01,
+                    max(0.0, self.inter_byte_timeout_sec - since_last_rx),
+                    max(0.0, deadline - now),
+                )
+                if wait_left > 0:
+                    time.sleep(wait_left)
+
+        valid = self._extract_valid_frame(buf, expected_len)
+        if valid is not None:
+            return valid
+
+        if soh in buf:
+            start = 0
+            while start <= len(buf) - expected_len:
+                try:
+                    idx = buf.index(soh, start)
+                except ValueError:
+                    break
+                tail = buf[idx:]
+                if (
+                    len(tail) >= expected_len
+                    and len(tail) > 4
+                    and tail[4] == STX
+                    and 0 <= self.layout.etx_offset < len(tail)
+                    and tail[self.layout.etx_offset] == self.layout.etx_byte
+                ):
+                    return bytes(tail[:expected_len])
+                start = idx + 1
+            if buf.index(soh) == 0:
+                return bytes(buf[:expected_len])
         return bytes(buf)
 
 
@@ -229,6 +305,8 @@ class EmulatorAskaLink:
                 "temp_c_tenths": 215,
                 "propane_pct": 65,
                 "tpr_coef": 1234,
+                "pending_price_kop": None,
+                "price_stage": None,
             }
         return self._controlled_state[address]
 
@@ -241,13 +319,17 @@ class EmulatorAskaLink:
         price_field: bytes | None = None,
         volume_field: bytes | None = None,
         dose_bits_override: int | None = None,
+        byte17_override: int | None = None,
     ) -> bytes:
-        byte17 = (
-            (0x80 if state["valve_open"] else 0)
-            | (0x40 if state["buttons_ss"] else 0)
-            | (0x20 if state["button_reset"] else 0)
-            | ((dose_bits_override if dose_bits_override is not None else int(state["dose_type"])) & 0x1F)
-        )
+        if byte17_override is not None:
+            byte17 = byte17_override
+        else:
+            byte17 = (
+                (0x80 if state["valve_open"] else 0)
+                | (0x40 if state["buttons_ss"] else 0)
+                | (0x20 if state["button_reset"] else 0)
+                | ((dose_bits_override if dose_bits_override is not None else int(state["dose_type"])) & 0x1F)
+            )
         byte18 = 0x8A
         state_code = str(state["state_code"])
         if price_field is None:
@@ -346,6 +428,18 @@ class EmulatorAskaLink:
 
         state = self._get_state(address)
         if cmd == CMD_TEST_ASCII:
+            if state.get("price_stage") == "wait_test":
+                state["price_stage"] = "wait_stop"
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(
+                        address,
+                        CMD_TEST_ASCII,
+                        state,
+                        byte17_override=0x16,
+                    ),
+                )
             if state["state_code"] == STATE_DISPENSING:
                 dose = int(state["dose_ml"])
                 disp = int(state["dispensed_ml"])
@@ -368,6 +462,8 @@ class EmulatorAskaLink:
             state["dose_ml"] = 0
             state["dispensed_ml"] = 0
             state["dose_type"] = 0x10
+            state["pending_price_kop"] = None
+            state["price_stage"] = None
             return PollRawResult(
                 address=address,
                 request_bytes=request,
@@ -398,6 +494,22 @@ class EmulatorAskaLink:
             )
 
         if cmd == CMD_STOP_ASCII:
+            if state.get("price_stage") == "wait_stop":
+                pending = state.get("pending_price_kop")
+                if isinstance(pending, int) and pending > 0:
+                    state["price_kop"] = pending
+                state["pending_price_kop"] = None
+                state["price_stage"] = None
+                return PollRawResult(
+                    address=address,
+                    request_bytes=request,
+                    response_bytes=self._build_live_reply(
+                        address,
+                        CMD_STOP_ASCII,
+                        state,
+                        byte17_override=0x30,
+                    ),
+                )
             if state["state_code"] == STATE_DISPENSING:
                 state["state_code"] = STATE_STOPPED
                 state["valve_open"] = False
@@ -436,11 +548,12 @@ class EmulatorAskaLink:
                     response_bytes=self._build_live_reply(address, CMD_PARAMS_ASCII, state),
                 )
             if p_code == "000015":
-                state["price_kop"] = int(v_code)
+                state["pending_price_kop"] = int(v_code)
+                state["price_stage"] = "wait_test"
                 return PollRawResult(
                     address=address,
                     request_bytes=request,
-                    response_bytes=self._build_live_reply(address, CMD_PARAMS_ASCII, state),
+                    response_bytes=b"",
                 )
             if p_code in {"000011", "000019"}:
                 marker = 0x1A if p_code == "000011" else 0x1B
@@ -519,6 +632,7 @@ def build_link(settings: EdgeSettings) -> AskaLink:
         baudrate=settings.serial_baudrate,
         timeout_sec=settings.serial_timeout_sec,
         layout=settings.layout,
+        inter_frame_delay_sec=settings.inter_frame_delay_sec,
     )
 
 
