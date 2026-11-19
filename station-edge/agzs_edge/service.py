@@ -381,7 +381,7 @@ class StationEdgeService:
         observed_at: datetime,
     ) -> CompletedDispense | None:
         del completed
-        if frame.address != address or frame.valve_open:
+        if self.settings.read_only or frame.address != address or frame.valve_open:
             self._stop_07_since.pop(address, None)
             self._stop_04_since.pop(address, None)
             return None

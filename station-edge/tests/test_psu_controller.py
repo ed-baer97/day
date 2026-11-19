@@ -255,6 +255,70 @@ def test_env_defaults_to_power_supply_cycle(monkeypatch, tmp_path: Path) -> None
     assert settings.lock_buttons_on_update is False
 
 
+def test_read_only_overrides_auto_reset_and_blocks_0x37(monkeypatch, tmp_path: Path) -> None:
+    """AGZS_READ_ONLY=1 / read_only=True выключает автосброс 0x37 и блокирует его в _maybe_auto_reset."""
+    direct = EdgeSettings(read_only=True)
+    assert direct.read_only is True
+    assert direct.auto_reset_on_stop is False
+
+    monkeypatch.setenv("AGZS_READ_ONLY", "1")
+    monkeypatch.delenv("AGZS_AUTO_RESET", raising=False)
+    env_only_ro = EdgeSettings.from_env(tmp_path / "ro_default_reset.env")
+    assert env_only_ro.read_only is True
+    assert env_only_ro.auto_reset_on_stop is False
+
+    monkeypatch.setenv("AGZS_AUTO_RESET", "1")
+    env_conflict = EdgeSettings.from_env(tmp_path / "ro_with_reset.env")
+    assert env_conflict.read_only is True
+    assert env_conflict.auto_reset_on_stop is False
+
+    captured_stop07 = bytes.fromhex("01 30 31 34 02 30 39 30 30 30 30 30 30 30 30 30 30 50 8A 30 37 03 E0")
+
+    class _ReadOnlySpyLink:
+        def __init__(self) -> None:
+            self.poll_calls = 0
+            self.send_command_calls: list[bytes] = []
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            from agzs_edge.iskra import build_test_command
+
+            self.poll_calls += 1
+            return PollRawResult(
+                address=address,
+                request_bytes=build_test_command(address, checksum_mode=checksum_mode or "xor"),
+                response_bytes=captured_stop07,
+            )
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.send_command_calls.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    link = _ReadOnlySpyLink()
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "read_only_service.db",
+        sync_enabled=False,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=0.0,
+    )
+    settings.read_only = True
+    db = EdgeDatabase(settings.db_path)
+    svc = StationEdgeService(settings, link=link, db=db)
+
+    svc.poll_cycle_once(observed_at=datetime.now(timezone.utc))
+
+    assert link.poll_calls == 1
+    assert link.send_command_calls == []
+    assert svc._stop_07_since == {}  # noqa: SLF001
+
+
 def test_env_allows_read_only_zero_and_auto_reset(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGZS_READ_ONLY", "0")
     monkeypatch.setenv("AGZS_AUTO_RESET", "1")

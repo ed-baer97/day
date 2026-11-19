@@ -180,8 +180,8 @@ class EdgeSettings:
     layout: FrameLayout = field(default_factory=FrameLayout)
 
     def __post_init__(self) -> None:
-        if self.auto_reset_on_stop:
-            self.read_only = False
+        if self.read_only:
+            self.auto_reset_on_stop = False
 
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "EdgeSettings":
@@ -225,8 +225,8 @@ class EdgeSettings:
         )
         if counter_reconcile_interval_sec < 0:
             raise ValueError("AGZS_COUNTER_RECONCILE_INTERVAL_SEC должен быть >= 0")
-        if auto_reset_on_stop:
-            read_only = False
+        if read_only:
+            auto_reset_on_stop = False
 
         checksum_mode = os.environ.get("AGZS_ISKRA_CHECKSUM_MODE", "xor").strip().lower() or "xor"
         if checksum_mode not in {"xor", "sum7", "sum8", "any"}:
