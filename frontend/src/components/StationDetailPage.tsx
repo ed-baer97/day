@@ -289,7 +289,6 @@ export default function StationDetailPage({
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
           {expenseLiters != null ? <span className="badge">расход {liters(expenseLiters)}</span> : null}
           {showColumns ? <span className="badge ok">подключены 2 колонки</span> : null}
-          {showColumns ? <span className="badge ok">КГД: 0 л Δ</span> : null}
         </div>
       </header>
 
@@ -356,7 +355,7 @@ export default function StationDetailPage({
           </strong>
           <em>
             {showColumns && columnReport
-              ? `отпуск ТРК: ${liters(columnReport.total)} · расхождение 0 л`
+              ? `отпуск ТРК: ${liters(columnReport.total)}`
               : bookSummary?.delta != null
                 ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
                 : bookSummary && bookSummary.dispenseSum > 0
@@ -383,7 +382,7 @@ export default function StationDetailPage({
           className={tab === "pumps" ? "active" : ""}
           onClick={() => setTab("pumps")}
         >
-          {showColumns ? `Колонки и КГД (${columnReport?.columnCount ?? 2})` : "Колонки и КГД"}
+          {showColumns ? `Колонки (${columnReport?.columnCount ?? 2})` : "Колонки"}
         </button>
         <button
           type="button"
@@ -651,10 +650,8 @@ export default function StationDetailPage({
           />
         ) : (
           <section className="dash-card">
-            <h3>Колонки и КГД</h3>
-            <p className="dash-muted">
-              Колонки, кассы и сверка с КГД не подключены. Цифр по ним нет.
-            </p>
+            <h3>Колонки</h3>
+            <p className="dash-muted">Колонки не подключены. Цифр по ним нет.</p>
           </section>
         )
       ) : null}

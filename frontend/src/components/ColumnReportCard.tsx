@@ -44,16 +44,15 @@ export default function ColumnReportCard({
   return (
     <section className="dash-card" style={{ marginBottom: 18 }}>
       <div className="card-head-inline">
-        <h3>Колонки и КГД</h3>
+        <h3>Колонки</h3>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <span className="badge ok">подключены {report.columnCount} колонки</span>
-          <span className="badge ok">КГД: расхождений нет (0 л)</span>
         </div>
       </div>
       <p className="dash-muted">
         {report.source === "edge"
-          ? "Реальная телеметрия колонок АСКА-02 / УЗСГ-01: наливы передаются напрямую со станционного узла и без потерь отражаются в ККМ, ОФД и КГД."
-          : "Симуляция 2 колонок: уход газа берётся напрямую из расхода резервуара по датчику уровня и без потерь отражается в ККМ, ОФД и КГД."}
+          ? "Наливы со станционного узла АСКА-02 / УЗСГ-01."
+          : "Уход газа по датчику уровня, разложенный по колонкам."}
       </p>
 
       <div className="fiscal-chain">
@@ -68,12 +67,6 @@ export default function ColumnReportCard({
           <strong>{loading && points.length === 0 ? "…" : liters(report.total)}</strong>
           <em>{report.columns.map((column) => `${column.name}: ${liters(column.total)}`).join(" · ")}</em>
         </div>
-        <div className="fiscal-link">→</div>
-        <div className="fiscal-step">
-          <span>Онлайн-ККМ → ОФД → КГД</span>
-          <strong>{loading && points.length === 0 ? "…" : liters(report.ofdTotalLiters)}</strong>
-          <em>расхождение: {report.discrepancyLiters} л · сходится</em>
-        </div>
       </div>
 
       <div className="col-grid" style={{ marginBottom: 16 }}>
@@ -83,7 +76,6 @@ export default function ColumnReportCard({
               <h3 style={{ margin: 0 }}>
                 {column.name} ({column.code})
               </h3>
-              <span className="badge ok">онлайн · 0 л Δ</span>
             </div>
             <p className="stage-vol" style={{ marginBottom: 10 }}>
               Уход газа: <strong>{liters(column.total)}</strong>
@@ -97,26 +89,19 @@ export default function ColumnReportCard({
                   ? `${liters(column.lastLiters)}${column.lastAt ? ` · ${dateTime(column.lastAt)}` : ""}`
                   : "за период не было"}
               </dd>
-              <dt>Фискализация КГД</dt>
-              <dd>
-                {column.kkmSerial} · {liters(column.ofdLiters)}
-              </dd>
             </dl>
           </article>
         ))}
       </div>
 
-      <h3 style={{ marginTop: 0 }}>Сверка ТРК ↔ ККМ ↔ ОФД ↔ КГД</h3>
+      <h3 style={{ marginTop: 0 }}>Отпуск по колонкам</h3>
       <div className="dash-table-wrap" style={{ marginBottom: 18 }}>
         <table className="dash-table">
           <thead>
             <tr>
-              <th>Колонка · ККМ</th>
+              <th>Колонка</th>
               <th>Уход из резервуара</th>
               <th>Счётчик ТРК</th>
-              <th>Чеки ККМ</th>
-              <th>Принято ОФД / КГД</th>
-              <th>Расхождение</th>
             </tr>
           </thead>
           <tbody>
@@ -126,17 +111,11 @@ export default function ColumnReportCard({
                   <strong>
                     {column.name} ({column.code})
                   </strong>
-                  <div className="dash-muted">{column.kkmSerial} · онлайн</div>
                 </td>
                 <td>{liters(column.total)}</td>
                 <td>
                   <strong>{liters(column.total)}</strong>
                   <div className="dash-muted">операций: {column.opsCount}</div>
-                </td>
-                <td>{liters(column.kkmLiters)}</td>
-                <td>{liters(column.ofdLiters)}</td>
-                <td>
-                  <span className="badge ok">0 л · сходится</span>
                 </td>
               </tr>
             ))}
@@ -144,11 +123,6 @@ export default function ColumnReportCard({
               <td>Итого</td>
               <td>{liters(report.tankOutflowLiters)}</td>
               <td>{liters(report.total)}</td>
-              <td>{liters(report.kkmTotalLiters)}</td>
-              <td>{liters(report.ofdTotalLiters)}</td>
-              <td>
-                <span className="badge ok">0 л · сходится</span>
-              </td>
             </tr>
           </tbody>
         </table>
