@@ -495,38 +495,6 @@
   margin-bottom: 6px;
 }
 
-/* Расширенные карточки на публичной витрине и всплывающий паспорт */
-.level-card-clickable {
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  transition: border-color 0.15s ease, transform 0.15s ease;
-}
-.level-card-clickable:hover {
-  border-color: var(--sea);
-  transform: translateY(-2px);
-}
-.public-station-summary {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  border-radius: 10px;
-  background: var(--hover-fill);
-  border: 1px solid var(--line);
-  font-size: 12px;
-}
-.public-station-summary span {
-  display: block;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-.public-station-summary strong {
-  font-size: 13px;
-}
 .level-card-footer {
   display: flex;
   align-items: center;
@@ -536,17 +504,6 @@
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
-.level-card-more {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sea);
-}
-.public-detail-modal {
-  width: min(760px, 95vw);
-  max-height: 88vh;
-  overflow: auto;
-}
-
 /* Список резервуаров в карточке на карте */
 .popup-tank-list {
   display: flex;

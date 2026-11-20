@@ -8,7 +8,6 @@ import {
   summarizeLevel,
   usePublicLevels,
 } from "../liveLevels";
-import PublicStationModal from "../pages/landing/PublicStationModal";
 import { useTheme } from "../theme";
 import type { MapPoint } from "../types";
 import Logo from "./Logo";
@@ -31,19 +30,15 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
   const [regionFilter, setRegionFilter] = useState<string>("all");
   const [availFilter, setAvailFilter] = useState<AvailFilter>("all");
   const [sortBy, setSortBy] = useState<PublicSort>("region");
-  const [detailCode, setDetailCode] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!authOpen && !detailCode) return;
+    if (!authOpen) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setAuthOpen(false);
-        setDetailCode(null);
-      }
+      if (event.key === "Escape") setAuthOpen(false);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [authOpen, detailCode]);
+  }, [authOpen]);
 
   const publicMapPoints = useMemo<MapPoint[]>(
     () =>
@@ -66,17 +61,12 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
       const region = stationRegion(station);
       const online = station.tanks.some((t) => t.online === true && t.remainder_liters != null);
       const hasReading = live.remainder != null;
-      const freeLiters =
-        live.remainder != null && live.capacity > 0
-          ? Math.max(0, live.capacity - live.remainder)
-          : null;
       return {
         station,
         live,
         region,
         online,
         hasReading,
-        freeLiters,
       };
     });
   }, [levels, byCode]);
@@ -129,17 +119,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
       );
     });
   }, [enrichedStations, stationQuery, regionFilter, availFilter, sortBy]);
-
-  const activeDetailIndex = useMemo(
-    () => (detailCode ? visibleStations.findIndex((item) => item.station.code === detailCode) : -1),
-    [detailCode, visibleStations]
-  );
-  const activeDetail =
-    activeDetailIndex >= 0
-      ? visibleStations[activeDetailIndex]
-      : detailCode
-        ? enrichedStations.find((item) => item.station.code === detailCode) ?? null
-        : null;
 
   const hasFilters = Boolean(stationQuery.trim() || regionFilter !== "all" || availFilter !== "all");
 
@@ -315,11 +294,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                 const width = Math.max(0, Math.min(100, live.fill ?? 0));
                 const lowGas = isLowFill(live.fill);
                 return (
-                  <article
-                    className="level-card level-card-clickable"
-                    key={station.code}
-                    onClick={() => setDetailCode(station.code)}
-                  >
+                  <article className="level-card" key={station.code}>
                     <div className="level-card-meta">
                       <span className="landing-card-region">{region}</span>
                       {station.tanks.length > 0 ? (
@@ -359,7 +334,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
                         {live.measuredAt ? dateTime(live.measuredAt) : "ожидание замера"}
                         {station.tanks.length > 1 ? ` · ${station.tanks.length} рез.` : ""}
                       </span>
-                      <span className="level-card-more">Подробнее →</span>
                     </footer>
                   </article>
                 );
@@ -395,36 +369,6 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
           </footer>
         </main>
       </div>
-
-      {activeDetail ? (
-        <PublicStationModal
-          station={activeDetail.station}
-          live={activeDetail.live}
-          region={activeDetail.region}
-          freeLiters={activeDetail.freeLiters}
-          onClose={() => setDetailCode(null)}
-          onPrev={
-            visibleStations.length > 1
-              ? () => {
-                  const idx =
-                    activeDetailIndex > 0 ? activeDetailIndex - 1 : visibleStations.length - 1;
-                  setDetailCode(visibleStations[idx].station.code);
-                }
-              : undefined
-          }
-          onNext={
-            visibleStations.length > 1
-              ? () => {
-                  const idx =
-                    activeDetailIndex >= 0 && activeDetailIndex < visibleStations.length - 1
-                      ? activeDetailIndex + 1
-                      : 0;
-                  setDetailCode(visibleStations[idx].station.code);
-                }
-              : undefined
-          }
-        />
-      ) : null}
 
       {authOpen && !session ? (
         <div className="login-layer" onClick={() => setAuthOpen(false)}>
