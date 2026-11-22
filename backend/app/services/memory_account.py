@@ -41,6 +41,7 @@ from app.services.device_ingest import (
     get_tank_device,
     has_calibration,
     list_dispense_records,
+    list_receipt_volume,
     list_station_tanks_out,
     list_tank_devices,
     register_tank as _register_tank_device,
@@ -52,21 +53,37 @@ from app.services.device_ingest import (
     tank_state_or_none,
     update_tank_device,
 )
+from app.services.shift_book import (
+    close_shift as _close_shift,
+    delete_station_shifts as _delete_station_shifts,
+    get_open_shift as _get_open_shift,
+    get_shift as _get_shift,
+    list_shifts as _list_shifts,
+    open_shift as _open_shift,
+)
 from app.services.station_accounts import (
     authenticate_owner as authenticate_station_user,
     create_owner_account as _create_owner_account,
+    create_station_cashier as _create_station_cashier,
     delete_owner_account as delete_owner_account,
+    delete_station_cashier as _delete_station_cashier,
     detach_owner_station as _detach_owner_station,
     grant_owner as _grant_owner,
     has_owner,
     list_all_owners,
+    list_cashiers_for_stations,
     list_owners as _list_owners,
+    list_station_cashiers as _list_station_cashiers,
+    remove_station_from_accounts as _remove_station_from_accounts,
     update_owner_account as _update_owner_account,
+    update_station_cashier as _update_station_cashier,
 )
 
 
 def delete_station(station_id: UUID) -> list[UUID]:
     _delete_station_card(station_id)
+    _remove_station_from_accounts(station_id)
+    _delete_station_shifts(station_id)
     return delete_station_devices(station_id)
 
 
@@ -113,6 +130,64 @@ def detach_station_user(station_id: UUID, username: str) -> None:
     _detach_owner_station(station_id, username)
 
 
+def list_station_cashiers(station_id: UUID):
+    get_station(station_id)
+    return _list_station_cashiers(station_id)
+
+
+def create_station_cashier(station_id: UUID, username: str, password: str):
+    get_station(station_id)
+    return _create_station_cashier(station_id, username, password)
+
+
+def update_station_cashier(
+    station_id: UUID,
+    username: str,
+    *,
+    password: str | None = None,
+    new_station_id: UUID | None = None,
+):
+    get_station(station_id)
+    if new_station_id is not None:
+        get_station(new_station_id)
+    return _update_station_cashier(
+        station_id,
+        username,
+        password=password,
+        new_station_id=new_station_id,
+    )
+
+
+def delete_station_cashier(station_id: UUID, username: str) -> None:
+    get_station(station_id)
+    _delete_station_cashier(station_id, username)
+
+
+def list_shifts(station_id: UUID, *, limit: int = 50):
+    get_station(station_id)
+    return _list_shifts(station_id, limit=limit)
+
+
+def get_shift(station_id: UUID, shift_id: UUID):
+    get_station(station_id)
+    return _get_shift(station_id, shift_id)
+
+
+def get_open_shift(station_id: UUID):
+    get_station(station_id)
+    return _get_open_shift(station_id)
+
+
+def open_shift(station_id: UUID, **kwargs):
+    get_station(station_id)
+    return _open_shift(station_id, **kwargs)
+
+
+def close_shift(station_id: UUID, shift_id: UUID, **kwargs):
+    get_station(station_id)
+    return _close_shift(station_id, shift_id, **kwargs)
+
+
 def list_active_stations_with_tanks():
     stations = [station for station in list_stations() if station.is_active]
     return [(station, list_station_tanks_out(station.id)) for station in stations]
@@ -150,18 +225,23 @@ __all__ = [
     "accept_receipt",
     "add_batch_event",
     "authenticate_station_user",
+    "close_shift",
     "create_batch",
     "create_owner_account",
     "create_station",
+    "create_station_cashier",
     "create_station_user",
     "create_truck",
     "delete_owner_account",
     "delete_station",
+    "delete_station_cashier",
     "delete_tank_device",
     "delete_truck",
     "detach_station_user",
     "get_batch_by_code",
     "get_batch_by_id",
+    "get_open_shift",
+    "get_shift",
     "get_station",
     "get_tank_device",
     "get_truck",
@@ -171,13 +251,18 @@ __all__ = [
     "list_all_owners",
     "list_all_stations_with_overview",
     "list_batches",
+    "list_cashiers_for_stations",
     "list_dispense_records",
     "list_level_readings",
+    "list_receipt_volume",
+    "list_shifts",
+    "list_station_cashiers",
     "list_station_tanks_out",
     "list_station_users",
     "list_stations",
     "list_tank_devices",
     "list_trucks",
+    "open_shift",
     "register_tank",
     "rotate_tank_token",
     "set_calibration",
@@ -187,6 +272,7 @@ __all__ = [
     "update_batch_status",
     "update_owner_account",
     "update_station",
+    "update_station_cashier",
     "update_tank_device",
     "update_truck",
 ]

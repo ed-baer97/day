@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isAdmin } from "./access";
+import { isAdmin, isCashier, isOwner } from "./access";
 import { api, type BatchRecord } from "./api/client";
 import { useAuth } from "./auth";
 import { useCatalog } from "./catalog";
 import AdminPage from "./components/AdminPage";
+import CashierPage from "./components/CashierPage";
 import Dashboard from "./components/Dashboard";
 import Landing from "./components/Landing";
 import Topbar, { type AppScreen, type NetworkStats } from "./layout/Topbar";
@@ -124,27 +125,24 @@ export default function App() {
     go({ screen: "admin", adminTab: "trucks", adminTruckId: id, adminStationId: null });
   }
 
-  const isOwner = session?.role === "owner" || session?.role === "station";
-  const isStationSide = isOwner;
+  const owner = isOwner(session);
+  const cashier = isCashier(session);
+  const isStationSide = owner || cashier;
   const stations = useMemo(
-    () => catalog.stations.filter((row) => row.is_active),
-    [catalog.stations]
+    () => (isStationSide ? catalog.stations : catalog.stations.filter((row) => row.is_active)),
+    [catalog.stations, isStationSide]
   );
 
   useEffect(() => {
     if (!session) return;
-    if (isStationSide && page !== "landing" && page !== "dashboard") {
+    if (cashier && page !== "landing" && page !== "cashier") {
+      go({ screen: "cashier", dashStationId: null }, "replace");
+    } else if (owner && page !== "landing" && page !== "dashboard") {
       go({ screen: "dashboard" }, "replace");
-    } else if (!admin && (page === "admin" || page === "supply")) {
+    } else if (!admin && !cashier && (page === "admin" || page === "supply" || page === "cashier")) {
       go({ screen: "dashboard" }, "replace");
     }
-  }, [admin, go, isStationSide, page, session]);
-
-  useEffect(() => {
-    if (isStationSide && stations.length === 1 && dashStationId !== stations[0].id) {
-      go({ dashStationId: stations[0].id }, "replace");
-    }
-  }, [dashStationId, go, isStationSide, stations]);
+  }, [admin, cashier, go, owner, page, session]);
 
   const networkStats = useMemo<NetworkStats>(() => {
     let litersSum = 0;
@@ -200,17 +198,34 @@ export default function App() {
     return [...stationPoints, ...truckPoints];
   }, [stations, catalog.trucks]);
 
-  const screen: AppScreen = !admin && (page === "admin" || page === "supply") ? "dashboard" : page;
+  const screen: AppScreen = cashier
+    ? page === "landing"
+      ? "landing"
+      : "cashier"
+    : !admin && (page === "admin" || page === "supply" || page === "cashier")
+      ? "dashboard"
+      : page;
 
   function goHomeDashboard() {
+    if (cashier) {
+      go({ screen: "cashier", dashStationId: null });
+      return;
+    }
     go({
       screen: "dashboard",
-      dashStationId: isStationSide && stations.length === 1 ? stations[0].id : null,
+      dashStationId: null,
     });
   }
 
   if (page === "landing" || !session) {
-    return <Landing onEnter={() => setPage("dashboard")} />;
+    return (
+      <Landing
+        onEnter={(nextSession) => {
+          const targetSession = nextSession ?? session;
+          setPage(isCashier(targetSession) ? "cashier" : "dashboard");
+        }}
+      />
+    );
   }
 
   return (
@@ -218,7 +233,8 @@ export default function App() {
       <Topbar
         session={session}
         admin={admin}
-        isOwner={isOwner}
+        isOwner={owner}
+        isCashier={cashier}
         isStationSide={isStationSide}
         screen={screen}
         stations={stations}
@@ -239,7 +255,9 @@ export default function App() {
         }}
       />
 
-      {screen === "map" ? (
+      {screen === "cashier" ? (
+        <CashierPage />
+      ) : screen === "map" ? (
         <MapScreen
           admin={admin}
           stations={stations}

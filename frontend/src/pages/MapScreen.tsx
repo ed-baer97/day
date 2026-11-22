@@ -41,7 +41,9 @@ export default function MapScreen({
   onOpenAdminStation?: (id: string) => void;
   onOpenAdminTruck?: (id: string) => void;
 }) {
-  const [mapHudOpen, setMapHudOpen] = useState(true);
+  const [mapHudOpen, setMapHudOpen] = useState(() =>
+    typeof window === "undefined" ? true : window.innerWidth > 768
+  );
   const [mapSearch, setMapSearch] = useState("");
   const [mapRegion, setMapRegion] = useState("all");
   const [mapStatus, setMapStatus] = useState<"all" | "low" | "offline">("all");

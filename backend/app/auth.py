@@ -16,7 +16,15 @@ from uuid import UUID
 from fastapi import Header, HTTPException
 
 from app.config import get_settings
-from app.domain.access import ROLE_ADMIN, ROLES, is_admin_role, may_manage_catalog
+from app.domain.access import (
+    ROLE_ADMIN,
+    ROLE_CASHIER,
+    ROLES,
+    is_admin_role,
+    is_cashier_role,
+    is_owner_role,
+    may_manage_catalog,
+)
 
 _lock = threading.Lock()
 _revoked_tokens: set[str] = set()
@@ -37,6 +45,14 @@ class Principal:
     @property
     def is_admin(self) -> bool:
         return is_admin_role(self.role)
+
+    @property
+    def is_owner(self) -> bool:
+        return is_owner_role(self.role)
+
+    @property
+    def is_cashier(self) -> bool:
+        return is_cashier_role(self.role)
 
     def stations(self) -> tuple[UUID, ...]:
         if self.station_ids:
@@ -169,9 +185,11 @@ def read_principal(token: str, secret: str) -> Principal | None:
             station_ids = [UUID(part) for part in station_raw.split(",") if part]
         except ValueError:
             return None
-    if role not in (ROLES | {"owner"}):
+    if role not in ROLES:
         return None
     if role != ROLE_ADMIN and not station_ids:
+        return None
+    if role == ROLE_CASHIER and len(station_ids) != 1:
         return None
     station_id = station_ids[0] if len(station_ids) == 1 else None
     return Principal(
@@ -234,5 +252,17 @@ def require_station_access(station_id: UUID, principal: Principal) -> None:
 
 def require_station_owner(station_id: UUID, principal: Principal) -> None:
     require_station_access(station_id, principal)
-    if principal.role not in ("owner", "station"):
+    if not principal.is_owner:
         raise HTTPException(status_code=403, detail="это делает владелец заправки")
+
+
+def require_station_cashier(station_id: UUID, principal: Principal) -> None:
+    require_station_access(station_id, principal)
+    if not principal.is_cashier:
+        raise HTTPException(status_code=403, detail="это делает кассир заправки")
+
+
+def require_station_manager_or_admin(station_id: UUID, principal: Principal) -> None:
+    require_station_access(station_id, principal)
+    if not (principal.is_admin or principal.is_owner):
+        raise HTTPException(status_code=403, detail="доступ только для администратора или владельца")

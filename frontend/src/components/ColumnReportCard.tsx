@@ -10,6 +10,7 @@ import { dateTime, liters, signedLiters } from "../format";
 import type { LiveLevel } from "../liveLevels";
 import type { TimeRange } from "../period";
 import { BarChart } from "./Charts";
+import PeriodSwitch from "./PeriodSwitch";
 
 export default function ColumnReportCard({
   points,
@@ -51,7 +52,7 @@ export default function ColumnReportCard({
   return (
     <section className="dash-card" style={{ marginBottom: 18 }}>
       <div className="card-head-inline">
-        <h3>Колонки</h3>
+        <h3>Колонки · {range.title}</h3>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           {report.source === "edge" ? (
             <span className="badge ok">Реальные ТРК · station-edge ({report.columnCount})</span>
@@ -66,6 +67,9 @@ export default function ColumnReportCard({
             </button>
           ) : null}
         </div>
+      </div>
+      <div className="column-report-period">
+        <PeriodSwitch />
       </div>
       {report.source === "edge" ? (
         <p className="dash-muted">

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { isAdmin } from "../access";
+import { isAdmin, isCashier } from "../access";
 import { useAuth } from "../auth";
+import type { AdminSession } from "../session";
 import { dateTime, liters, percentLabel, REGIONS, stationRegion } from "../format";
 import {
   isLowFill,
@@ -16,7 +17,7 @@ import MapView from "./MapView";
 type AvailFilter = "all" | "plenty" | "low";
 type PublicSort = "region" | "liters_desc" | "fill_desc" | "name_asc";
 
-export default function Landing({ onEnter }: { onEnter: () => void }) {
+export default function Landing({ onEnter }: { onEnter: (session?: AdminSession | null) => void }) {
   const { theme, toggle } = useTheme();
   const { session, login, logout } = useAuth();
   const { stations: levels, byCode, updatedAt, loading: levelsLoading } = usePublicLevels();
@@ -127,8 +128,8 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await login(username.trim(), password);
-      onEnter();
+      const next = await login(username.trim(), password);
+      onEnter(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось войти");
     } finally {
@@ -164,8 +165,12 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             </button>
             {session ? (
               <>
-                <button type="button" className="btn small" onClick={onEnter}>
-                  {isAdmin(session) ? "Диспетчерская" : "Кабинет"}
+                <button type="button" className="btn small" onClick={() => onEnter(session)}>
+                  {isAdmin(session)
+                    ? "Диспетчерская"
+                    : isCashier(session)
+                      ? "Рабочее место кассира"
+                      : "Кабинет"}
                 </button>
                 <button type="button" className="btn secondary small" onClick={logout}>
                   Выйти
@@ -378,7 +383,7 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
             onSubmit={onSubmit}
           >
             <h2>Вход в систему</h2>
-            <p>Доступ для администраторов платформы и владельцев АГЗС.</p>
+            <p>Доступ для администраторов, владельцев и кассиров АГЗС.</p>
             <label>
               Логин
               <input

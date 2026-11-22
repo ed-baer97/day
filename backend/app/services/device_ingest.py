@@ -59,6 +59,7 @@ _devices_by_token: dict[str, TankDevice] = {}
 _devices_by_tank: dict[UUID, TankDevice] = {}
 _devices_by_station: dict[UUID, list[UUID]] = {}
 _dispenses_by_station: dict[UUID, list[DispenseReadingOut]] = {}
+_receipts_by_station: dict[UUID, list[tuple[datetime, float]]] = {}
 
 
 def reset_device_ingest() -> None:
@@ -69,6 +70,7 @@ def reset_device_ingest() -> None:
         _devices_by_tank.clear()
         _devices_by_station.clear()
         _dispenses_by_station.clear()
+        _receipts_by_station.clear()
     invalidate_public_board_cache()
 
 
@@ -173,6 +175,8 @@ def delete_station_devices(station_id: UUID) -> list[UUID]:
             if device is not None:
                 _devices_by_token.pop(device.token, None)
             _books.pop((station_id, tank_id), None)
+        _dispenses_by_station.pop(station_id, None)
+        _receipts_by_station.pop(station_id, None)
     persist()
     invalidate_public_board_cache()
     return tank_ids
@@ -369,29 +373,49 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
     return ack
 
 
+def _utc_dt(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _stamp_utc(raw: str) -> datetime:
+    parsed = parse_iso_utc(raw)
+    assert parsed is not None
+    return parsed
+
+
 def list_dispense_records(
     station_id: UUID,
     *,
     since: datetime | None = None,
+    until: datetime | None = None,
     limit: int = 500,
 ) -> list[DispenseReadingOut]:
-    since_utc = (
-        None
-        if since is None
-        else (since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc))
-    )
+    since_utc = None if since is None else _utc_dt(since)
+    until_utc = None if until is None else _utc_dt(until)
     with _lock:
         rows = list(_dispenses_by_station.get(station_id, ()))
 
-    def _stamp(raw: str) -> datetime:
-        parsed = parse_iso_utc(raw)
-        assert parsed is not None
-        return parsed
-
-    if since_utc is not None:
-        rows = [row for row in rows if _stamp(row.started_at) >= since_utc]
-    rows.sort(key=lambda row: _stamp(row.started_at), reverse=True)
+    if since_utc is not None or until_utc is not None:
+        filtered: list[DispenseReadingOut] = []
+        for row in rows:
+            effective = _stamp_utc(row.finished_at or row.started_at)
+            if since_utc is not None and effective < since_utc:
+                continue
+            if until_utc is not None and effective > until_utc:
+                continue
+            filtered.append(row)
+        rows = filtered
+    rows.sort(key=lambda row: _stamp_utc(row.started_at), reverse=True)
     return rows[: max(1, limit)]
+
+
+def list_receipt_volume(station_id: UUID, *, since: datetime, until: datetime) -> float:
+    since_utc = _utc_dt(since)
+    until_utc = _utc_dt(until)
+    with _lock:
+        entries = list(_receipts_by_station.get(station_id, ()))
+    total = sum(vol for stamp, vol in entries if since_utc <= stamp <= until_utc)
+    return round(total, 3)
 
 
 def accept_dispenses_batch(items: list[DispenseIngest]) -> DispenseBatchAck:
@@ -424,6 +448,9 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
             return ack_to_schema(build_ingest_ack(book, message="duplicate", duplicate=True))
         _remember_seen(key)
         apply_receipt_volume(book, body.volume_liters)
+        _receipts_by_station.setdefault(station_id, []).append(
+            (_utc_dt(body.recorded_at), float(body.volume_liters))
+        )
         ack = ack_to_schema(build_ingest_ack(book, message="receipt accepted", entity_id=uuid4()))
     persist()
     return ack
@@ -467,12 +494,21 @@ def snapshot() -> dict:
                 for rows in _dispenses_by_station.values()
                 for item in rows
             ],
+            "receipts": [
+                {
+                    "station_id": str(sid),
+                    "recorded_at": dt.isoformat(),
+                    "volume_liters": vol,
+                }
+                for sid, entries in _receipts_by_station.items()
+                for dt, vol in entries
+            ],
         }
 
 
 def restore_snapshot(data: dict) -> None:
     if not isinstance(data, dict) or not any(
-        key in data for key in ("devices", "books", "seen", "dispenses")
+        key in data for key in ("devices", "books", "seen", "dispenses", "receipts")
     ):
         return
     with _lock:
@@ -481,6 +517,17 @@ def restore_snapshot(data: dict) -> None:
             for row in data["dispenses"]:
                 item = DispenseReadingOut.model_validate(row)
                 _dispenses_by_station.setdefault(item.station_id, []).append(item)
+        if "receipts" in data and isinstance(data["receipts"], list):
+            _receipts_by_station.clear()
+            for row in data["receipts"]:
+                if not isinstance(row, dict) or not row.get("station_id"):
+                    continue
+                stamp = parse_iso_utc(row.get("recorded_at"))
+                if stamp is None:
+                    continue
+                _receipts_by_station.setdefault(UUID(str(row["station_id"])), []).append(
+                    (stamp, float(row.get("volume_liters") or 0.0))
+                )
         if "devices" in data:
             _devices_by_token.clear()
             _devices_by_tank.clear()
@@ -541,6 +588,7 @@ __all__ = [
     "get_tank_device",
     "has_calibration",
     "list_dispense_records",
+    "list_receipt_volume",
     "list_station_tanks_out",
     "list_tank_devices",
     "parse_dispense_meta",

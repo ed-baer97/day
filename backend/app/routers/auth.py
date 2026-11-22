@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from app.domain.access import ROLE_ADMIN, ROLE_STATION
+from app.domain.access import ROLE_ADMIN, ROLE_CASHIER, ROLE_OWNER, ROLE_STATION
 from app.auth import (
     check_login_rate_limit,
     clear_login_failures,
@@ -40,7 +40,12 @@ def login(body: LoginIn, request: Request) -> SessionOut:
         clear_login_failures(key)
         ids = list(user.stations()) if hasattr(user, "stations") else [user.station_id]
         kind = getattr(user, "kind", None)
-        role = "owner" if kind == "owner" else ROLE_STATION
+        if kind == "cashier":
+            role = ROLE_CASHIER
+        elif kind == "owner":
+            role = ROLE_OWNER
+        else:
+            role = ROLE_STATION
         return SessionOut(
             token=issue_token(user.username, settings.auth_secret, role=role, station_ids=ids),
             username=user.username,

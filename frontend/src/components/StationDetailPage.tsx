@@ -3,12 +3,14 @@ import {
   api,
   type ColumnsMode,
   type DispenseReading,
+  type ShiftDetail,
+  type ShiftRecord,
   type TankDevice,
   type TankIngestState,
 } from "../api/client";
-import { isAdmin } from "../access";
+import { isAdmin, isOwner } from "../access";
 import { useAuth } from "../auth";
-import { useCatalog } from "../catalog";
+import { messageOf, useCatalog } from "../catalog";
 import {
   balBadge,
   balText,
@@ -18,6 +20,7 @@ import {
   severityLabel,
   signedLiters,
   stationRegion,
+  tenge,
 } from "../format";
 import {
   isLowFill,
@@ -41,8 +44,11 @@ import { BarChart, LineChart } from "./Charts";
 import ColumnReportCard from "./ColumnReportCard";
 import LevelChangesToday from "./LevelChangesToday";
 import PeriodSwitch from "./PeriodSwitch";
+import ShiftReportView from "./ShiftReportView";
+import StationCashiersCard from "./StationCashiersCard";
+import { useToast } from "./Toast";
 
-type DetailTab = "overview" | "pumps" | "tanks" | "history";
+type DetailTab = "overview" | "pumps" | "tanks" | "history" | "staff";
 
 export default function StationDetailPage({
   stationId,
@@ -60,7 +66,10 @@ export default function StationDetailPage({
   onOpenAdminReconcile?: () => void;
 }) {
   const { session } = useAuth();
+  const toast = useToast();
   const canManage = isAdmin(session);
+  const owner = isOwner(session);
+  const canSeeStaffAndShifts = canManage || owner;
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
   const { range, historyLoading } = useViewPeriod();
@@ -71,17 +80,25 @@ export default function StationDetailPage({
   const [tankStates, setTankStates] = useState<Record<string, TankIngestState>>({});
   const [dispenses, setDispenses] = useState<DispenseReading[]>([]);
   const [discrepancyEvents, setDiscrepancyEvents] = useState<DiscrepancyEvent[]>([]);
+  const [shifts, setShifts] = useState<ShiftRecord[]>([]);
+  const [selectedShiftReport, setSelectedShiftReport] = useState<ShiftDetail | null>(null);
+  const [shiftReportBusyId, setShiftReportBusyId] = useState<string | null>(null);
 
-  const stations = catalog.stations.filter((row) => row.is_active);
+  const stations = owner ? catalog.stations : catalog.stations.filter((row) => row.is_active);
   const index = stations.findIndex((row) => row.id === stationId);
   const station = index >= 0 ? stations[index] : catalog.stations.find((row) => row.id === stationId);
 
   const sinceIso = range.start.toISOString();
+  const untilIso = range.end.toISOString();
+
+  useEffect(() => {
+    setSelectedShiftReport(null);
+  }, [stationId]);
 
   useEffect(() => {
     let alive = true;
     async function loadExtra() {
-      const dispPromise = api.stationDispenses(stationId, sinceIso).catch(() => []);
+      const dispPromise = api.stationDispenses(stationId, sinceIso, 5000, untilIso).catch(() => []);
       try {
         const list = await api.tankDevices(stationId);
         if (!alive) return;
@@ -89,7 +106,7 @@ export default function StationDetailPage({
         const states = await Promise.all(
           list.map(async (dev) => {
             try {
-              const st = await api.tankIngestState(dev.id);
+              const st = await api.stationTankState(stationId, dev.id);
               return [dev.id, st] as const;
             } catch {
               return null;
@@ -111,6 +128,17 @@ export default function StationDetailPage({
       const dispRows = await dispPromise;
       if (alive) setDispenses(dispRows);
 
+      if (canSeeStaffAndShifts) {
+        api
+          .stationShifts(stationId, 30)
+          .then((rows) => {
+            if (alive) setShifts(rows);
+          })
+          .catch(() => {
+            if (alive) setShifts([]);
+          });
+      }
+
       if (canManage) {
         try {
           const evs = await api.events(stationId, false);
@@ -126,7 +154,7 @@ export default function StationDetailPage({
       alive = false;
       window.clearInterval(timer);
     };
-  }, [stationId, canManage, sinceIso]);
+  }, [stationId, canManage, canSeeStaffAndShifts, sinceIso, untilIso]);
 
   const live = station ? (byCode.get(station.code) ?? null) : null;
   const hasTanks = !!live && live.tanks.length > 0;
@@ -230,11 +258,9 @@ export default function StationDetailPage({
     <div className="dash">
       <div className="st-detail-nav">
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          {stations.length > 1 ? (
-            <button type="button" className="btn secondary small" onClick={onBack}>
-              ← Все АГЗС
-            </button>
-          ) : null}
+          <button type="button" className="btn secondary small" onClick={onBack}>
+            {owner ? "← Мои АГЗС" : "← Все АГЗС"}
+          </button>
           {onSelectStation && stations.length > 1 ? (
             <div className="st-Detail-switcher">
               <button
@@ -432,6 +458,18 @@ export default function StationDetailPage({
           Журнал замеров и сверка
           {discrepancyEvents.length > 0 ? ` (${discrepancyEvents.length})` : ""}
         </button>
+        {canSeeStaffAndShifts ? (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "staff"}
+            className={tab === "staff" ? "active" : ""}
+            onClick={() => setTab("staff")}
+          >
+            Кассиры и смены
+            {shifts.length > 0 ? ` (${shifts.length})` : ""}
+          </button>
+        ) : null}
       </div>
 
       {tab === "overview" ? (
@@ -872,6 +910,126 @@ export default function StationDetailPage({
             )}
           </section>
         </>
+      ) : null}
+
+      {tab === "staff" && canSeeStaffAndShifts ? (
+        <div className="admin-workspace">
+          <StationCashiersCard stationId={station.id} canManage={owner} />
+
+          {selectedShiftReport ? (
+            <ShiftReportView
+              report={selectedShiftReport}
+              stationName={station.name}
+              stationCode={station.code}
+              onClose={() => setSelectedShiftReport(null)}
+            />
+          ) : null}
+
+          <section className="dash-card">
+            <div className="card-head-inline" style={{ marginBottom: 10 }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Кассовые смены АГЗС ({shifts.length})</h3>
+                <p className="dash-muted" style={{ margin: "4px 0 0" }}>
+                  Смены открывает и закрывает кассир станции. Нажмите на любую смену для просмотра
+                  отчёта.
+                </p>
+              </div>
+            </div>
+            {shifts.length === 0 ? (
+              <p className="dash-muted" style={{ marginBottom: 0 }}>
+                По этой АГЗС ещё не открывали смен.
+              </p>
+            ) : (
+              <div className="dash-table-wrap">
+                <table className="dash-table">
+                  <thead>
+                    <tr>
+                      <th>Статус</th>
+                      <th>Открыта / Закрыта</th>
+                      <th>Кассир</th>
+                      <th>Цистерна (нач. → кон.)</th>
+                      <th>Отпуск ТРК</th>
+                      <th>Разница</th>
+                      <th>Отчёт</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shifts.map((sh) => (
+                      <tr key={sh.id}>
+                        <td>
+                          <span className={`badge ${sh.status === "open" ? "warn" : "ok"}`}>
+                            {sh.status === "open" ? "открыта" : "закрыта"}
+                          </span>
+                        </td>
+                        <td>
+                          <div>{dateTime(sh.opened_at)}</div>
+                          <div className="dash-muted">
+                            {sh.closed_at ? dateTime(sh.closed_at) : "в работе"}
+                          </div>
+                        </td>
+                        <td>
+                          <strong>{sh.opened_by}</strong>
+                          {sh.closed_by && sh.closed_by !== sh.opened_by ? (
+                            <div className="dash-muted">закр.: {sh.closed_by}</div>
+                          ) : null}
+                        </td>
+                        <td>
+                          {liters(sh.opening_tank_liters)} → {liters(sh.closing_tank_liters)}
+                        </td>
+                        <td>
+                          <strong>
+                            {sh.dispensed_liters.toLocaleString("ru-RU", {
+                              minimumFractionDigits: 0,
+                              maximumFractionDigits: 2,
+                            })}{" "}
+                            л
+                          </strong>
+                          <div className="dash-muted">
+                            оп.: {sh.dispense_count}
+                            {sh.total_amount_kzt != null ? ` · ${tenge(sh.total_amount_kzt)}` : ""}
+                          </div>
+                        </td>
+                        <td>
+                          {sh.discrepancy_liters != null ? (
+                            <strong
+                              className={
+                                Math.abs(sh.discrepancy_liters) > 50 ? "text-danger" : ""
+                              }
+                            >
+                              {signedLiters(sh.discrepancy_liters)}
+                            </strong>
+                          ) : (
+                            <span className="dash-muted">—</span>
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            disabled={shiftReportBusyId === sh.id}
+                            onClick={async () => {
+                              setShiftReportBusyId(sh.id);
+                              try {
+                                const detail = await api.shiftReport(station.id, sh.id);
+                                setSelectedShiftReport(detail);
+                              } catch (err) {
+                                toast.err(messageOf(err));
+                              } finally {
+                                setShiftReportBusyId(null);
+                              }
+                            }}
+                          >
+                            {shiftReportBusyId === sh.id ? "Загрузка…" : "Открыть отчёт"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
       ) : null}
     </div>
   );

@@ -35,6 +35,7 @@ def restore_memory_state() -> None:
     import app.services.edge_fleet  # noqa: F401
     import app.services.memory_account  # noqa: F401
     import app.services.shelly_link  # noqa: F401
+    import app.services.shift_book  # noqa: F401
     from app.services.memory_state import restore
 
     restore()

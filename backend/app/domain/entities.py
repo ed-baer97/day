@@ -11,6 +11,7 @@ from app.domain.calibration import LevelCalibration
 
 TRUCK_STATUSES = ("idle", "loading", "in_transit", "arrived", "unloading")
 COLUMN_MODES = ("none", "virtual", "edge")
+SHIFT_STATUSES = ("open", "closed")
 
 
 @dataclass
@@ -80,6 +81,51 @@ class StationOwner:
         if self.station_ids:
             return list(self.station_ids)
         return [self.station_id]
+
+
+@dataclass
+class ShiftTankSnapshot:
+    tank_id: UUID
+    code: str
+    capacity_liters: float
+    remainder_liters: float | None = None
+    fill_percent: float | None = None
+    measured_at: datetime | None = None
+
+
+@dataclass
+class ShiftColumnSummary:
+    pump_address: int
+    code: str
+    name: str
+    volume_liters: float
+    ops_count: int
+    amount_kzt: float | None = None
+    last_liters: float | None = None
+    last_at: datetime | None = None
+
+
+@dataclass
+class StationShift:
+    id: UUID
+    station_id: UUID
+    status: str
+    opened_by: str
+    opened_at: datetime
+    closed_by: str | None = None
+    closed_at: datetime | None = None
+    opening_tank_liters: float | None = None
+    closing_tank_liters: float | None = None
+    opening_tanks: list[ShiftTankSnapshot] = field(default_factory=list)
+    closing_tanks: list[ShiftTankSnapshot] = field(default_factory=list)
+    receipts_liters: float = 0.0
+    dispensed_liters: float = 0.0
+    dispense_count: int = 0
+    total_amount_kzt: float | None = None
+    columns: list[ShiftColumnSummary] = field(default_factory=list)
+    tank_delta_liters: float | None = None
+    discrepancy_liters: float | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)

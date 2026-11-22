@@ -641,46 +641,63 @@ export default function AdminAccessTab({
           <table className="dash-table">
             <thead>
               <tr>
-                <th>Категория данных</th>
-                <th>Публичная витрина</th>
-                <th>Закрытый контур</th>
+                <th>Роль / контур</th>
+                <th>Доступные данные и разделы</th>
+                <th>Операции</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>Активные АГЗС, остаток и % в резервуаре, статус связи ({SENSOR_STALE_SECONDS} сек)</td>
                 <td>
-                  <span className="badge ok">Открыто (GET /public/levels)</span>
+                  <strong>Публичная витрина</strong>
                 </td>
                 <td>
-                  <span className="badge ok">Доступно</span>
-                </td>
-              </tr>
-              <tr>
-                <td>Книжный остаток, расхождения, снимки баланса и транзакции ТРК</td>
-                <td>
-                  <span className="badge danger">Скрыто</span>
+                  Активные АГЗС, остаток и % в резервуаре, статус связи ({SENSOR_STALE_SECONDS} сек)
                 </td>
                 <td>
-                  <span className="badge ok">Только авторизованным ролям</span>
+                  <span className="badge ok">Только чтение (GET /public/levels)</span>
                 </td>
               </tr>
               <tr>
-                <td>Скрытые АГЗС, газовозы, GPS-трекинг, партии, владельцы и OTA-парк</td>
                 <td>
-                  <span className="badge danger">Скрыто</span>
+                  <strong>Администратор платформы</strong>
                 </td>
                 <td>
-                  <span className="badge ok">Только администратор платформы</span>
+                  Все АГЗС (включая скрытые), суммарные дашборды, карточка любой АГЗС, датчики,
+                  токены X-Device-Token, газовозы, партии и отчёты смен
+                </td>
+                <td>
+                  <span className="badge ok">
+                    Создаёт АГЗС и владельцев, прикрепляет АГЗС к владельцам, управляет оборудованием
+                  </span>
                 </td>
               </tr>
               <tr>
-                <td>IP-адреса Shelly и ключи X-Device-Token</td>
                 <td>
-                  <span className="badge danger">Скрыто</span>
+                  <strong>Владелец АГЗС</strong>
                 </td>
                 <td>
-                  <span className="badge ok">Только администратор платформы</span>
+                  Дашборд только по своим привязанным АГЗС, проваливание в карточку каждой своей
+                  заправки, просмотр кассиров и отчётов смен (без чужих АГЗС и без токенов)
+                </td>
+                <td>
+                  <span className="badge ok">
+                    Создаёт кассиров и прикрепляет к своим АГЗС
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <strong>Кассир АГЗС</strong>
+                </td>
+                <td>
+                  Рабочее место только своей заправки: объём в цистерне, фактический расход по
+                  колонкам, история и отчёты смен
+                </td>
+                <td>
+                  <span className="badge ok">
+                    Открывает и закрывает смену, формирует отчёт о смене
+                  </span>
                 </td>
               </tr>
             </tbody>

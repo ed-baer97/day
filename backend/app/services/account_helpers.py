@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timezone
 from uuid import UUID
@@ -10,6 +11,8 @@ from app.domain.calibration import LevelCalibration
 from app.domain.entities import (
     COLUMN_MODES,
     TRUCK_STATUSES,
+    ShiftColumnSummary,
+    ShiftTankSnapshot,
     TankBookAck,
     TankBookState,
     parse_dispense_meta,
@@ -91,9 +94,13 @@ def clean_owner_username(
     return cleaned
 
 
-def require_owner_password(password: str) -> None:
+def require_user_password(password: str, label: str = "пользователя") -> None:
     if len(password) < 6:
-        raise ValidationError("пароль владельца не короче 6 символов")
+        raise ValidationError(f"пароль {label} не короче 6 символов")
+
+
+def require_owner_password(password: str) -> None:
+    require_user_password(password, "владельца")
 
 
 def level_event_key(tank_id: UUID, recorded_at: datetime, source_event_id: str | None) -> str:
@@ -316,4 +323,98 @@ def batch_status_node_value(status: str) -> str:
     if status == "delivered":
         return "tank"
     return "batch"
+
+
+def dump_shift_tanks(items: list[ShiftTankSnapshot]) -> str:
+    payload = [
+        {
+            "tank_id": str(item.tank_id),
+            "code": item.code,
+            "capacity_liters": float(item.capacity_liters),
+            "remainder_liters": item.remainder_liters,
+            "fill_percent": item.fill_percent,
+            "measured_at": None if item.measured_at is None else item.measured_at.isoformat(),
+        }
+        for item in items
+    ]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def load_shift_tanks(raw: object) -> list[ShiftTankSnapshot]:
+    if not raw:
+        return []
+    data = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(data, list):
+        return []
+    result: list[ShiftTankSnapshot] = []
+    for row in data:
+        if not isinstance(row, dict) or not row.get("tank_id"):
+            continue
+        result.append(
+            ShiftTankSnapshot(
+                tank_id=UUID(str(row["tank_id"])),
+                code=str(row.get("code") or ""),
+                capacity_liters=float(row.get("capacity_liters") or 0.0),
+                remainder_liters=None
+                if row.get("remainder_liters") is None
+                else float(row["remainder_liters"]),
+                fill_percent=None
+                if row.get("fill_percent") is None
+                else float(row["fill_percent"]),
+                measured_at=parse_iso_utc(row.get("measured_at")),
+            )
+        )
+    return result
+
+
+def dump_shift_columns(items: list[ShiftColumnSummary]) -> str:
+    payload = [
+        {
+            "pump_address": int(item.pump_address),
+            "code": item.code,
+            "name": item.name,
+            "volume_liters": float(item.volume_liters),
+            "ops_count": int(item.ops_count),
+            "amount_kzt": item.amount_kzt,
+            "last_liters": item.last_liters,
+            "last_at": None if item.last_at is None else item.last_at.isoformat(),
+        }
+        for item in items
+    ]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def load_shift_columns(raw: object) -> list[ShiftColumnSummary]:
+    if not raw:
+        return []
+    data = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(data, list):
+        return []
+    result: list[ShiftColumnSummary] = []
+    for row in data:
+        if not isinstance(row, dict) or row.get("pump_address") is None:
+            continue
+        result.append(
+            ShiftColumnSummary(
+                pump_address=int(row["pump_address"]),
+                code=str(row.get("code") or f"ТРК-{int(row['pump_address'])}"),
+                name=str(row.get("name") or f"Колонка {int(row['pump_address'])}"),
+                volume_liters=float(row.get("volume_liters") or 0.0),
+                ops_count=int(row.get("ops_count") or 0),
+                amount_kzt=None if row.get("amount_kzt") is None else float(row["amount_kzt"]),
+                last_liters=None if row.get("last_liters") is None else float(row["last_liters"]),
+                last_at=parse_iso_utc(row.get("last_at")),
+            )
+        )
+    return result
 

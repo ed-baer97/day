@@ -5,7 +5,7 @@ import { onSessionExpired, readSession, writeSession, type AdminSession } from "
 
 type AuthApi = {
   session: AdminSession | null;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<AdminSession>;
   logout: () => void;
 };
 
@@ -18,6 +18,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const next = await api.login(username, password);
     writeSession(next);
     setSession(next);
+    return next;
   }, []);
 
   const logout = useCallback(() => {

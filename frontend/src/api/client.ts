@@ -194,6 +194,61 @@ export interface OwnerAccount {
   station_ids: string[];
 }
 
+export interface CashierAccount {
+  id: string;
+  station_id: string;
+  username: string;
+  kind?: string;
+}
+
+export interface ShiftTankSnapshot {
+  tank_id: string;
+  code: string;
+  capacity_liters: number;
+  remainder_liters?: number | null;
+  fill_percent?: number | null;
+  measured_at?: string | null;
+}
+
+export interface ShiftColumnSummary {
+  pump_address: number;
+  code: string;
+  name: string;
+  volume_liters: number;
+  ops_count: number;
+  amount_kzt?: number | null;
+  last_liters?: number | null;
+  last_at?: string | null;
+}
+
+export interface ShiftRecord {
+  id: string;
+  station_id: string;
+  station_name?: string | null;
+  station_code?: string | null;
+  status: "open" | "closed" | string;
+  opened_by: string;
+  closed_by?: string | null;
+  opened_at: string;
+  closed_at?: string | null;
+  opening_tank_liters?: number | null;
+  closing_tank_liters?: number | null;
+  opening_tanks: ShiftTankSnapshot[];
+  closing_tanks: ShiftTankSnapshot[];
+  receipts_liters: number;
+  dispensed_liters: number;
+  dispense_count: number;
+  total_amount_kzt?: number | null;
+  columns: ShiftColumnSummary[];
+  tank_delta_liters?: number | null;
+  discrepancy_liters?: number | null;
+  note?: string | null;
+}
+
+export interface ShiftDetail extends ShiftRecord {
+  dispenses: DispenseReading[];
+}
+
 export interface EdgeReleaseManifest {
   version: string;
   artifact_url: string;
@@ -343,6 +398,30 @@ export const api = {
     sendJson<OwnerAccount>("PATCH", `/owners/${encodeURIComponent(username)}`, body),
   deleteOwner: (username: string) =>
     sendJson<void>("DELETE", `/owners/${encodeURIComponent(username)}`),
+  cashiers: () => getJson<CashierAccount[]>("/cashiers"),
+  stationCashiers: (stationId: string) =>
+    getJson<CashierAccount[]>(`/stations/${stationId}/cashiers`),
+  createStationCashier: (stationId: string, body: { username: string; password: string }) =>
+    sendJson<CashierAccount & { password: string }>(
+      "POST",
+      `/stations/${stationId}/cashiers`,
+      body
+    ),
+  updateStationCashier: (
+    stationId: string,
+    username: string,
+    body: { password?: string; station_id?: string }
+  ) =>
+    sendJson<CashierAccount>(
+      "PATCH",
+      `/stations/${stationId}/cashiers/${encodeURIComponent(username)}`,
+      body
+    ),
+  deleteStationCashier: (stationId: string, username: string) =>
+    sendJson<void>(
+      "DELETE",
+      `/stations/${stationId}/cashiers/${encodeURIComponent(username)}`
+    ),
   createStation: (body: StationDraft) => sendJson<CatalogStation>("POST", "/stations", body),
   updateStation: (id: string, body: Partial<StationDraft>) =>
     sendJson<CatalogStation>("PATCH", `/stations/${id}`, body),
@@ -375,13 +454,32 @@ export const api = {
       : `?changes_only=true&limit=${Math.min(cap, 200)}`;
     return getJson<LevelReading[]>(`/stations/${stationId}/devices/${tankId}/levels${query}`);
   },
-  stationDispenses: (stationId: string, since?: string, limit = 500) => {
+  stationTankState: (stationId: string, tankId: string) =>
+    getJson<TankIngestState>(`/stations/${stationId}/devices/${tankId}/state`),
+  stationDispenses: (stationId: string, since?: string, limit = 500, until?: string) => {
     const cap = Math.max(1, Math.min(limit, 5000));
-    const query = since
-      ? `?since=${encodeURIComponent(since)}&limit=${cap}`
-      : `?limit=${cap}`;
-    return getJson<DispenseReading[]>(`/stations/${stationId}/dispenses${query}`);
+    const params = new URLSearchParams();
+    params.set("limit", String(cap));
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+    return getJson<DispenseReading[]>(`/stations/${stationId}/dispenses?${params.toString()}`);
   },
+  stationShifts: (stationId: string, limit = 50) => {
+    const cap = Math.max(1, Math.min(limit, 200));
+    return getJson<ShiftRecord[]>(`/stations/${stationId}/shifts?limit=${cap}`);
+  },
+  currentShift: (stationId: string) =>
+    getJson<ShiftDetail | null>(`/stations/${stationId}/shifts/current`),
+  shiftReport: (stationId: string, shiftId: string) =>
+    getJson<ShiftDetail>(`/stations/${stationId}/shifts/${shiftId}`),
+  openShift: (stationId: string, note?: string | null) =>
+    sendJson<ShiftDetail>("POST", `/stations/${stationId}/shifts/open`, note ? { note } : {}),
+  closeShift: (stationId: string, shiftId: string, note?: string | null) =>
+    sendJson<ShiftDetail>(
+      "POST",
+      `/stations/${stationId}/shifts/${shiftId}/close`,
+      note ? { note } : {}
+    ),
   calibrateTank: (
     body: {
       station_id?: string;

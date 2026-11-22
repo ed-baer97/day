@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID
 
 from app.config import get_settings
-from app.domain.entities import StationCard, StationOwner, TankDevice, TruckCard
-from app.domain.errors import ForbiddenError, NotFoundError, ValidationError
+from app.domain.calibration import remainder_fill_percent
+from app.domain.entities import (
+    ShiftTankSnapshot,
+    StationCard,
+    StationOwner,
+    StationShift,
+    TankDevice,
+    TruckCard,
+)
+from app.domain.errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from app.domain.shifts import (
+    ShiftDispenseSample,
+    compute_shift_balance,
+    summarize_shift_columns,
+)
 from app.schemas.ingest import (
     CalibrationIn,
     DispenseBatchAck,
@@ -19,13 +32,14 @@ from app.schemas.ingest import (
     ReceiptIngest,
     TankIngestState,
 )
-from app.schemas.station import TankOut
+from app.schemas.station import DispenseReadingOut, TankOut
 from app.services import account_mode
 from app.services.account_helpers import (
     clean_optional_text,
     clean_owner_username,
     gps_event_key,
     is_gps_seen,
+    parse_iso_utc,
     remember_gps,
     require_calibration_points,
     require_columns_count,
@@ -452,12 +466,249 @@ def delete_owner_account(username: str) -> None:
     backend().delete_owner_account(username)
 
 
+def list_station_cashiers(station_id: UUID) -> list[StationOwner]:
+    store = backend()
+    store.get_station(station_id)
+    return store.list_station_cashiers(station_id)
+
+
+def list_cashiers_for_stations(station_ids: list[UUID] | None = None) -> list[StationOwner]:
+    return backend().list_cashiers_for_stations(station_ids)
+
+
+def create_station_cashier(station_id: UUID, username: str, password: str) -> StationOwner:
+    store = backend()
+    store.get_station(station_id)
+    return store.create_station_cashier(station_id, username, password)
+
+
+def update_station_cashier(
+    station_id: UUID,
+    username: str,
+    *,
+    password: str | None = None,
+    new_station_id: UUID | None = None,
+) -> StationOwner:
+    store = backend()
+    store.get_station(station_id)
+    if new_station_id is not None:
+        store.get_station(new_station_id)
+    return store.update_station_cashier(
+        station_id,
+        username,
+        password=password,
+        new_station_id=new_station_id,
+    )
+
+
+def delete_station_cashier(station_id: UUID, username: str) -> None:
+    store = backend()
+    store.get_station(station_id)
+    store.delete_station_cashier(station_id, username)
+
+
 def list_level_readings(station_id: UUID, tank_id: UUID, **kwargs):
     return backend().list_level_readings(station_id, tank_id, **kwargs)
 
 
 def list_dispense_records(station_id: UUID, **kwargs):
     return backend().list_dispense_records(station_id, **kwargs)
+
+
+def list_receipt_volume(station_id: UUID, *, since: datetime, until: datetime) -> float:
+    return backend().list_receipt_volume(station_id, since=since, until=until)
+
+
+def _snapshot_station_tanks(station_id: UUID) -> tuple[list[ShiftTankSnapshot], float | None]:
+    tanks = list_station_tanks_out(station_id)
+    snapshots = [
+        ShiftTankSnapshot(
+            tank_id=tank.id,
+            code=tank.code,
+            capacity_liters=tank.capacity_liters,
+            remainder_liters=tank.actual_remainder_liters,
+            fill_percent=remainder_fill_percent(tank.actual_remainder_liters, tank.capacity_liters),
+            measured_at=tank.last_measured_at,
+        )
+        for tank in tanks
+    ]
+    known = [tank.actual_remainder_liters for tank in tanks if tank.actual_remainder_liters is not None]
+    total = round(sum(known), 3) if known else None
+    return snapshots, total
+
+
+def _to_dispense_samples(rows: list[DispenseReadingOut], fallback_at: datetime) -> list[ShiftDispenseSample]:
+    samples: list[ShiftDispenseSample] = []
+    for row in rows:
+        occurred = parse_iso_utc(row.finished_at or row.started_at) or fallback_at
+        pump_address = row.pump_address if row.pump_address is not None else 1
+        samples.append(
+            ShiftDispenseSample(
+                pump_address=pump_address,
+                volume_liters=row.volume_liters,
+                price_kzt_per_liter=row.price_kzt_per_liter,
+                occurred_at=occurred,
+            )
+        )
+    return samples
+
+
+def _hydrate_open_shift(
+    station: StationCard,
+    shift: StationShift,
+    now: datetime,
+) -> tuple[StationShift, list[DispenseReadingOut]]:
+    current_tanks, current_total = _snapshot_station_tanks(station.id)
+    dispenses = list_dispense_records(
+        station.id,
+        since=shift.opened_at,
+        until=now,
+        limit=5000,
+    )
+    receipts = list_receipt_volume(station.id, since=shift.opened_at, until=now)
+    columns, dispensed_liters, dispense_count, total_amount = summarize_shift_columns(
+        _to_dispense_samples(dispenses, now),
+        station.columns_count,
+    )
+    tank_delta, discrepancy = compute_shift_balance(
+        shift.opening_tank_liters,
+        current_total,
+        receipts,
+        dispensed_liters,
+    )
+    hydrated = StationShift(
+        id=shift.id,
+        station_id=shift.station_id,
+        status=shift.status,
+        opened_by=shift.opened_by,
+        opened_at=shift.opened_at,
+        closed_by=shift.closed_by,
+        closed_at=shift.closed_at,
+        opening_tank_liters=shift.opening_tank_liters,
+        closing_tank_liters=current_total,
+        opening_tanks=shift.opening_tanks,
+        closing_tanks=current_tanks,
+        receipts_liters=receipts,
+        dispensed_liters=dispensed_liters,
+        dispense_count=dispense_count,
+        total_amount_kzt=total_amount,
+        columns=columns,
+        tank_delta_liters=tank_delta,
+        discrepancy_liters=discrepancy,
+        note=shift.note,
+    )
+    return hydrated, dispenses
+
+
+def open_station_shift(
+    station_id: UUID,
+    *,
+    username: str,
+    note: str | None = None,
+) -> tuple[StationShift, list[DispenseReadingOut]]:
+    station = get_station(station_id)
+    now = datetime.now(timezone.utc)
+    opening_tanks, opening_total = _snapshot_station_tanks(station_id)
+    created = backend().open_shift(
+        station_id,
+        opened_by=username,
+        opened_at=now,
+        opening_tank_liters=opening_total,
+        opening_tanks=opening_tanks,
+        note=note,
+    )
+    return _hydrate_open_shift(station, created, now)
+
+
+def close_station_shift(
+    station_id: UUID,
+    shift_id: UUID,
+    *,
+    username: str,
+    note: str | None = None,
+) -> tuple[StationShift, list[DispenseReadingOut]]:
+    station = get_station(station_id)
+    store = backend()
+    existing = store.get_shift(station_id, shift_id)
+    if existing.status != "open":
+        raise ConflictError("смена уже закрыта")
+    now = datetime.now(timezone.utc)
+    closing_tanks, closing_total = _snapshot_station_tanks(station_id)
+    dispenses = list_dispense_records(
+        station_id,
+        since=existing.opened_at,
+        until=now,
+        limit=5000,
+    )
+    receipts = list_receipt_volume(station_id, since=existing.opened_at, until=now)
+    columns, dispensed_liters, dispense_count, total_amount = summarize_shift_columns(
+        _to_dispense_samples(dispenses, now),
+        station.columns_count,
+    )
+    tank_delta, discrepancy = compute_shift_balance(
+        existing.opening_tank_liters,
+        closing_total,
+        receipts,
+        dispensed_liters,
+    )
+    closed = store.close_shift(
+        station_id,
+        shift_id,
+        closed_by=username,
+        closed_at=now,
+        closing_tank_liters=closing_total,
+        closing_tanks=closing_tanks,
+        receipts_liters=receipts,
+        dispensed_liters=dispensed_liters,
+        dispense_count=dispense_count,
+        total_amount_kzt=total_amount,
+        columns=columns,
+        tank_delta_liters=tank_delta,
+        discrepancy_liters=discrepancy,
+        note=note,
+    )
+    return closed, dispenses
+
+
+def list_station_shifts(station_id: UUID, *, limit: int = 50) -> list[StationShift]:
+    station = get_station(station_id)
+    rows = backend().list_shifts(station_id, limit=limit)
+    now = datetime.now(timezone.utc)
+    result: list[StationShift] = []
+    for row in rows:
+        if row.status == "open":
+            hydrated, _dispenses = _hydrate_open_shift(station, row, now)
+            result.append(hydrated)
+        else:
+            result.append(row)
+    return result
+
+
+def get_current_station_shift(
+    station_id: UUID,
+) -> tuple[StationShift, list[DispenseReadingOut]] | None:
+    station = get_station(station_id)
+    current = backend().get_open_shift(station_id)
+    if current is None:
+        return None
+    return _hydrate_open_shift(station, current, datetime.now(timezone.utc))
+
+
+def get_station_shift_detail(
+    station_id: UUID,
+    shift_id: UUID,
+) -> tuple[StationShift, list[DispenseReadingOut]]:
+    station = get_station(station_id)
+    shift = backend().get_shift(station_id, shift_id)
+    if shift.status == "open":
+        return _hydrate_open_shift(station, shift, datetime.now(timezone.utc))
+    dispenses = list_dispense_records(
+        station_id,
+        since=shift.opened_at,
+        until=shift.closed_at,
+        limit=5000,
+    )
+    return shift, dispenses
 
 
 def list_batches() -> list[dict]:
@@ -535,19 +786,24 @@ __all__ = [
     "bind_dispense",
     "bind_level",
     "bind_receipt",
+    "close_station_shift",
     "create_batch",
     "create_owner_account",
     "create_station",
+    "create_station_cashier",
     "create_station_user",
     "create_truck",
     "delete_owner_account",
     "delete_station",
+    "delete_station_cashier",
     "delete_tank_device",
     "delete_truck",
     "detach_station_user",
     "get_batch_by_code",
     "get_batch_by_id",
+    "get_current_station_shift",
     "get_station",
+    "get_station_shift_detail",
     "get_tank_device",
     "get_truck",
     "has_calibration",
@@ -556,13 +812,18 @@ __all__ = [
     "list_all_owners",
     "list_all_stations_with_overview",
     "list_batches",
+    "list_cashiers_for_stations",
     "list_dispense_records",
     "list_level_readings",
+    "list_receipt_volume",
+    "list_station_cashiers",
+    "list_station_shifts",
     "list_station_tanks_out",
     "list_station_users",
     "list_stations",
     "list_tank_devices",
     "list_trucks",
+    "open_station_shift",
     "record_truck_position",
     "register_calibration_hook",
     "register_tank",
@@ -575,6 +836,7 @@ __all__ = [
     "update_batch_status",
     "update_owner_account",
     "update_station",
+    "update_station_cashier",
     "update_tank_device",
     "update_truck",
 ]

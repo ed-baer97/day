@@ -20,7 +20,15 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import get_settings
 from app.database import SessionLocal
 from app.domain.calibration import LevelCalibration
-from app.domain.entities import StationCard, StationOwner, TankDevice, TruckCard
+from app.domain.entities import (
+    ShiftColumnSummary,
+    ShiftTankSnapshot,
+    StationCard,
+    StationOwner,
+    StationShift,
+    TankDevice,
+    TruckCard,
+)
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.tank_book import (
     apply_dispense_volume,
@@ -32,6 +40,7 @@ from app.domain.tank_book import (
 )
 from app.models.batch import Batch, BatchStatus, BatchTrailEvent, TrailNodeType
 from app.models.dispenser import DispenseRecord, ReceiptRecord
+from app.models.shift import StationShiftRecord
 from app.models.station import LevelReading, LevelSource, Station, StationUser, Tank
 from app.models.truck import Truck
 from app.schemas.ingest import (
@@ -55,8 +64,12 @@ from app.services.account_helpers import (
     clean_optional_text,
     clean_owner_username,
     dispense_event_key,
+    dump_shift_columns,
+    dump_shift_tanks,
     extract_book_fields,
     level_event_key,
+    load_shift_columns,
+    load_shift_tanks,
     parse_iso_utc,
     receipt_event_key,
     require_calibration_points,
@@ -66,6 +79,7 @@ from app.services.account_helpers import (
     require_owner_password,
     require_station_and_tank,
     require_truck_status,
+    require_user_password,
     state_to_schema,
 )
 from app.services.passwords import hash_password, verify_password
@@ -789,13 +803,18 @@ def list_dispense_records(
     station_id: UUID,
     *,
     since: datetime | None = None,
+    until: datetime | None = None,
     limit: int = 500,
 ) -> list[DispenseReadingOut]:
     with session() as db:
         query = select(DispenseRecord).where(DispenseRecord.station_id == station_id)
+        effective_at = func.coalesce(DispenseRecord.finished_at, DispenseRecord.started_at)
         if since is not None:
             stamp = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
-            query = query.where(DispenseRecord.started_at >= stamp)
+            query = query.where(effective_at >= stamp)
+        if until is not None:
+            stamp_until = until if until.tzinfo is not None else until.replace(tzinfo=timezone.utc)
+            query = query.where(effective_at <= stamp_until)
         rows = list(db.scalars(query.order_by(DispenseRecord.started_at.desc()).limit(limit)).all())
     return [
         build_dispense_out(
@@ -811,6 +830,20 @@ def list_dispense_records(
         )
         for row in rows
     ]
+
+
+def list_receipt_volume(station_id: UUID, *, since: datetime, until: datetime) -> float:
+    since_utc = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
+    until_utc = until if until.tzinfo is not None else until.replace(tzinfo=timezone.utc)
+    with session() as db:
+        total = db.scalar(
+            select(func.coalesce(func.sum(ReceiptRecord.volume_liters), 0.0)).where(
+                ReceiptRecord.station_id == station_id,
+                ReceiptRecord.recorded_at >= since_utc,
+                ReceiptRecord.recorded_at <= until_utc,
+            )
+        )
+    return round(float(total or 0.0), 3)
 
 
 def _to_station_owner(rows: list[StationUser]) -> StationOwner:
@@ -852,6 +885,8 @@ def create_station_user(station_id: UUID, username: str, password: str) -> Stati
             raise NotFoundError("Station not found")
         existing = list(db.scalars(select(StationUser).where(StationUser.username == cleaned)).all())
         if existing:
+            if existing[0].kind != "owner":
+                raise ConflictError("логин уже занят кассиром")
             already = next((row for row in existing if row.station_id == station_id), None)
             if already is None:
                 row = StationUser(
@@ -939,7 +974,10 @@ def create_owner_account(username: str, password: str, station_ids: list[UUID]) 
     if not unique_ids:
         raise ValidationError("укажите хотя бы одну АГЗС")
     with session() as db:
-        if db.scalar(select(StationUser).where(StationUser.username == cleaned)) is not None:
+        existing_user = db.scalar(select(StationUser).where(StationUser.username == cleaned))
+        if existing_user is not None:
+            if existing_user.kind != "owner":
+                raise ConflictError("логин уже занят кассиром")
             raise ConflictError("владелец с таким логином уже существует")
         for sid in unique_ids:
             if db.get(Station, sid) is None:
@@ -1052,6 +1090,269 @@ def delete_owner_account(username: str) -> None:
         for row in rows:
             db.delete(row)
         db.commit()
+
+
+def list_station_cashiers(station_id: UUID) -> list[StationOwner]:
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        rows = list(
+            db.scalars(
+                select(StationUser)
+                .where(
+                    StationUser.station_id == station_id,
+                    StationUser.kind == "cashier",
+                )
+                .order_by(StationUser.username)
+            ).all()
+        )
+        return [_to_station_owner([row]) for row in rows]
+
+
+def list_cashiers_for_stations(station_ids: list[UUID] | None = None) -> list[StationOwner]:
+    with session() as db:
+        stmt = select(StationUser).where(StationUser.kind == "cashier")
+        if station_ids is not None:
+            if not station_ids:
+                return []
+            stmt = stmt.where(StationUser.station_id.in_(station_ids))
+        rows = list(db.scalars(stmt.order_by(StationUser.username)).all())
+        return [_to_station_owner([row]) for row in rows]
+
+
+def create_station_cashier(station_id: UUID, username: str, password: str) -> StationOwner:
+    cleaned = clean_owner_username(
+        username,
+        get_settings().admin_username,
+        empty_detail="укажите логин кассира",
+    )
+    require_user_password(password, "кассира")
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        if db.scalar(select(StationUser).where(StationUser.username == cleaned)) is not None:
+            raise ConflictError("пользователь с таким логином уже существует")
+        row = StationUser(
+            id=uuid4(),
+            station_id=station_id,
+            username=cleaned,
+            password_hash=hash_password(password),
+            kind="cashier",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return _to_station_owner([row])
+
+
+def update_station_cashier(
+    station_id: UUID,
+    username: str,
+    *,
+    password: str | None = None,
+    new_station_id: UUID | None = None,
+) -> StationOwner:
+    cleaned = username.strip().lower()
+    if not cleaned:
+        raise NotFoundError("кассир не найден")
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        row = db.scalar(
+            select(StationUser).where(
+                StationUser.station_id == station_id,
+                StationUser.username == cleaned,
+                StationUser.kind == "cashier",
+            )
+        )
+        if row is None:
+            raise NotFoundError("кассир не найден")
+        if password is not None:
+            require_user_password(password, "кассира")
+            row.password_hash = hash_password(password)
+        if new_station_id is not None:
+            if db.get(Station, new_station_id) is None:
+                raise NotFoundError("Station not found")
+            row.station_id = new_station_id
+        db.commit()
+        db.refresh(row)
+        return _to_station_owner([row])
+
+
+def delete_station_cashier(station_id: UUID, username: str) -> None:
+    cleaned = username.strip().lower()
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        row = db.scalar(
+            select(StationUser).where(
+                StationUser.station_id == station_id,
+                StationUser.username == cleaned,
+                StationUser.kind == "cashier",
+            )
+        )
+        if row is None:
+            raise NotFoundError("кассир не найден")
+        db.delete(row)
+        db.commit()
+
+
+def _to_station_shift(row: StationShiftRecord) -> StationShift:
+    return StationShift(
+        id=row.id,
+        station_id=row.station_id,
+        status=row.status,
+        opened_by=row.opened_by,
+        opened_at=row.opened_at,
+        closed_by=row.closed_by,
+        closed_at=row.closed_at,
+        opening_tank_liters=row.opening_tank_liters,
+        closing_tank_liters=row.closing_tank_liters,
+        opening_tanks=load_shift_tanks(row.opening_tanks_json),
+        closing_tanks=load_shift_tanks(row.closing_tanks_json),
+        receipts_liters=float(row.receipts_liters or 0.0),
+        dispensed_liters=float(row.dispensed_liters or 0.0),
+        dispense_count=int(row.dispense_count or 0),
+        total_amount_kzt=row.total_amount_kzt,
+        columns=load_shift_columns(row.columns_summary_json),
+        tank_delta_liters=row.tank_delta_liters,
+        discrepancy_liters=row.discrepancy_liters,
+        note=row.note,
+    )
+
+
+def list_shifts(station_id: UUID, *, limit: int = 50) -> list[StationShift]:
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        rows = list(
+            db.scalars(
+                select(StationShiftRecord)
+                .where(StationShiftRecord.station_id == station_id)
+                .order_by(StationShiftRecord.opened_at.desc())
+                .limit(max(1, limit))
+            ).all()
+        )
+        return [_to_station_shift(row) for row in rows]
+
+
+def get_shift(station_id: UUID, shift_id: UUID) -> StationShift:
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        row = db.scalar(
+            select(StationShiftRecord).where(
+                StationShiftRecord.id == shift_id,
+                StationShiftRecord.station_id == station_id,
+            )
+        )
+        if row is None:
+            raise NotFoundError("смена не найдена")
+        return _to_station_shift(row)
+
+
+def get_open_shift(station_id: UUID) -> StationShift | None:
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        row = db.scalar(
+            select(StationShiftRecord)
+            .where(
+                StationShiftRecord.station_id == station_id,
+                StationShiftRecord.status == "open",
+            )
+            .order_by(StationShiftRecord.opened_at.desc())
+        )
+        return None if row is None else _to_station_shift(row)
+
+
+def open_shift(
+    station_id: UUID,
+    *,
+    opened_by: str,
+    opened_at: datetime,
+    opening_tank_liters: float | None,
+    opening_tanks: list[ShiftTankSnapshot],
+    note: str | None = None,
+) -> StationShift:
+    cleaned_note = clean_optional_text(note)
+    with session() as db:
+        if db.scalar(select(Station).where(Station.id == station_id).with_for_update()) is None:
+            raise NotFoundError("Station not found")
+        existing = db.scalar(
+            select(StationShiftRecord).where(
+                StationShiftRecord.station_id == station_id,
+                StationShiftRecord.status == "open",
+            )
+        )
+        if existing is not None:
+            raise ConflictError("на этой АГЗС уже открыта смена")
+        row = StationShiftRecord(
+            id=uuid4(),
+            station_id=station_id,
+            status="open",
+            opened_by=opened_by,
+            opened_at=opened_at,
+            opening_tank_liters=opening_tank_liters,
+            opening_tanks_json=dump_shift_tanks(opening_tanks),
+            note=cleaned_note,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return _to_station_shift(row)
+
+
+def close_shift(
+    station_id: UUID,
+    shift_id: UUID,
+    *,
+    closed_by: str,
+    closed_at: datetime,
+    closing_tank_liters: float | None,
+    closing_tanks: list[ShiftTankSnapshot],
+    receipts_liters: float,
+    dispensed_liters: float,
+    dispense_count: int,
+    total_amount_kzt: float | None,
+    columns: list[ShiftColumnSummary],
+    tank_delta_liters: float | None,
+    discrepancy_liters: float | None,
+    note: str | None = None,
+) -> StationShift:
+    cleaned_note = clean_optional_text(note)
+    with session() as db:
+        if db.get(Station, station_id) is None:
+            raise NotFoundError("Station not found")
+        row = db.scalar(
+            select(StationShiftRecord)
+            .where(
+                StationShiftRecord.id == shift_id,
+                StationShiftRecord.station_id == station_id,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            raise NotFoundError("смена не найдена")
+        if row.status != "open":
+            raise ConflictError("смена уже закрыта")
+        row.status = "closed"
+        row.closed_by = closed_by
+        row.closed_at = closed_at
+        row.closing_tank_liters = closing_tank_liters
+        row.closing_tanks_json = dump_shift_tanks(closing_tanks)
+        row.receipts_liters = receipts_liters
+        row.dispensed_liters = dispensed_liters
+        row.dispense_count = dispense_count
+        row.total_amount_kzt = total_amount_kzt
+        row.columns_summary_json = dump_shift_columns(columns)
+        row.tank_delta_liters = tank_delta_liters
+        row.discrepancy_liters = discrepancy_liters
+        if cleaned_note is not None:
+            row.note = cleaned_note
+        db.commit()
+        db.refresh(row)
+        return _to_station_shift(row)
 
 
 def _enum_str(value: object) -> str:
@@ -1366,6 +1667,7 @@ def import_memory_snapshot(data: dict) -> None:
     devices_data = data.get("devices") if isinstance(data.get("devices"), dict) else {}
     owners_data = data.get("owners") if isinstance(data.get("owners"), list) else []
     batches_data = data.get("batches") if isinstance(data.get("batches"), list) else []
+    shifts_data = data.get("shifts") if isinstance(data.get("shifts"), list) else []
 
     books_by_key: dict[tuple[UUID, UUID], dict] = {}
     for b in (devices_data or {}).get("books") or []:
@@ -1445,6 +1747,7 @@ def import_memory_snapshot(data: dict) -> None:
         for owner in owners_data or []:
             if not isinstance(owner, dict):
                 continue
+            kind = str(owner.get("kind") or "owner")
             station_ids = owner.get("station_ids") or [owner.get("station_id")]
             for raw_sid in station_ids:
                 if not raw_sid:
@@ -1455,8 +1758,47 @@ def import_memory_snapshot(data: dict) -> None:
                         station_id=UUID(str(raw_sid)),
                         username=str(owner["username"]).strip().lower(),
                         password_hash=str(owner["password_hash"]),
-                        kind="owner",
+                        kind=kind,
                     )
                 )
+        for shift in shifts_data or []:
+            if not isinstance(shift, dict) or not shift.get("id") or not shift.get("station_id"):
+                continue
+            opened_at = parse_iso_utc(shift.get("opened_at"))
+            if opened_at is None:
+                continue
+            db.add(
+                StationShiftRecord(
+                    id=UUID(str(shift["id"])),
+                    station_id=UUID(str(shift["station_id"])),
+                    status=str(shift.get("status") or "open"),
+                    opened_by=str(shift.get("opened_by") or ""),
+                    closed_by=None if shift.get("closed_by") is None else str(shift["closed_by"]),
+                    opened_at=opened_at,
+                    closed_at=parse_iso_utc(shift.get("closed_at")),
+                    opening_tank_liters=None
+                    if shift.get("opening_tank_liters") is None
+                    else float(shift["opening_tank_liters"]),
+                    opening_tanks_json=dump_shift_tanks(load_shift_tanks(shift.get("opening_tanks"))),
+                    closing_tank_liters=None
+                    if shift.get("closing_tank_liters") is None
+                    else float(shift["closing_tank_liters"]),
+                    closing_tanks_json=dump_shift_tanks(load_shift_tanks(shift.get("closing_tanks"))),
+                    receipts_liters=float(shift.get("receipts_liters") or 0.0),
+                    dispensed_liters=float(shift.get("dispensed_liters") or 0.0),
+                    dispense_count=int(shift.get("dispense_count") or 0),
+                    total_amount_kzt=None
+                    if shift.get("total_amount_kzt") is None
+                    else float(shift["total_amount_kzt"]),
+                    columns_summary_json=dump_shift_columns(load_shift_columns(shift.get("columns"))),
+                    tank_delta_liters=None
+                    if shift.get("tank_delta_liters") is None
+                    else float(shift["tank_delta_liters"]),
+                    discrepancy_liters=None
+                    if shift.get("discrepancy_liters") is None
+                    else float(shift["discrepancy_liters"]),
+                    note=None if shift.get("note") is None else str(shift["note"]),
+                )
+            )
         _insert_batches_from_snapshot(db, batches_data, skip_existing=False)
         db.commit()

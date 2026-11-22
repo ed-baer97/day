@@ -36,6 +36,10 @@ export function parseRoute(pathname: string): AppRoute {
     route.dashStationId = parts[1] ?? null;
     return route;
   }
+  if (head === "cashier") {
+    route.screen = "cashier";
+    return route;
+  }
   if (head === "map") {
     route.screen = "map";
     if (parts[1] === "station" || parts[1] === "truck") {
@@ -73,6 +77,7 @@ export function routePath(route: AppRoute): string {
   if (route.screen === "dashboard") {
     return route.dashStationId ? `/dashboard/${route.dashStationId}` : "/dashboard";
   }
+  if (route.screen === "cashier") return "/cashier";
   if (route.screen === "map") {
     if (route.mapKind && route.mapId) return `/map/${route.mapKind}/${route.mapId}`;
     return "/map";

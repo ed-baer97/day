@@ -183,6 +183,7 @@ export default function AdminStationsTab({
                   <th>Свободно</th>
                   <th>Датчик и резервуары</th>
                   <th>Колонки (ТРК)</th>
+                  <th>Владельцы</th>
                   <th>Статус</th>
                 </tr>
               </thead>
@@ -191,6 +192,7 @@ export default function AdminStationsTab({
                   const { row, actual, cap, fill, free, live, region: reg, tanksCount, calibratedCount, online } = item;
                   const mode = row.columns_mode ?? "none";
                   const count = row.columns_count ?? 2;
+                  const stationOwners = owners.filter((o) => o.station_ids.includes(row.id));
                   return (
                     <tr
                       key={row.id}
@@ -254,6 +256,19 @@ export default function AdminStationsTab({
                         </span>
                       </td>
                       <td>
+                        {stationOwners.length === 0 ? (
+                          <span className="dash-muted">—</span>
+                        ) : (
+                          <div className="owner-chips">
+                            {stationOwners.map((owner) => (
+                              <span key={owner.username} className="owner-chip">
+                                {owner.username}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td>
                         <span className={`badge ${row.is_active ? "ok" : "warn"}`}>
                           {row.is_active ? "работает" : "скрыта"}
                         </span>
@@ -263,7 +278,7 @@ export default function AdminStationsTab({
                 })}
                 {paged.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="dash-muted">
+                    <td colSpan={8} className="dash-muted">
                       По выбранному фильтру заправок не найдено.
                     </td>
                   </tr>

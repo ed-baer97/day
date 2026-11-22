@@ -60,6 +60,7 @@ def test_postgres_adapter_does_not_import_memory_adapters_or_shelly():
         "app.services.catalog",
         "app.services.device_ingest",
         "app.services.station_accounts",
+        "app.services.shift_book",
         "app.services.memory_account",
         "app.services.shelly_link",
     )

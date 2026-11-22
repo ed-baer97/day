@@ -1,0 +1,598 @@
+/* ── Мобильная адаптация (ПК-версия > 768px не затрагивается) ── */
+
+@media (max-width: 768px) {
+  .app,
+  .page.dash-page,
+  .landing,
+  .landing-page {
+    overflow-x: hidden;
+  }
+
+  .page.dash-page,
+  .dash-table-wrap,
+  .admin-tabs,
+  .admin-nav,
+  .nav-pages,
+  .landing-region-chips {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .btn:not(.small) {
+    min-height: 42px;
+  }
+
+  .dash {
+    padding: 14px 12px calc(32px + env(safe-area-inset-bottom));
+  }
+  .dash.admin {
+    padding: 12px 10px calc(32px + env(safe-area-inset-bottom));
+  }
+  .dash-card {
+    padding: 12px 12px 10px;
+    border-radius: 14px;
+  }
+
+  /* ── Topbar ── */
+  .topbar {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .brand {
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 8px;
+  }
+  .brand > div {
+    min-width: 0;
+  }
+  .brand .mark {
+    width: 28px;
+    height: 28px;
+  }
+  .brand h1 {
+    font-size: 16px;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .brand span {
+    display: block;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar-actions {
+    gap: 6px;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+  }
+  .topbar-actions .who {
+    display: none;
+  }
+  .topbar-actions .btn.small {
+    padding: 6px 8px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .nav-pages {
+    order: 3;
+    width: 100%;
+    display: flex;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .nav-pages::-webkit-scrollbar,
+  .landing-region-chips::-webkit-scrollbar,
+  .admin-tabs::-webkit-scrollbar,
+  .admin-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .nav-page {
+    flex: 1 0 auto;
+    text-align: center;
+    white-space: nowrap;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .quick-jumper {
+    order: 4;
+    width: 100%;
+  }
+  .quick-jumper-btn {
+    width: 100%;
+    justify-content: space-between;
+    padding: 8px 12px;
+  }
+  .quick-jumper-hint {
+    display: inline;
+  }
+  .quick-jumper-popover {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    top: auto;
+    width: auto;
+    max-height: 70dvh;
+  }
+
+  /* ── Публичная витрина (Landing) ── */
+  .landing-nav {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .landing-brand {
+    min-width: 0;
+    gap: 8px;
+  }
+  .landing-brand .kicker {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+  }
+  .landing-nav-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .landing-shell {
+    width: calc(100% - 20px);
+    padding: 96px 0 calc(28px + env(safe-area-inset-bottom));
+  }
+  .landing-top {
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .landing-top h1 {
+    font-size: 26px;
+  }
+  .landing-stats {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .landing-stats > div {
+    min-width: 0;
+    padding: 8px 10px;
+  }
+  .landing-stats strong {
+    font-size: 13px;
+    white-space: normal;
+  }
+  .landing-region-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+  .landing-chip {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .landing-toolbar {
+    gap: 8px;
+  }
+  .landing-toolbar .level-search,
+  .landing-toolbar .mini-tabs,
+  .landing-toolbar .level-select {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+  .landing-toolbar .mini-tabs {
+    display: flex;
+  }
+  .landing-toolbar .mini-tabs button {
+    flex: 1;
+  }
+  .login-layer {
+    padding: 12px;
+  }
+  .login-card {
+    padding: 18px;
+    border-radius: 18px;
+    max-height: 92dvh;
+    overflow: auto;
+  }
+  .login-card h2 {
+    font-size: 22px;
+  }
+  .login-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  /* ── Дашборд, KPI, фильтры и списки АГЗС ── */
+  .dash-hero {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .dash-hero h2 {
+    font-size: 22px;
+  }
+  .dash-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .dash-kpi {
+    padding: 12px;
+    border-radius: 14px;
+  }
+  .dash-kpi strong {
+    font-size: 20px;
+  }
+  .dash-kpi span,
+  .dash-kpi em {
+    font-size: 11px;
+  }
+
+  .period-switch {
+    width: 100%;
+    align-items: flex-start;
+  }
+  .period-switch .mini-tabs {
+    width: 100%;
+    display: flex;
+  }
+  .period-switch .mini-tabs button {
+    flex: 1;
+    padding: 7px 6px;
+    font-size: 12px;
+  }
+  .period-nav {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .period-date {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .st-nav-top {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .st-view-controls .mini-tabs {
+    width: 100%;
+    display: flex;
+  }
+  .st-view-controls .mini-tabs button {
+    flex: 1;
+  }
+  .st-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .st-search-input {
+    flex: none;
+    width: 100%;
+  }
+  .st-select {
+    width: 100%;
+  }
+  .st-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding: 12px;
+  }
+  .st-row-fill {
+    display: flex;
+    grid-column: 1 / -1;
+  }
+  .st-row-badges {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .st-row-num,
+  .st-row-chevron {
+    display: none;
+  }
+  .st-card-grid,
+  .col-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .dash-charts {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .region-group-head {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .pagination-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .pagination-buttons {
+    justify-content: center;
+  }
+
+  /* ── Карточка АГЗС, вкладки и отчёт по колонкам ── */
+  .st-detail-nav {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .st-Detail-switcher {
+    width: 100%;
+  }
+  .st-Detail-switcher .st-select {
+    flex: 1;
+    min-width: 0;
+  }
+  .st-detail-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .st-head {
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .st-head h2 {
+    font-size: 22px;
+    line-height: 1.15;
+  }
+  .st-head .st-row-badges {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .admin-tabs {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 6px;
+    padding-bottom: 4px;
+    margin-bottom: 14px !important;
+  }
+  .admin-tabs button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .st-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .gauge {
+    gap: 12px;
+    align-items: center;
+  }
+  .gauge-bar {
+    width: 36px;
+    height: 120px;
+    flex: none;
+  }
+  .gauge-meta strong {
+    font-size: 26px;
+  }
+  .fiscal-chain {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .fiscal-step {
+    padding: 10px 12px;
+  }
+  .fiscal-link {
+    font-size: 11px;
+    line-height: 1;
+  }
+  .dash-table-wrap {
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+  .dash-table {
+    font-size: 12px;
+  }
+  .dash-table th,
+  .dash-table td {
+    padding: 8px 10px;
+  }
+
+  /* ── Рабочее место кассира и отчёт смены ── */
+  .cashier-workspace {
+    gap: 12px;
+  }
+  .shift-banner-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .shift-banner-controls {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 8px;
+  }
+  .shift-note-input {
+    min-width: 0;
+    width: 100%;
+    padding: 10px 12px;
+  }
+  .shift-banner-controls .btn {
+    width: 100%;
+    min-height: 44px;
+    font-size: 14px;
+  }
+  .shift-report-sheet .card-head-inline {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .shift-report-sheet .no-print {
+    width: 100%;
+  }
+  .shift-report-sheet .no-print .btn {
+    flex: 1 1 auto;
+  }
+  .stage-vol strong {
+    font-size: 22px;
+  }
+
+  /* ── Админка и формы ── */
+  .admin-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 6px;
+    padding: 6px;
+  }
+  .admin-nav button {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 8px 12px;
+  }
+  .admin-nav button small {
+    display: none;
+  }
+  .admin-toolbar {
+    margin-bottom: 12px;
+    gap: 8px;
+  }
+  .admin-toolbar h2 {
+    font-size: 22px;
+  }
+  .admin-backbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .admin-editor-head-actions {
+    flex-wrap: wrap;
+  }
+  .admin-form,
+  .admin-editor .admin-form {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .admin-form .span-2,
+  .admin-form .span-3 {
+    grid-column: auto;
+  }
+  .admin-form input,
+  .admin-form select {
+    width: 100%;
+    min-width: 0;
+  }
+  .admin-actions {
+    flex-wrap: wrap;
+  }
+  .inline-resolve-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .inline-resolve-form input,
+  .inline-resolve-form select {
+    min-width: 0;
+    width: 100%;
+  }
+  .tank-tool-inline label {
+    flex: 1 1 120px;
+  }
+  .tank-tool-inline input {
+    width: 100%;
+    min-width: 0;
+  }
+  .owner-checklist {
+    grid-template-columns: 1fr;
+  }
+  .edge-detect-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  /* ── Карта, модалки и уведомления ── */
+  .map-nav-drawer {
+    left: 10px;
+    right: 10px;
+    top: 10px;
+    width: auto;
+    max-height: 44dvh;
+  }
+  .map-nav-drawer.collapsed {
+    right: auto;
+    width: auto;
+  }
+  .map-hud.map-hud-right {
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: 10px;
+    width: auto;
+    max-height: 46dvh;
+  }
+  .map-popup {
+    max-height: 44dvh;
+    padding: 12px 14px;
+  }
+  .confirm-modal {
+    width: 100%;
+    padding: 18px;
+  }
+  .toasts {
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  .toast {
+    max-width: none;
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .landing-shell {
+    padding-top: 108px;
+  }
+  .landing-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+  .landing-stats > div:nth-child(3) {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .level-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .bal-triad {
+    grid-template-columns: 1fr;
+  }
+  .topbar-actions .btn.small {
+    padding: 6px 7px;
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 360px) {
+  .dash-kpis {
+    grid-template-columns: 1fr;
+  }
+  .st-grid-metrics {
+    grid-template-columns: 1fr;
+  }
+}

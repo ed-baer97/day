@@ -105,7 +105,7 @@ export async function loadStationSpan(stationId: string, range: TimeRange): Prom
     ? await Promise.all(
         devices.map((device) =>
           api
-            .tankIngestState(device.id)
+            .stationTankState(stationId, device.id)
             .then((state) => state.receipts_liters || 0)
             .catch(() => 0)
         )

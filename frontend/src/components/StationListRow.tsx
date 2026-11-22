@@ -82,6 +82,7 @@ export default function StationListRow({
           <span>{live?.measuredAt ? dateTime(live.measuredAt) : "замера нет"}</span>
         </div>
         <div className="st-row-badges">
+          {!station.is_active ? <span className="badge warn">скрыта</span> : null}
           {hasTanks && live ? (
             <SensorStatusBadge level={live} />
           ) : (

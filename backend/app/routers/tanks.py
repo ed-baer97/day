@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Response
 
 from app.auth import Principal, require_admin, require_principal
 from app.routers.deps import device_to_out, require_existing_station_access
+from app.schemas.ingest import TankIngestState
 from app.schemas.station import (
     DispenseReadingOut,
     LevelReadingOut,
@@ -25,6 +26,7 @@ from app.services.account import (
     list_tank_devices,
     register_tank,
     rotate_tank_token,
+    tank_state,
     update_tank_device,
 )
 from app.services.level_journal import published_levels
@@ -102,6 +104,17 @@ def rotate_station_device_token(
     return device_to_out(rotate_tank_token(station_id, tank_id))
 
 
+@router.get("/devices/{tank_id}/state", response_model=TankIngestState)
+def get_station_device_state(
+    station_id: UUID,
+    tank_id: UUID,
+    principal: Principal = Depends(require_principal),
+) -> TankIngestState:
+    require_existing_station_access(station_id, principal)
+    get_tank_device(station_id, tank_id)
+    return tank_state(tank_id)
+
+
 @router.get("/devices/{tank_id}/levels", response_model=list[LevelReadingOut])
 def list_device_levels(
     station_id: UUID,
@@ -141,9 +154,10 @@ def list_station_dispenses(
     station_id: UUID,
     principal: Principal = Depends(require_principal),
     since: datetime | None = None,
+    until: datetime | None = None,
     limit: int = 500,
 ) -> list[DispenseReadingOut]:
     """Журнал завершённых наливов ТРК (УЗГС-01 / АСКА-02) по станции."""
     require_existing_station_access(station_id, principal)
     capped = max(1, min(limit, 5000))
-    return list_dispense_records(station_id, since=since, limit=capped)
+    return list_dispense_records(station_id, since=since, until=until, limit=capped)

@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { isOwner } from "../access";
+import { useAuth } from "../auth";
 import { useCatalog } from "../catalog";
 import { dateTime, liters, REGIONS, shortStationName, stationRegion } from "../format";
 import {
@@ -12,6 +14,7 @@ import {
 import { chartOf } from "../sensorDay";
 import { BarChart, LineChart } from "./Charts";
 import PeriodSwitch from "./PeriodSwitch";
+import StationCashiersCard from "./StationCashiersCard";
 import StationDetailPage from "./StationDetailPage";
 import StationListRow from "./StationListRow";
 
@@ -49,12 +52,14 @@ export default function Dashboard({
 }
 
 function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
+  const { session } = useAuth();
+  const owner = isOwner(session);
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
   const { range, historyLoading } = useViewPeriod();
   const stations = useMemo(
-    () => catalog.stations.filter((row) => row.is_active),
-    [catalog.stations]
+    () => (owner ? catalog.stations : catalog.stations.filter((row) => row.is_active)),
+    [catalog.stations, owner]
   );
   const day = useSensorDay(stations.map((row) => row.id));
 
@@ -267,8 +272,14 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
     <div className="dash">
       <header className="dash-hero">
         <div>
-          <p className="kicker">Внутренний диспетчерский контур</p>
-          <h2>Контроль сети АГЗС по датчикам ({totals.all})</h2>
+          <p className="kicker">
+            {owner ? "Кабинет владельца АГЗС" : "Внутренний диспетчерский контур"}
+          </p>
+          <h2>
+            {owner
+              ? `Мои заправки (${totals.all})`
+              : `Контроль сети АГЗС по датчикам (${totals.all})`}
+          </h2>
         </div>
         <PeriodSwitch />
       </header>
@@ -665,6 +676,16 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
           </div>
         ) : null}
       </section>
+
+      {owner ? (
+        <div style={{ marginTop: 18 }}>
+          <StationCashiersCard
+            stations={stations}
+            canManage
+            onOpenStation={onOpenStation}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

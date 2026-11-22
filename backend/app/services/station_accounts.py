@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from app.config import get_settings
 from app.domain.entities import StationOwner
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
-from app.services.account_helpers import clean_owner_username, require_owner_password
+from app.services.account_helpers import clean_owner_username, require_owner_password, require_user_password
 from app.services.memory_state import persist, register_store
 from app.services.passwords import hash_password, verify_password
 
@@ -41,6 +41,8 @@ def grant_owner(station_id: UUID, username: str, password: str) -> StationOwner:
     with _lock:
         existing = next((row for row in _owners if row.username == cleaned), None)
         if existing is not None:
+            if existing.kind != "owner":
+                raise ConflictError("логин уже занят кассиром")
             if station_id not in existing.stations():
                 existing.station_ids = [*existing.stations(), station_id]
             _sync(existing)
@@ -101,7 +103,10 @@ def create_owner_account(username: str, password: str, station_ids: list[UUID]) 
     if not unique_ids:
         raise ValidationError("укажите хотя бы одну АГЗС")
     with _lock:
-        if any(row.username == cleaned for row in _owners):
+        existing = next((row for row in _owners if row.username == cleaned), None)
+        if existing is not None:
+            if existing.kind != "owner":
+                raise ConflictError("логин уже занят кассиром")
             raise ConflictError("владелец с таким логином уже существует")
         owner = StationOwner(
             id=uuid4(),
@@ -174,6 +179,133 @@ def delete_owner_account(username: str) -> None:
     persist()
 
 
+def _copy_account(row: StationOwner) -> StationOwner:
+    return StationOwner(
+        id=row.id,
+        station_id=row.station_id,
+        username=row.username,
+        password_hash=row.password_hash,
+        kind=row.kind,
+        station_ids=row.stations(),
+    )
+
+
+def list_station_cashiers(station_id: UUID) -> list[StationOwner]:
+    with _lock:
+        rows = [
+            _copy_account(row)
+            for row in _owners
+            if row.kind == "cashier" and station_id in row.stations()
+        ]
+        rows.sort(key=lambda row: row.username)
+        return rows
+
+
+def list_cashiers_for_stations(station_ids: list[UUID] | None = None) -> list[StationOwner]:
+    allowed = None if station_ids is None else set(station_ids)
+    with _lock:
+        rows = [
+            _copy_account(row)
+            for row in _owners
+            if row.kind == "cashier" and (allowed is None or row.station_id in allowed)
+        ]
+        rows.sort(key=lambda row: row.username)
+        return rows
+
+
+def create_station_cashier(station_id: UUID, username: str, password: str) -> StationOwner:
+    cleaned = clean_owner_username(
+        username,
+        get_settings().admin_username,
+        empty_detail="укажите логин кассира",
+    )
+    require_user_password(password, "кассира")
+    with _lock:
+        if any(row.username == cleaned for row in _owners):
+            raise ConflictError("пользователь с таким логином уже существует")
+        cashier = StationOwner(
+            id=uuid4(),
+            station_id=station_id,
+            username=cleaned,
+            password_hash=hash_password(password),
+            kind="cashier",
+            station_ids=[station_id],
+        )
+        _owners.append(cashier)
+        result = _copy_account(cashier)
+    persist()
+    return result
+
+
+def update_station_cashier(
+    station_id: UUID,
+    username: str,
+    *,
+    password: str | None = None,
+    new_station_id: UUID | None = None,
+) -> StationOwner:
+    cleaned = username.strip().lower()
+    if not cleaned:
+        raise NotFoundError("кассир не найден")
+    with _lock:
+        cashier = next(
+            (
+                row
+                for row in _owners
+                if row.username == cleaned and row.kind == "cashier" and row.station_id == station_id
+            ),
+            None,
+        )
+        if cashier is None:
+            raise NotFoundError("кассир не найден")
+        if password is not None:
+            require_user_password(password, "кассира")
+            cashier.password_hash = hash_password(password)
+        if new_station_id is not None:
+            cashier.station_id = new_station_id
+            cashier.station_ids = [new_station_id]
+        result = _copy_account(cashier)
+    persist()
+    return result
+
+
+def delete_station_cashier(station_id: UUID, username: str) -> None:
+    cleaned = username.strip().lower()
+    with _lock:
+        before = len(_owners)
+        _owners[:] = [
+            row
+            for row in _owners
+            if not (row.username == cleaned and row.kind == "cashier" and row.station_id == station_id)
+        ]
+        if len(_owners) == before:
+            raise NotFoundError("кассир не найден")
+    persist()
+
+
+def remove_station_from_accounts(station_id: UUID) -> None:
+    """Удаляет привязку удалённой АГЗС из владельцев и кассиров (как ON DELETE CASCADE)."""
+    changed = False
+    with _lock:
+        kept: list[StationOwner] = []
+        for row in _owners:
+            stations = row.stations()
+            if station_id not in stations:
+                kept.append(row)
+                continue
+            changed = True
+            remaining = [sid for sid in stations if sid != station_id]
+            if not remaining:
+                continue
+            row.station_ids = remaining
+            _sync(row)
+            kept.append(row)
+        if changed:
+            _owners[:] = kept
+    if changed:
+        persist()
+
+
 def authenticate_owner(username: str, password: str) -> StationOwner | None:
     cleaned = username.strip().lower()
     if not cleaned:
@@ -183,7 +315,7 @@ def authenticate_owner(username: str, password: str) -> StationOwner | None:
         if owner is None:
             return None
         password_hash = owner.password_hash
-        found = owner
+        found = _copy_account(owner)
     if not verify_password(password, password_hash):
         return None
     return found
@@ -222,7 +354,7 @@ def restore_snapshot(rows: object) -> None:
                 station_id=station_ids[0],
                 username=str(row["username"]),
                 password_hash=str(row["password_hash"]),
-                kind="owner",
+                kind=str(row.get("kind") or "owner"),
                 station_ids=station_ids,
             )
         )
@@ -238,14 +370,20 @@ __all__ = [
     "authenticate_owner",
     "create_owner",
     "create_owner_account",
+    "create_station_cashier",
     "delete_owner_account",
+    "delete_station_cashier",
     "detach_owner_station",
     "grant_owner",
     "has_owner",
     "list_all_owners",
+    "list_cashiers_for_stations",
     "list_owners",
+    "list_station_cashiers",
+    "remove_station_from_accounts",
     "reset_station_accounts",
     "restore_snapshot",
     "snapshot",
     "update_owner_account",
+    "update_station_cashier",
 ]

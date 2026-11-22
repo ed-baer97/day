@@ -5,7 +5,7 @@ import { liters, stationRegion } from "../format";
 import { isLowFill, type LiveLevel, SensorStatusBadge } from "../liveLevels";
 import type { AdminSession } from "../session";
 
-export type AppScreen = "landing" | "map" | "dashboard" | "admin" | "supply";
+export type AppScreen = "landing" | "map" | "dashboard" | "admin" | "supply" | "cashier";
 
 export interface NetworkStats {
   litersSum: number;
@@ -20,6 +20,7 @@ export default function Topbar({
   session,
   admin,
   isOwner,
+  isCashier,
   isStationSide,
   screen,
   stations,
@@ -37,6 +38,7 @@ export default function Topbar({
   session: AdminSession;
   admin: boolean;
   isOwner: boolean;
+  isCashier: boolean;
   isStationSide: boolean;
   screen: AppScreen;
   stations: CatalogStation[];
@@ -102,25 +104,33 @@ export default function Topbar({
         <div>
           <h1>Цифровой след LPG</h1>
           <span>
-            {isOwner
-              ? `Владелец · ${stations.length === 1 ? (stations[0]?.name ?? "своя заправка") : `${stations.length} АГЗС`}`
-              : `Диспетчерская платформы · ${stations.length} АГЗС`}
+            {isCashier
+              ? `Кассир · ${stations[0]?.name ?? "смена"}`
+              : isOwner
+                ? `Владелец · ${stations.length === 1 ? (stations[0]?.name ?? "своя заправка") : `${stations.length} АГЗС`}`
+                : `Диспетчерская платформы · ${stations.length} АГЗС`}
           </span>
         </div>
       </div>
 
       <nav className="nav-pages" aria-label="Разделы">
-        <button
-          type="button"
-          className={`nav-page${screen === "dashboard" ? " active" : ""}`}
-          onClick={onGoHomeDashboard}
-        >
-          {isStationSide
-            ? stations.length > 1
-              ? "Мои АГЗС"
-              : "Моя АГЗС"
-            : "Дашборд"}
-        </button>
+        {isCashier ? (
+          <button
+            type="button"
+            className={`nav-page${screen === "cashier" ? " active" : ""}`}
+            onClick={() => onSelectPage("cashier")}
+          >
+            Смена и колонки
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={`nav-page${screen === "dashboard" ? " active" : ""}`}
+            onClick={onGoHomeDashboard}
+          >
+            {isOwner ? "Мои АГЗС" : "Дашборд"}
+          </button>
+        )}
         {isStationSide ? null : (
           <button
             type="button"
@@ -150,6 +160,7 @@ export default function Topbar({
         ) : null}
       </nav>
 
+      {isCashier ? null : (
       <div className="quick-jumper" ref={quickRef}>
         <button
           type="button"
@@ -261,10 +272,15 @@ export default function Topbar({
           </div>
         ) : null}
       </div>
+      )}
 
       <div className="topbar-actions">
         <span className="who">
-          {isOwner ? `владелец ${session.username}` : `админ ${session.username}`}
+          {isCashier
+            ? `кассир ${session.username}`
+            : isOwner
+              ? `владелец ${session.username}`
+              : `админ ${session.username}`}
         </span>
         <button type="button" className="btn secondary small" onClick={() => onSelectPage("landing")}>
           Публичная витрина

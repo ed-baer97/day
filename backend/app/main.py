@@ -14,12 +14,14 @@ from app.routers import (
     auth,
     balance,
     batches,
+    cashiers,
     events,
     ingest,
     map as map_router,
     owners,
     public,
     shelly,
+    shifts,
     station_owners,
     stations,
     tanks,
@@ -84,9 +86,11 @@ def create_app() -> FastAPI:
 
     prefix = settings.api_prefix
     admin_guard = [Depends(require_admin)]
-    # Станции и резервуары: admin или владелец своей АГЗС (проверка внутри роутеров).
+    # Станции, резервуары, кассиры и смены: проверка прав внутри роутеров.
     app.include_router(stations.router, prefix=prefix, dependencies=[Depends(require_principal)])
     app.include_router(tanks.router, prefix=prefix, dependencies=[Depends(require_principal)])
+    app.include_router(cashiers.router, prefix=prefix, dependencies=[Depends(require_principal)])
+    app.include_router(shifts.router, prefix=prefix, dependencies=[Depends(require_principal)])
     app.include_router(shelly.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(station_owners.router, prefix=prefix, dependencies=admin_guard)
     app.include_router(owners.router, prefix=prefix, dependencies=admin_guard)

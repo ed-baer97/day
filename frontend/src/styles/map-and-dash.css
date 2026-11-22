@@ -508,9 +508,16 @@
   cursor: default;
 }
 .admin-level-log-head .period-switch,
-.st-detail-actions .period-switch {
+.st-detail-actions .period-switch,
+.column-report-period .period-switch {
   align-items: flex-start;
   margin-top: 8px;
+}
+.column-report-period {
+  margin: 4px 0 14px;
+}
+.column-report-period .period-nav {
+  justify-content: flex-start;
 }
 .dash-section {
   margin-bottom: 28px;

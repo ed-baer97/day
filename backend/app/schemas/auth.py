@@ -8,6 +8,10 @@ from app.domain.access import ROLE_ADMIN
 from app.schemas.station import LevelReadingOut
 
 __all__ = [
+    "CashierCreate",
+    "CashierCreated",
+    "CashierOut",
+    "CashierUpdate",
     "LevelReadingOut",
     "LoginIn",
     "OwnerAccountCreate",
@@ -71,3 +75,24 @@ class OwnerAccountCreated(OwnerAccountOut):
 class OwnerAccountUpdate(BaseModel):
     station_ids: list[UUID] | None = None
     password: str | None = Field(default=None, min_length=6, max_length=128)
+
+
+class CashierCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class CashierUpdate(BaseModel):
+    password: str | None = Field(default=None, min_length=6, max_length=128)
+    station_id: UUID | None = None
+
+
+class CashierOut(BaseModel):
+    id: UUID
+    station_id: UUID
+    username: str
+    kind: str = "cashier"
+
+
+class CashierCreated(CashierOut):
+    password: str

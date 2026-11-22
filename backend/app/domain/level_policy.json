@@ -11,5 +11,7 @@
   "poll_seconds": 15,
   "sensor_stale_seconds": 60,
   "role_admin": "admin",
-  "role_station": "station"
+  "role_station": "station",
+  "role_owner": "owner",
+  "role_cashier": "cashier"
 }
