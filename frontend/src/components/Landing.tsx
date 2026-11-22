@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { isAdmin, isCashier } from "../access";
+import { entryLabelFor, sessionCapabilities } from "../access";
 import { useAuth } from "../auth";
 import type { AdminSession } from "../session";
 import { dateTime, liters, percentLabel, REGIONS, stationRegion } from "../format";
@@ -165,12 +165,13 @@ export default function Landing({ onEnter }: { onEnter: (session?: AdminSession 
             </button>
             {session ? (
               <>
-                <button type="button" className="btn small" onClick={() => onEnter(session)}>
-                  {isAdmin(session)
-                    ? "Диспетчерская"
-                    : isCashier(session)
-                      ? "Рабочее место кассира"
-                      : "Кабинет"}
+                <button
+                  type="button"
+                  className="btn small"
+                  disabled={!sessionCapabilities(session).knownRole}
+                  onClick={() => onEnter(session)}
+                >
+                  {entryLabelFor(session)}
                 </button>
                 <button type="button" className="btn secondary small" onClick={logout}>
                   Выйти

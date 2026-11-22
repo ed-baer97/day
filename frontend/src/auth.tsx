@@ -1,7 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { roleOf } from "./access";
 import { api } from "./api/client";
-import { onSessionExpired, readSession, writeSession, type AdminSession } from "./session";
+import {
+  normalizeSession,
+  onSessionExpired,
+  readSession,
+  writeSession,
+  type AdminSession,
+} from "./session";
 
 type AuthApi = {
   session: AdminSession | null;
@@ -15,7 +20,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AdminSession | null>(() => readSession());
 
   const login = useCallback(async (username: string, password: string) => {
-    const next = await api.login(username, password);
+    const raw = await api.login(username, password);
+    const next = normalizeSession(raw);
+    if (!next) throw new Error("Некорректный ответ авторизации");
     writeSession(next);
     setSession(next);
     return next;
@@ -37,18 +44,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .me()
       .then((me) => {
         if (!live) return;
-        const stationIds = Array.isArray(me.station_ids)
-          ? me.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
-          : me.station_id
-            ? [me.station_id]
-            : current.station_ids ?? [];
-        const next: AdminSession = {
+        const next = normalizeSession({
           token: current.token,
           username: me.username,
-          role: roleOf(me.role) ?? current.role,
-          station_id: me.station_id ?? (stationIds.length === 1 ? stationIds[0] : null),
-          station_ids: stationIds,
-        };
+          role: me.role,
+          station_id: me.station_id,
+          station_ids: me.station_ids,
+        });
+        if (!next) return;
         writeSession(next);
         setSession(next);
       })

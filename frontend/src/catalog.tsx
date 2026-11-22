@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { isAdmin } from "./access";
+import { sessionCapabilities } from "./access";
 import { api, type CatalogStation, type CatalogTruck, type StationDraft, type TruckDraft } from "./api/client";
 import { useAuth } from "./auth";
 import { messageOf } from "./errors";
@@ -29,10 +29,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   const removedStationIds = useRef<Set<string>>(new Set());
   const removedTruckIds = useRef<Set<string>>(new Set());
 
-  const admin = isAdmin(session);
+  const caps = sessionCapabilities(session);
   const reload = useCallback(async () => {
     try {
-      const [apiStations, apiTrucks] = admin
+      const [apiStations, apiTrucks] = caps.admin
         ? await Promise.all([api.stations(), api.trucks()])
         : [await api.stations(), [] as CatalogTruck[]];
       setStations(apiStations.filter((row) => !removedStationIds.current.has(row.id)));
@@ -45,10 +45,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     } finally {
       setReady(true);
     }
-  }, [admin]);
+  }, [caps.admin]);
 
   useEffect(() => {
-    if (!session) {
+    if (!session || !caps.knownRole) {
       setStations([]);
       setTrucks([]);
       setReady(false);
@@ -56,7 +56,7 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
       return;
     }
     void reload();
-  }, [session, reload]);
+  }, [session, caps.knownRole, reload]);
 
   const saveStation = useCallback(async (id: string | null, body: StationDraft) => {
     const saved = id ? await api.updateStation(id, body) : await api.createStation(body);

@@ -1,4 +1,4 @@
-import type { AppScreen } from "./layout/Topbar";
+export type AppScreen = "landing" | "map" | "dashboard" | "admin" | "supply" | "cashier";
 
 export type AdminRouteTab = "stations" | "trucks" | "edge" | "reconcile" | "access";
 

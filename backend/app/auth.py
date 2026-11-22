@@ -23,7 +23,12 @@ from app.domain.access import (
     is_admin_role,
     is_cashier_role,
     is_owner_role,
+    may_list_cashiers,
+    may_manage_cashiers,
     may_manage_catalog,
+    may_operate_shift,
+    may_read_station,
+    may_read_station_cashiers,
 )
 
 _lock = threading.Lock()
@@ -245,24 +250,33 @@ def require_principal(authorization: Annotated[str | None, Header()] = None) -> 
 
 
 def require_station_access(station_id: UUID, principal: Principal) -> None:
-    if principal.is_admin or station_id in principal.stations():
+    if may_read_station(principal.role, principal.stations(), station_id):
         return
     raise HTTPException(status_code=403, detail="чужая заправка")
 
 
+def require_cashiers_reader(principal: Principal) -> None:
+    if may_list_cashiers(principal.role):
+        return
+    raise HTTPException(status_code=403, detail="доступ только для владельца или администратора")
+
+
 def require_station_owner(station_id: UUID, principal: Principal) -> None:
+    if may_manage_cashiers(principal.role, principal.stations(), station_id):
+        return
     require_station_access(station_id, principal)
-    if not principal.is_owner:
-        raise HTTPException(status_code=403, detail="это делает владелец заправки")
+    raise HTTPException(status_code=403, detail="это делает владелец заправки")
 
 
 def require_station_cashier(station_id: UUID, principal: Principal) -> None:
+    if may_operate_shift(principal.role, principal.stations(), station_id):
+        return
     require_station_access(station_id, principal)
-    if not principal.is_cashier:
-        raise HTTPException(status_code=403, detail="это делает кассир заправки")
+    raise HTTPException(status_code=403, detail="это делает кассир заправки")
 
 
 def require_station_manager_or_admin(station_id: UUID, principal: Principal) -> None:
+    if may_read_station_cashiers(principal.role, principal.stations(), station_id):
+        return
     require_station_access(station_id, principal)
-    if not (principal.is_admin or principal.is_owner):
-        raise HTTPException(status_code=403, detail="доступ только для администратора или владельца")
+    raise HTTPException(status_code=403, detail="доступ только для администратора или владельца")

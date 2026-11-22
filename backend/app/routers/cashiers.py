@@ -2,14 +2,16 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, Response
 
 from app.auth import (
     Principal,
+    require_cashiers_reader,
     require_principal,
     require_station_manager_or_admin,
     require_station_owner,
 )
+from app.domain.access import may_manage_catalog
 from app.schemas.auth import CashierCreate, CashierCreated, CashierOut, CashierUpdate
 from app.services.account import (
     create_station_cashier,
@@ -36,12 +38,9 @@ def _to_out(cashier) -> CashierOut:
 def list_visible_cashiers(
     principal: Principal = Depends(require_principal),
 ) -> list[CashierOut]:
-    if principal.is_admin:
-        rows = list_cashiers_for_stations(None)
-    elif principal.is_owner:
-        rows = list_cashiers_for_stations(list(principal.stations()))
-    else:
-        raise HTTPException(status_code=403, detail="доступ только для владельца или администратора")
+    require_cashiers_reader(principal)
+    scope = None if may_manage_catalog(principal.role) else list(principal.stations())
+    rows = list_cashiers_for_stations(scope)
     return [_to_out(row) for row in rows]
 
 

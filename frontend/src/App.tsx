@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isAdmin, isCashier, isOwner } from "./access";
+import { screenFor, sessionCapabilities } from "./access";
 import { api, type BatchRecord } from "./api/client";
 import { useAuth } from "./auth";
 import { useCatalog } from "./catalog";
@@ -7,18 +7,18 @@ import AdminPage from "./components/AdminPage";
 import CashierPage from "./components/CashierPage";
 import Dashboard from "./components/Dashboard";
 import Landing from "./components/Landing";
-import Topbar, { type AppScreen, type NetworkStats } from "./layout/Topbar";
+import Topbar, { type NetworkStats } from "./layout/Topbar";
 import { isLowFill, usePublicLevels } from "./liveLevels";
 import MapScreen, { type MapSelection } from "./pages/MapScreen";
 import SupplyPage from "./pages/SupplyPage";
-import { parseRoute, routePath, sameRoute, type AppRoute } from "./route";
+import { emptyRoute, parseRoute, routePath, sameRoute, type AppRoute, type AppScreen } from "./route";
 import { useTheme } from "./theme";
 import type { MapPoint } from "./types";
 
 export default function App() {
   const { theme, toggle } = useTheme();
   const { session, logout } = useAuth();
-  const admin = isAdmin(session);
+  const caps = sessionCapabilities(session);
   const catalog = useCatalog();
   const { byCode } = usePublicLevels();
 
@@ -36,8 +36,8 @@ export default function App() {
     routeRef.current = next;
     setRoute(next);
   }, []);
-  const page = route.screen;
-  const setPage = (screen: AppScreen) => go({ screen });
+  const screen = screenFor(session, route);
+  const setPage = (targetScreen: AppScreen) => go({ screen: targetScreen });
   const dashStationId = route.dashStationId;
   const setDashStationId = (id: string | null) => go({ dashStationId: id, screen: "dashboard" });
   const adminStationId = route.adminStationId;
@@ -77,20 +77,20 @@ export default function App() {
 
   useEffect(() => {
     dashRef.current?.scrollTo(0, 0);
-  }, [dashStationId, page, adminStationId, adminTruckId]);
+  }, [dashStationId, screen, adminStationId, adminTruckId]);
 
   const reloadBatches = useCallback(async () => {
-    if (!admin) return;
+    if (!caps.admin) return;
     try {
       const rows = await api.batches();
       setBatches(rows);
     } catch {
       /* игнорируем при фоновом обновлении */
     }
-  }, [admin]);
+  }, [caps.admin]);
 
   useEffect(() => {
-    if (!admin || page !== "supply") return;
+    if (!caps.admin || screen !== "supply") return;
     let alive = true;
     api
       .batches()
@@ -101,7 +101,7 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [admin, page]);
+  }, [caps.admin, screen]);
 
   function openStationPage(id: string) {
     go({ screen: "dashboard", dashStationId: id });
@@ -125,24 +125,17 @@ export default function App() {
     go({ screen: "admin", adminTab: "trucks", adminTruckId: id, adminStationId: null });
   }
 
-  const owner = isOwner(session);
-  const cashier = isCashier(session);
-  const isStationSide = owner || cashier;
   const stations = useMemo(
-    () => (isStationSide ? catalog.stations : catalog.stations.filter((row) => row.is_active)),
-    [catalog.stations, isStationSide]
+    () => (caps.stationSide ? catalog.stations : catalog.stations.filter((row) => row.is_active)),
+    [catalog.stations, caps.stationSide]
   );
 
   useEffect(() => {
-    if (!session) return;
-    if (cashier && page !== "landing" && page !== "cashier") {
-      go({ screen: "cashier", dashStationId: null }, "replace");
-    } else if (owner && page !== "landing" && page !== "dashboard") {
-      go({ screen: "dashboard" }, "replace");
-    } else if (!admin && !cashier && (page === "admin" || page === "supply" || page === "cashier")) {
-      go({ screen: "dashboard" }, "replace");
+    if (!session || !caps.knownRole) return;
+    if (screen !== route.screen) {
+      go(emptyRoute(screen), "replace");
     }
-  }, [admin, cashier, go, owner, page, session]);
+  }, [caps.knownRole, go, route.screen, screen, session]);
 
   const networkStats = useMemo<NetworkStats>(() => {
     let litersSum = 0;
@@ -198,44 +191,27 @@ export default function App() {
     return [...stationPoints, ...truckPoints];
   }, [stations, catalog.trucks]);
 
-  const screen: AppScreen = cashier
-    ? page === "landing"
-      ? "landing"
-      : "cashier"
-    : !admin && (page === "admin" || page === "supply" || page === "cashier")
-      ? "dashboard"
-      : page;
-
   function goHomeDashboard() {
-    if (cashier) {
-      go({ screen: "cashier", dashStationId: null });
-      return;
-    }
-    go({
-      screen: "dashboard",
-      dashStationId: null,
-    });
+    go(emptyRoute(caps.homeScreen));
   }
 
-  if (page === "landing" || !session) {
+  if (screen === "landing" || !session) {
     return (
       <Landing
         onEnter={(nextSession) => {
-          const targetSession = nextSession ?? session;
-          setPage(isCashier(targetSession) ? "cashier" : "dashboard");
+          const target = sessionCapabilities(nextSession ?? session);
+          if (target.knownRole) go(emptyRoute(target.homeScreen));
         }}
       />
     );
   }
 
+  const canOpenMap = screenFor(session, "map") === "map";
+
   return (
     <div className="app">
       <Topbar
         session={session}
-        admin={admin}
-        isOwner={owner}
-        isCashier={cashier}
-        isStationSide={isStationSide}
         screen={screen}
         stations={stations}
         allStations={catalog.stations}
@@ -245,13 +221,13 @@ export default function App() {
         onGoHomeDashboard={goHomeDashboard}
         onSelectPage={setPage}
         onOpenStationPage={openStationPage}
-        onOpenAdminStation={admin ? openAdminStation : undefined}
+        onOpenAdminStation={caps.admin ? openAdminStation : undefined}
         onOpenAdminRoot={() => {
           go({ screen: "admin", adminTab: "stations", adminStationId: null, adminTruckId: null });
         }}
         onLogout={() => {
           logout();
-          setPage("landing");
+          go(emptyRoute("landing"));
         }}
       />
 
@@ -259,7 +235,7 @@ export default function App() {
         <CashierPage />
       ) : screen === "map" ? (
         <MapScreen
-          admin={admin}
+          admin={caps.admin}
           stations={stations}
           trucks={catalog.trucks}
           byCode={byCode}
@@ -270,8 +246,8 @@ export default function App() {
           onSetMapHudTab={setMapHudTab}
           onSelect={setSelection}
           onOpenStationPage={openStationPage}
-          onOpenAdminStation={admin ? openAdminStation : undefined}
-          onOpenAdminTruck={admin ? openAdminTruck : undefined}
+          onOpenAdminStation={caps.admin ? openAdminStation : undefined}
+          onOpenAdminTruck={caps.admin ? openAdminTruck : undefined}
         />
       ) : screen === "supply" ? (
         <main className="page dash-page" ref={dashRef}>
@@ -333,9 +309,9 @@ export default function App() {
                 "push"
               )
             }
-            onOpenStationDashboard={isStationSide ? undefined : openStationPage}
-            onOpenStationMap={isStationSide ? undefined : openStationOnMap}
-            onOpenTruckMap={isStationSide ? undefined : openTruckOnMap}
+            onOpenStationDashboard={caps.admin ? openStationPage : undefined}
+            onOpenStationMap={canOpenMap ? openStationOnMap : undefined}
+            onOpenTruckMap={canOpenMap ? openTruckOnMap : undefined}
           />
         </main>
       ) : (
@@ -343,10 +319,10 @@ export default function App() {
           <Dashboard
             stationId={dashStationId}
             onOpenStation={setDashStationId}
-            onOpenAdminStation={admin ? openAdminStation : undefined}
-            onOpenMapStation={isStationSide ? undefined : openStationOnMap}
+            onOpenAdminStation={caps.admin ? openAdminStation : undefined}
+            onOpenMapStation={canOpenMap ? openStationOnMap : undefined}
             onOpenAdminReconcile={
-              admin
+              caps.admin
                 ? () =>
                     go(
                       {

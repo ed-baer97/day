@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { screenFor, sessionCapabilities } from "../access";
 import type { CatalogStation } from "../api/client";
 import Logo from "../components/Logo";
 import { liters, stationRegion } from "../format";
 import { isLowFill, type LiveLevel, SensorStatusBadge } from "../liveLevels";
+import type { AppScreen } from "../route";
 import type { AdminSession } from "../session";
 
-export type AppScreen = "landing" | "map" | "dashboard" | "admin" | "supply" | "cashier";
+export type { AppScreen } from "../route";
 
 export interface NetworkStats {
   litersSum: number;
@@ -18,10 +20,6 @@ export interface NetworkStats {
 
 export default function Topbar({
   session,
-  admin,
-  isOwner,
-  isCashier,
-  isStationSide,
   screen,
   stations,
   allStations,
@@ -36,10 +34,6 @@ export default function Topbar({
   onLogout,
 }: {
   session: AdminSession;
-  admin: boolean;
-  isOwner: boolean;
-  isCashier: boolean;
-  isStationSide: boolean;
   screen: AppScreen;
   stations: CatalogStation[];
   allStations?: CatalogStation[];
@@ -56,6 +50,13 @@ export default function Topbar({
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickQuery, setQuickQuery] = useState("");
   const quickRef = useRef<HTMLDivElement>(null);
+
+  const caps = sessionCapabilities(session);
+  const canCashier = screenFor(session, "cashier") === "cashier";
+  const canDashboard = screenFor(session, "dashboard") === "dashboard";
+  const canMap = screenFor(session, "map") === "map";
+  const canSupply = screenFor(session, "supply") === "supply";
+  const canAdmin = screenFor(session, "admin") === "admin";
 
   useEffect(() => {
     function onDocClick(event: MouseEvent) {
@@ -79,7 +80,7 @@ export default function Topbar({
     };
   }, []);
 
-  const adminQuickMode = admin && screen === "admin" && !!onOpenAdminStation;
+  const adminQuickMode = canAdmin && screen === "admin" && !!onOpenAdminStation;
   const searchableStations = adminQuickMode && allStations ? allStations : stations;
 
   const quickStations = useMemo(() => {
@@ -104,17 +105,19 @@ export default function Topbar({
         <div>
           <h1>Цифровой след LPG</h1>
           <span>
-            {isCashier
+            {caps.cashier
               ? `Кассир · ${stations[0]?.name ?? "смена"}`
-              : isOwner
+              : caps.owner
                 ? `Владелец · ${stations.length === 1 ? (stations[0]?.name ?? "своя заправка") : `${stations.length} АГЗС`}`
-                : `Диспетчерская платформы · ${stations.length} АГЗС`}
+                : caps.admin
+                  ? `Диспетчерская платформы · ${stations.length} АГЗС`
+                  : ""}
           </span>
         </div>
       </div>
 
       <nav className="nav-pages" aria-label="Разделы">
-        {isCashier ? (
+        {canCashier ? (
           <button
             type="button"
             className={`nav-page${screen === "cashier" ? " active" : ""}`}
@@ -122,16 +125,17 @@ export default function Topbar({
           >
             Смена и колонки
           </button>
-        ) : (
+        ) : null}
+        {canDashboard ? (
           <button
             type="button"
             className={`nav-page${screen === "dashboard" ? " active" : ""}`}
             onClick={onGoHomeDashboard}
           >
-            {isOwner ? "Мои АГЗС" : "Дашборд"}
+            {caps.owner ? "Мои АГЗС" : "Дашборд"}
           </button>
-        )}
-        {isStationSide ? null : (
+        ) : null}
+        {canMap ? (
           <button
             type="button"
             className={`nav-page${screen === "map" ? " active" : ""}`}
@@ -139,8 +143,8 @@ export default function Topbar({
           >
             Карта
           </button>
-        )}
-        {admin ? (
+        ) : null}
+        {canSupply ? (
           <button
             type="button"
             className={`nav-page${screen === "supply" ? " active" : ""}`}
@@ -149,7 +153,7 @@ export default function Topbar({
             Поставки
           </button>
         ) : null}
-        {admin ? (
+        {canAdmin ? (
           <button
             type="button"
             className={`nav-page${screen === "admin" ? " active" : ""}`}
@@ -160,7 +164,7 @@ export default function Topbar({
         ) : null}
       </nav>
 
-      {isCashier ? null : (
+      {canDashboard ? (
       <div className="quick-jumper" ref={quickRef}>
         <button
           type="button"
@@ -246,7 +250,7 @@ export default function Topbar({
                             Сводка
                           </button>
                         ) : null}
-                        {!adminQuickMode && admin && onOpenAdminStation ? (
+                        {!adminQuickMode && canAdmin && onOpenAdminStation ? (
                           <button
                             type="button"
                             className="btn secondary small"
@@ -272,15 +276,17 @@ export default function Topbar({
           </div>
         ) : null}
       </div>
-      )}
+      ) : null}
 
       <div className="topbar-actions">
         <span className="who">
-          {isCashier
+          {caps.cashier
             ? `кассир ${session.username}`
-            : isOwner
+            : caps.owner
               ? `владелец ${session.username}`
-              : `админ ${session.username}`}
+              : caps.admin
+                ? `админ ${session.username}`
+                : session.username}
         </span>
         <button type="button" className="btn secondary small" onClick={() => onSelectPage("landing")}>
           Публичная витрина

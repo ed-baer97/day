@@ -10,23 +10,51 @@ export type AdminSession = {
   station_ids?: string[];
 };
 
+export type RawSessionInput = {
+  token?: unknown;
+  username?: unknown;
+  role?: unknown;
+  station_id?: unknown;
+  station_ids?: unknown;
+};
+
+export function normalizeStationIds(stationIds: unknown, stationId?: unknown): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  if (Array.isArray(stationIds)) {
+    for (const item of stationIds) {
+      if (typeof item === "string" && item.length > 0 && !seen.has(item)) {
+        seen.add(item);
+        normalized.push(item);
+      }
+    }
+  }
+  if (normalized.length === 0 && typeof stationId === "string" && stationId.length > 0) {
+    normalized.push(stationId);
+  }
+  return normalized;
+}
+
+export function normalizeSession(raw: RawSessionInput | null | undefined): AdminSession | null {
+  if (!raw || typeof raw.token !== "string" || !raw.token || typeof raw.username !== "string" || !raw.username) {
+    return null;
+  }
+  const role = roleOf(raw.role);
+  const stationIds = normalizeStationIds(raw.station_ids, raw.station_id);
+  return {
+    token: raw.token,
+    username: raw.username,
+    role,
+    station_id: stationIds.length === 1 ? stationIds[0] : null,
+    station_ids: stationIds,
+  };
+}
+
 export function readSession(): AdminSession | null {
   try {
     const raw = sessionStorage.getItem(KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<AdminSession>;
-    if (!parsed.token || !parsed.username) return null;
-    const role = roleOf(parsed.role) ?? "admin";
-    const stationIds = Array.isArray(parsed.station_ids)
-      ? parsed.station_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
-      : [];
-    return {
-      token: parsed.token,
-      username: parsed.username,
-      role,
-      station_id: parsed.station_id ?? (stationIds.length === 1 ? stationIds[0] : null),
-      station_ids: stationIds.length > 0 ? stationIds : parsed.station_id ? [parsed.station_id] : [],
-    };
+    return normalizeSession(JSON.parse(raw) as RawSessionInput);
   } catch {
     return null;
   }
