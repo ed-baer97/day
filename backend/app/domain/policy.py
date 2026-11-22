@@ -51,6 +51,7 @@ def _text(name: str) -> str:
 
 DIAL_MIN_PERCENT = _number("dial_min_percent")
 DIAL_MAX_PERCENT = _number("dial_max_percent")
+SENSOR_ZERO_PERCENT = _number("sensor_zero_percent")
 LEVEL_STEP_VOLTS = _number("level_step_volts")
 VOLT_QUANTUM = _quantum("volt_quantum")
 PERCENT_QUANTUM = _quantum("percent_quantum")

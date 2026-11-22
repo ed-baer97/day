@@ -22,6 +22,7 @@ def test_policy_file_is_the_only_copy():
     raw = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     assert DIAL_MIN_PERCENT == raw["dial_min_percent"]
     assert DIAL_MAX_PERCENT == raw["dial_max_percent"]
+    assert raw["sensor_zero_percent"] == 1
     assert LEVEL_STEP_VOLTS == raw["level_step_volts"]
     assert calibration_step == LEVEL_STEP_VOLTS
     assert LITER_NOISE == raw["liter_noise"]

@@ -2,7 +2,8 @@
 
 Та же формула потом копируется в скрипт Shelly.
 Две точки с циферблата задают прямую «вольты → проценты объёма».
-Пустой резервуар — 0 %. Выше 95 % циферблат не размечен, сайт туда не уходит.
+Живой ноль датчика — не абсолютный пустой объём, а погрешность около 1 %.
+Выше 95 % циферблат не размечен, сайт туда не уходит.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from app.domain.policy import (
     DIAL_MAX_PERCENT,
     DIAL_MIN_PERCENT,
+    SENSOR_ZERO_PERCENT,
     LEVEL_STEP_VOLTS,
     PERCENT_QUANTUM,
     VOLT_QUANTUM,
@@ -80,6 +82,9 @@ def volts_to_percent(volts: float, calibration: LevelCalibration) -> float:
     percent = calibration.low_percent + (volts - calibration.low_volts) / span * (
         calibration.high_percent - calibration.low_percent
     )
+    # Пакет с 0 В значит, что датчик на связи. Ниже погрешности это не пустота.
+    if round_volts(volts) == 0 and percent <= SENSOR_ZERO_PERCENT:
+        return SENSOR_ZERO_PERCENT
     if percent < DIAL_MIN_PERCENT:
         return DIAL_MIN_PERCENT
     if percent > DIAL_MAX_PERCENT:

@@ -32,17 +32,23 @@ def test_endpoints_match_dial():
     assert volts_to_liters(3.8, CAL) == pytest.approx(8_000)
 
 
-def test_empty_volts_are_zero_percent_and_the_top_stays_at_ninety_five():
-    assert volts_to_percent(0.0, CAL) == pytest.approx(0)
-    assert volts_to_liters(0.0, CAL) == pytest.approx(0)
+def test_live_zero_volts_are_the_sensor_error_and_the_top_stays_at_ninety_five():
+    assert volts_to_percent(0.0, CAL) == pytest.approx(1)
+    assert volts_to_liters(0.0, CAL) == pytest.approx(100)
     assert volts_to_percent(10.0, CAL) == pytest.approx(95)
     assert volts_to_liters(10.0, CAL) == pytest.approx(9_500)
 
 
-def test_zero_volts_on_the_empty_point_stay_empty():
+def test_connected_zero_volts_publish_one_percent():
     empty = LevelCalibration(21_000, 0.0, 0.0, 3.44, 72.95)
-    assert volts_to_percent(0.0, empty) == pytest.approx(0)
-    assert volts_to_liters(0.0, empty) == pytest.approx(0)
+    assert volts_to_percent(0.0, empty) == pytest.approx(1)
+    assert volts_to_liters(0.0, empty) == pytest.approx(210)
+    assert volts_to_percent(0.04, empty) == pytest.approx(1)
+
+
+def test_zero_volts_keep_a_higher_mark_on_the_scale():
+    marked = LevelCalibration(10_000, 0.0, 20, 3.8, 80)
+    assert volts_to_percent(0.0, marked) == pytest.approx(20)
 
 
 def test_volts_round_to_tenth():
