@@ -4,9 +4,6 @@ import type { TimeRange } from "./period";
 /** Базовое число колонок по умолчанию, если в паспорте АГЗС оно не задано явно. */
 export const CONNECTED_COLUMNS = 2;
 
-/** Сдвиг меньше литра в отпуск не пишем: это шум шкалы, не заправка. */
-const MIN_DROP_LITERS = 1;
-
 export type { ColumnsMode };
 
 export type ColumnSeries = {
@@ -60,8 +57,6 @@ export function buildLiveTankSamples(
   return samples;
 }
 
-type Drop = { atMs: number; liters: number };
-
 export function isColumnReportStation(station: {
   code?: string | null;
   name?: string | null;
@@ -88,21 +83,20 @@ export function bucketCaption(range: TimeRange, label: string): string {
 }
 
 /**
- * Отпуск для отчёта по колонкам:
- * 1) При наличии реальных транзакций `station-edge` за период или при режиме `mode: "edge"` строит отчёт по ним (`source: "edge"`).
- * 2) Иначе (режим `mode: "virtual"`) каждое снижение остатка в резервуаре переводится в отпуск по виртуальным колонкам (`source: "level"`).
+ * Отпуск колонок — только фактические наливы ТРК.
+ * Снижение уровня резервуара в литры колонок не раскладывается:
+ * оно остаётся отдельно, как уход по датчику.
  */
 export function columnDispenseReport(
-  points: LevelReading[],
+  _points: LevelReading[],
   range: TimeRange,
-  liveTanks: LiveTankSample[] = [],
-  now = new Date(),
+  _liveTanks: LiveTankSample[] = [],
+  _now = new Date(),
   fallbackOutflow = 0,
   realDispenses: DispenseReading[] = [],
   options?: { columnCount?: number; mode?: ColumnsMode; sensorOutflowLiters?: number | null },
 ): ColumnReport {
   const colCount = Math.max(1, Math.min(8, Math.round(options?.columnCount ?? CONNECTED_COLUMNS)));
-  const mode: ColumnsMode = options?.mode ?? "virtual";
 
   const columns: ColumnSeries[] = Array.from({ length: colCount }, (_, index) => ({
     number: index + 1,
@@ -124,90 +118,20 @@ export function columnDispenseReport(
     .filter((entry) => entry.bucket >= 0 && entry.item.volume_liters > 0)
     .sort((a, b) => a.atMs - b.atMs);
 
-  let source: "edge" | "level" = "level";
+  const source: "edge" | "level" = "edge";
 
-  if (inRangeDispenses.length > 0 || mode === "edge") {
-    source = "edge";
-    inRangeDispenses.forEach(({ item, atMs, bucket }, index) => {
-      const addr = item.pump_address;
-      const colIdx =
-        addr != null && addr >= 1 ? (addr - 1) % colCount : index % colCount;
-      const column = columns[colIdx];
-      const vol = Math.round(item.volume_liters * 1000) / 1000;
-      column.liters[bucket] = Math.round((column.liters[bucket] + vol) * 1000) / 1000;
-      column.total = Math.round((column.total + vol) * 1000) / 1000;
-      column.opsCount += 1;
-      column.lastLiters = vol;
-      column.lastAt = new Date(atMs).toISOString();
-    });
-  } else {
-    const drops: Drop[] = [];
-    const byTank = new Map<string, LevelReading[]>();
-    for (const point of points) {
-      const list = byTank.get(point.tank_id) ?? [];
-      list.push(point);
-      byTank.set(point.tank_id, list);
-    }
-
-    for (const [tankId, rows] of byTank) {
-      const ordered = [...rows].sort(
-        (a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime(),
-      );
-      let previous: number | null = null;
-      for (const row of ordered) {
-        const atMs = new Date(row.recorded_at).getTime();
-        if (row.delta_liters != null) {
-          pushDrop(drops, atMs, -row.delta_liters, range);
-        } else if (previous != null) {
-          pushDrop(drops, atMs, previous - row.remainder_liters, range);
-        }
-        previous = row.remainder_liters;
-      }
-      const live = liveTanks.find((item) => item.tankId === tankId);
-      const last = ordered[ordered.length - 1];
-      if (range.includesNow && live && previous != null && last) {
-        const atMs = live.measuredAt ? new Date(live.measuredAt).getTime() : now.getTime();
-        const lastAt = new Date(last.recorded_at).getTime();
-        if (atMs >= lastAt) pushDrop(drops, atMs, previous - live.remainder, range);
-      }
-    }
-
-    drops.sort((a, b) => a.atMs - b.atMs || a.liters - b.liters);
-
-    if (drops.length > 0) {
-      drops.forEach((drop, index) => {
-        const bucket = range.indexAt(drop.atMs);
-        if (bucket < 0) return;
-        const column = columns[index % colCount];
-        column.liters[bucket] += drop.liters;
-        column.total += drop.liters;
-        column.opsCount += 1;
-        column.lastLiters = drop.liters;
-        column.lastAt = new Date(drop.atMs).toISOString();
-      });
-    } else if (fallbackOutflow >= MIN_DROP_LITERS && range.labels.length > 0) {
-      const fallbackTotal = Math.round(fallbackOutflow);
-      const nowBucket = range.indexAt(now.getTime());
-      const bucket = nowBucket >= 0 ? nowBucket : range.labels.length - 1;
-      const stamp = range.includesNow
-        ? now.toISOString()
-        : new Date(range.buckets[bucket].startMs).toISOString();
-      const basePart = Math.floor(fallbackTotal / colCount);
-      let remainderPart = fallbackTotal - basePart * colCount;
-      for (let index = 0; index < colCount; index += 1) {
-        const extra = remainderPart > 0 ? 1 : 0;
-        if (remainderPart > 0) remainderPart -= 1;
-        const litersPart = basePart + extra;
-        if (litersPart < 1) continue;
-        const column = columns[index];
-        column.liters[bucket] += litersPart;
-        column.total += litersPart;
-        column.opsCount += 1;
-        column.lastLiters = litersPart;
-        column.lastAt = stamp;
-      }
-    }
-  }
+  inRangeDispenses.forEach(({ item, atMs, bucket }, index) => {
+    const addr = item.pump_address;
+    const colIdx =
+      addr != null && addr >= 1 ? (addr - 1) % colCount : index % colCount;
+    const column = columns[colIdx];
+    const vol = Math.round(item.volume_liters * 1000) / 1000;
+    column.liters[bucket] = Math.round((column.liters[bucket] + vol) * 1000) / 1000;
+    column.total = Math.round((column.total + vol) * 1000) / 1000;
+    column.opsCount += 1;
+    column.lastLiters = vol;
+    column.lastAt = new Date(atMs).toISOString();
+  });
 
   const totals = range.labels.map((_, index) =>
     Math.round(columns.reduce((sum, column) => sum + column.liters[index], 0) * 1000) / 1000,
@@ -256,10 +180,3 @@ export function columnDispenseReport(
   };
 }
 
-function pushDrop(drops: Drop[], atMs: number, raw: number, range: TimeRange) {
-  if (!(raw >= MIN_DROP_LITERS)) return;
-  const liters = Math.round(raw);
-  if (liters < 1) return;
-  if (range.indexAt(atMs) < 0) return;
-  drops.push({ atMs, liters });
-}

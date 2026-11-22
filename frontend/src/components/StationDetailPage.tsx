@@ -209,20 +209,10 @@ export default function StationDetailPage({
       : showColumns
         ? "virtual"
         : "none";
-  const isVirtualMode = savedColumnsMode === "virtual";
   const isEdgeMode = savedColumnsMode === "edge";
-  const expenseLiters =
-    isVirtualMode && columnReport && (hasDay || columnReport.total > 0)
-      ? columnReport.total
-      : hasDay && series
-        ? series.outflow
-        : isEdgeMode && columnReport && columnReport.total > 0
-          ? columnReport.total
-          : null;
-  const rekonBookLiters =
-    hasTanks && live?.remainder != null
-      ? live.remainder
-      : (bookSummary?.actualSum ?? bookSummary?.calcSum ?? null);
+  const dispensedLiters = showColumns && columnReport ? columnReport.total : null;
+  const sensorSpent = hasDay && series ? series.outflow : null;
+  const expenseLiters = dispensedLiters != null ? dispensedLiters : sensorSpent;
   const tankRows =
     devices.length > 0
       ? devices
@@ -318,7 +308,11 @@ export default function StationDetailPage({
             <span className="badge warn">датчик не подключён</span>
           )}
           <span className="badge">приход {liters(series?.inflow ?? 0)}</span>
-          {expenseLiters != null ? <span className="badge">расход {liters(expenseLiters)}</span> : null}
+          {dispensedLiters != null ? (
+            <span className="badge">отпуск {liters(dispensedLiters)}</span>
+          ) : sensorSpent != null ? (
+            <span className="badge">расход {liters(sensorSpent)}</span>
+          ) : null}
           {showColumns ? (
             <span className={`badge ${isEdgeMode ? "ok" : "warn"}`}>
               {isEdgeMode
@@ -362,12 +356,14 @@ export default function StationDetailPage({
           </em>
         </div>
         <div className="dash-kpi">
-          <span>{range.expenseTitle}</span>
+          <span>{dispensedLiters != null ? range.expenseTitle.replace("Расход", "Отпуск") : range.expenseTitle}</span>
           <strong>{expenseLiters != null ? liters(expenseLiters) : "—"}</strong>
           <em>
-            {hasDay && series?.opening != null
-              ? `старт периода: ${liters(series.opening)}`
-              : "по замерам датчика"}
+            {dispensedLiters != null
+              ? "по наливам колонок"
+              : hasDay && series?.opening != null
+                ? `старт периода: ${liters(series.opening)}`
+                : "по замерам датчика"}
           </em>
         </div>
         <div className="dash-kpi">
@@ -384,21 +380,11 @@ export default function StationDetailPage({
         <div className="dash-kpi">
           <span>Книжный баланс и ТРК</span>
           <strong>
-            {isVirtualMode
-              ? rekonBookLiters != null
-                ? liters(rekonBookLiters)
-                : "—"
-              : bookSummary?.calcSum != null
-                ? liters(bookSummary.calcSum)
-                : "—"}
+            {bookSummary?.calcSum != null ? liters(bookSummary.calcSum) : "—"}
           </strong>
           <em>
-            {isVirtualMode
-              ? columnReport
-                ? columnReport.source === "edge"
-                  ? `отпуск ТРК: ${liters(columnReport.total)} · есть наливы edge`
-                  : `отпуск ТРК: ${liters(columnReport.total)}`
-                : "виртуальный расчёт по датчику"
+            {dispensedLiters != null
+              ? `отпуск ТРК за период: ${liters(dispensedLiters)}`
               : bookSummary?.delta != null
                 ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
                 : bookSummary && bookSummary.dispenseSum > 0
@@ -463,7 +449,8 @@ export default function StationDetailPage({
                   "Поставки в книге без даты, за этот срок не считаем. "
                 )}
                 На линии газ, который уже был в резервуаре.
-                {expenseLiters != null ? ` Расход ${liters(expenseLiters)}.` : ""}
+                {sensorSpent != null ? ` Уход по датчику ${liters(sensorSpent)}.` : ""}
+                {dispensedLiters != null ? ` Отпуск колонками ${liters(dispensedLiters)}.` : ""}
               </p>
               {historyLoading && levelChart.labels.length === 0 ? (
                 <p className="dash-muted">Загрузка замеров…</p>
@@ -563,13 +550,6 @@ export default function StationDetailPage({
                       const free =
                         rem != null ? Math.max(0, dev.capacity_liters - rem) : null;
                       const bStatus = (st?.balance_status || "ok") as StationBalance["status"];
-                      const rekonReceipts = st?.receipts_liters ?? (series?.inflow ?? 0);
-                      const rekonDispense =
-                        showColumns && columnReport
-                          ? tankRows.length <= 1
-                            ? columnReport.total
-                            : (st?.dispense_liters ?? 0)
-                          : (st?.dispense_liters ?? 0);
                       return (
                         <tr key={dev.id}>
                           <td>
@@ -602,19 +582,7 @@ export default function StationDetailPage({
                             </div>
                           </td>
                           <td>
-                            {isVirtualMode ? (
-                              rem != null ? (
-                                <>
-                                  <strong>{liters(rem)}</strong>
-                                  <div className="dash-muted">
-                                    приход {liters(rekonReceipts)} · ТРК{" "}
-                                    {liters(rekonDispense)}
-                                  </div>
-                                </>
-                              ) : (
-                                <span className="dash-muted">—</span>
-                              )
-                            ) : st?.calculated_remainder_liters != null ? (
+                            {st?.calculated_remainder_liters != null ? (
                               <>
                                 <strong>{liters(st.calculated_remainder_liters)}</strong>
                                 <div className="dash-muted">
@@ -627,18 +595,7 @@ export default function StationDetailPage({
                             )}
                           </td>
                           <td>
-                            {isVirtualMode ? (
-                              rem != null ? (
-                                <>
-                                  <strong>0 л</strong>
-                                  <div>
-                                    <span className="badge ok">сходится</span>
-                                  </div>
-                                </>
-                              ) : (
-                                <span className="dash-muted">—</span>
-                              )
-                            ) : st?.delta_liters != null ? (
+                            {st?.delta_liters != null ? (
                               <>
                                 <strong>{signedLiters(st.delta_liters)}</strong>
                                 <div>
@@ -780,16 +737,14 @@ export default function StationDetailPage({
                             {tank.measured_at ? dateTime(tank.measured_at) : "ожидание"}
                           </strong>
                         </div>
-                        {st || (isVirtualMode && tank.remainder_liters != null) ? (
+                        {st ? (
                           <>
                             <div>
                               <span>Книжный остаток</span>
                               <strong>
-                                {isVirtualMode && tank.remainder_liters != null
-                                  ? liters(tank.remainder_liters)
-                                  : st?.calculated_remainder_liters == null
-                                    ? "—"
-                                    : liters(st.calculated_remainder_liters)}
+                                {st.calculated_remainder_liters == null
+                                  ? "—"
+                                  : liters(st.calculated_remainder_liters)}
                               </strong>
                             </div>
                             <div>

@@ -55,24 +55,15 @@ const report = columnDispenseReport(
   now,
 );
 
+assert.equal(report.source, "edge");
 assert.equal(report.columnCount, 2);
-assert.equal(report.columns[0].total, 499);
-assert.equal(report.columns[1].total, 200);
-assert.equal(report.total, 699);
-assert.equal(report.tankOutflowLiters, report.total);
+assert.equal(report.columns[0].total, 0);
+assert.equal(report.columns[1].total, 0);
+assert.equal(report.total, 0);
+assert.equal(report.tankOutflowLiters, 0);
 assert.equal(report.discrepancyLiters, 0);
 assert.equal(report.status, "ok");
-assert.equal(report.opsTotal, 3);
-assert.equal(report.columns[0].opsCount, 2);
-assert.equal(report.columns[1].opsCount, 1);
-assert.equal(report.columns[0].liters[2], 300);
-assert.equal(report.columns[1].liters[4], 200);
-assert.equal(report.columns[0].liters[8], 199);
-assert.equal(report.totals[3], 0);
-assert.equal(
-  report.columns.reduce((sum, column) => sum + column.total, 0),
-  report.total,
-);
+assert.equal(report.opsTotal, 0);
 
 const fallbackSamples = buildLiveTankSamples(
   {
@@ -98,12 +89,13 @@ const fallbackReport = columnDispenseReport(
   now,
   251,
 );
-assert.equal(fallbackReport.columns[0].total, 126);
-assert.equal(fallbackReport.columns[1].total, 125);
-assert.equal(fallbackReport.total, 251);
+assert.equal(fallbackReport.columns[0].total, 0);
+assert.equal(fallbackReport.columns[1].total, 0);
+assert.equal(fallbackReport.total, 0);
 assert.equal(fallbackReport.tankOutflowLiters, 251);
-assert.equal(fallbackReport.discrepancyLiters, 0);
-assert.equal(fallbackReport.opsTotal, 2);
+assert.equal(fallbackReport.discrepancyLiters, -251);
+assert.equal(fallbackReport.status, "warn");
+assert.equal(fallbackReport.opsTotal, 0);
 
 const riseOnly = columnDispenseReport(
   [
@@ -121,7 +113,7 @@ const outside = columnDispenseReport(
   today,
 );
 assert.equal(outside.total, 0);
-assert.equal(outside.source, "level");
+assert.equal(outside.source, "edge");
 
 const realDispenses: DispenseReading[] = [
   {
@@ -186,10 +178,11 @@ const virtualFourCols = columnDispenseReport(
   [],
   { columnCount: 4, mode: "virtual" },
 );
-assert.equal(virtualFourCols.source, "level");
+assert.equal(virtualFourCols.source, "edge");
 assert.equal(virtualFourCols.columnCount, 4);
-assert.equal(virtualFourCols.total, 400);
-assert.equal(virtualFourCols.columns[3].total, 100);
+assert.equal(virtualFourCols.total, 0);
+assert.equal(virtualFourCols.tankOutflowLiters, 400);
+assert.equal(virtualFourCols.columns[3].total, 0);
 
 const zeroSensorEdge = columnDispenseReport(
   [],

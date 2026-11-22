@@ -129,7 +129,7 @@ export default function ColumnReportCard({
               </h3>
             </div>
             <p className="stage-vol" style={{ marginBottom: 10 }}>
-              {report.source === "edge" ? "Отпуск ТРК:" : "Уход газа:"}{" "}
+              Отпуск ТРК:{" "}
               <strong>{liters(column.total)}</strong>
             </p>
             <dl className="kv">
@@ -154,7 +154,7 @@ export default function ColumnReportCard({
               <th>Колонка</th>
               <th>Операций</th>
               <th>Последний отпуск</th>
-              <th>{report.source === "edge" ? "Счётчик ТРК" : "Расчётный отпуск (по уровню)"}</th>
+              <th>Счётчик ТРК</th>
             </tr>
           </thead>
           <tbody>
@@ -220,11 +220,7 @@ export default function ColumnReportCard({
           }))}
         />
       ) : (
-        <p className="dash-muted">
-          {effectiveMode === "edge"
-            ? "Режим реальных ТРК (station-edge): наливов за выбранный период не поступало."
-            : "За этот срок уровень резервуара не снижался. Отпуска через колонки нет."}
-        </p>
+        <p className="dash-muted">За этот срок наливов с колонок не было.</p>
       )}
       {rows.length > 0 ? (
         <div className="dash-table-wrap" style={{ marginTop: 12 }}>
