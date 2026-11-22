@@ -12,8 +12,6 @@ import { isAdmin, isOwner } from "../access";
 import { useAuth } from "../auth";
 import { messageOf, useCatalog } from "../catalog";
 import {
-  balBadge,
-  balText,
   dateTime,
   eventTypeLabel,
   liters,
@@ -39,7 +37,7 @@ import {
   stationColumnCount,
 } from "../columnReport";
 import { chartOf } from "../sensorDay";
-import type { DiscrepancyEvent, StationBalance } from "../types";
+import type { DiscrepancyEvent } from "../types";
 import { BarChart, LineChart } from "./Charts";
 import ColumnReportCard from "./ColumnReportCard";
 import LevelChangesToday from "./LevelChangesToday";
@@ -170,10 +168,12 @@ export default function StationDetailPage({
     const liveTanks = buildLiveTankSamples(live, devices, points, range.includesNow);
     const fallbackOutflow = series?.opening != null ? series.outflow : 0;
     const sensorOutflowLiters = series?.opening != null ? series.outflow : null;
+    const tankCapacity = devices.reduce((sum, device) => sum + (device.capacity_liters || 0), 0);
     return columnDispenseReport(points, range, liveTanks, new Date(), fallbackOutflow, dispenses, {
       columnCount: colCount,
       mode: colMode,
       sensorOutflowLiters,
+      capacityLiters: tankCapacity > 0 ? tankCapacity : null,
     });
   }, [showColumns, series, live, devices, range, dispenses, colCount, colMode]);
 
@@ -412,7 +412,7 @@ export default function StationDetailPage({
             {dispensedLiters != null
               ? `отпуск ТРК за период: ${liters(dispensedLiters)}`
               : bookSummary?.delta != null
-                ? `разница с фактом: ${signedLiters(bookSummary.delta)}`
+                ? `датчик к книге: ${signedLiters(bookSummary.delta)}`
                 : bookSummary && bookSummary.dispenseSum > 0
                   ? `отпуск ТРК: ${liters(bookSummary.dispenseSum)}`
                   : "сверка по приходу и ТРК"}
@@ -571,7 +571,6 @@ export default function StationDetailPage({
                       <th>Факт (датчик)</th>
                       <th>Ёмкость / Свободно</th>
                       <th>Книжный остаток</th>
-                      <th>Разница (Δ)</th>
                       <th>Напряжение / Замер</th>
                     </tr>
                   </thead>
@@ -587,7 +586,6 @@ export default function StationDetailPage({
                           : null);
                       const free =
                         rem != null ? Math.max(0, dev.capacity_liters - rem) : null;
-                      const bStatus = (st?.balance_status || "ok") as StationBalance["status"];
                       return (
                         <tr key={dev.id}>
                           <td>
@@ -626,20 +624,6 @@ export default function StationDetailPage({
                                 <div className="dash-muted">
                                   приход {liters(st.receipts_liters)} · ТРК{" "}
                                   {liters(st.dispense_liters)}
-                                </div>
-                              </>
-                            ) : (
-                              <span className="dash-muted">—</span>
-                            )}
-                          </td>
-                          <td>
-                            {st?.delta_liters != null ? (
-                              <>
-                                <strong>{signedLiters(st.delta_liters)}</strong>
-                                <div>
-                                  <span className={`badge ${balBadge(bStatus)}`}>
-                                    {balText(bStatus)}
-                                  </span>
                                 </div>
                               </>
                             ) : (
@@ -991,13 +975,7 @@ export default function StationDetailPage({
                         </td>
                         <td>
                           {sh.discrepancy_liters != null ? (
-                            <strong
-                              className={
-                                Math.abs(sh.discrepancy_liters) > 50 ? "text-danger" : ""
-                              }
-                            >
-                              {signedLiters(sh.discrepancy_liters)}
-                            </strong>
+                            <strong>{signedLiters(sh.discrepancy_liters)}</strong>
                           ) : (
                             <span className="dash-muted">—</span>
                           )}

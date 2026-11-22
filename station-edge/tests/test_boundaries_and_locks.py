@@ -98,10 +98,16 @@ def test_systemd_units_separate_edge_and_updater_privileges() -> None:
     root = REPO_ROOT / "station-edge"
     edge_unit = (root / "station-edge.service").read_text(encoding="utf-8")
     upd_unit = (root / "station-edge-updater.service").read_text(encoding="utf-8")
+    monitor_unit = (root / "station-edge-monitor.service").read_text(encoding="utf-8")
 
     assert "ProtectSystem=strict" in edge_unit
     assert "DevicePolicy=closed" in edge_unit
+    assert "SupplementaryGroups=tty station-edge" in edge_unit
     assert "User=station-edge-updater" in upd_unit
+    assert "SupplementaryGroups=station-edge" in upd_unit
     assert "dialout" not in upd_unit
     assert "NoNewPrivileges=true" in upd_unit
     assert "DevicePolicy=closed" in upd_unit
+    assert "WorkingDirectory=/var/lib/station-edge" in monitor_unit
+    assert "SupplementaryGroups=station-edge" in monitor_unit
+    assert "ReadWritePaths=/var/lib/station-edge" in monitor_unit

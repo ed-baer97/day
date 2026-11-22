@@ -172,9 +172,13 @@ export default function AdminPage({
           const bookDelta =
             bookCalc != null && actual != null ? Math.round(actual - bookCalc) : null;
           const balanceStatus =
-            tanks.find((t) => t.balance_status === "shortage" || t.balance_status === "surplus")
+            tanks.find(
+              (t) =>
+                t.balance_status === "unregistered_receipt" ||
+                t.balance_status === "unregistered_dispense",
+            )?.balance_status ??
+            tanks.find((t) => t.balance_status === "outside_band" || t.balance_status === "warn")
               ?.balance_status ??
-            tanks.find((t) => t.balance_status === "warn")?.balance_status ??
             (knownCalc.length > 0 ? "ok" : "unknown");
           return {
             row,

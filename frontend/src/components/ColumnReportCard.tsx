@@ -92,7 +92,7 @@ export default function ColumnReportCard({
                 ? liters(report.tankOutflowLiters)
                 : "нет данных"}
           </strong>
-          <em>уход газа по датчику</em>
+          <em>ориентир датчика</em>
         </div>
         <div className="fiscal-link">→</div>
         <div className="fiscal-step">
@@ -104,21 +104,11 @@ export default function ColumnReportCard({
           <>
             <div className="fiscal-link">=</div>
             <div className="fiscal-step">
-              <span>Разница (ТРК − уровень)</span>
+              <span>Ориентир датчика</span>
               <strong className={report.status === "warn" ? "text-danger" : ""}>
                 {report.discrepancyLiters != null ? signedLiters(report.discrepancyLiters) : "—"}
               </strong>
-              <em>
-                {report.discrepancyLiters == null
-                  ? "нет данных датчика для сверки"
-                  : report.tankOutflowLiters === 0 && report.total > 0
-                    ? "датчик не зафиксировал расход"
-                    : report.status === "warn"
-                      ? "есть расхождение"
-                      : report.discrepancyLiters === 0
-                        ? "совпадает с датчиком"
-                        : "в пределах допуска"}
-              </em>
+              <em>{report.sensorNote}</em>
             </div>
           </>
         ) : null}
@@ -189,7 +179,7 @@ export default function ColumnReportCard({
             {report.source === "edge" ? (
               <tr>
                 <td colSpan={3} className="dash-muted">
-                  Уход газа из резервуара (по датчику уровня)
+                  Датчик резервуара (ориентир)
                 </td>
                 <td>
                   {report.tankOutflowLiters != null ? (
@@ -197,9 +187,11 @@ export default function ColumnReportCard({
                       <strong>{liters(report.tankOutflowLiters)}</strong>
                       {report.discrepancyLiters != null ? (
                         <div className={report.status === "warn" ? "text-danger" : "dash-muted"}>
-                          разница: {signedLiters(report.discrepancyLiters)}
+                          {signedLiters(report.discrepancyLiters)} · {report.sensorNote}
                         </div>
-                      ) : null}
+                      ) : (
+                        <div className="dash-muted">{report.sensorNote}</div>
+                      )}
                     </>
                   ) : (
                     <span className="dash-muted">нет данных</span>

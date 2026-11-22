@@ -8,11 +8,133 @@
 
   vars:
     edge_dir: /opt/station-edge
+    edge_state_dir: /var/lib/station-edge
     edge_venv_python: "{{ edge_dir }}/.venv/bin/python"
     src_station_edge: "{{ playbook_dir }}/../../station-edge"
     require_release_signature: true
 
   tasks:
+    - name: Общая группа station-edge на каталог данных, .env и .venv
+      ansible.builtin.group:
+        name: station-edge
+        system: true
+
+    - name: Пользователь демона station-edge
+      ansible.builtin.user:
+        name: station-edge
+        system: true
+        shell: /usr/sbin/nologin
+        group: station-edge
+        groups: dialout,tty
+        append: true
+        create_home: false
+
+    - name: Группа station-edge-updater
+      ansible.builtin.group:
+        name: station-edge-updater
+        system: true
+
+    - name: Пользователь station-edge-updater без доступа к RS-232
+      ansible.builtin.user:
+        name: station-edge-updater
+        system: true
+        shell: /usr/sbin/nologin
+        group: station-edge-updater
+        groups: station-edge
+        append: true
+        create_home: false
+
+    - name: Каталог данных /var/lib/station-edge
+      ansible.builtin.file:
+        path: "{{ edge_state_dir }}"
+        state: directory
+        owner: station-edge
+        group: station-edge
+        mode: "2770"
+
+    - name: Проверить, что боевой .env уже лежит на станции
+      ansible.builtin.stat:
+        path: "{{ edge_dir }}/.env"
+      register: edge_env_file
+
+    - name: Остановиться, если на станции нет /opt/station-edge/.env
+      ansible.builtin.fail:
+        msg: "Нет {{ edge_dir }}/.env — привязку к VPS плейбук не выдумывает."
+      when: not edge_env_file.stat.exists
+
+    - name: Общая группа на /opt/station-edge/.env
+      ansible.builtin.file:
+        path: "{{ edge_dir }}/.env"
+        owner: root
+        group: station-edge
+        mode: "0640"
+
+    - name: Проверить интерпретатор .venv
+      ansible.builtin.stat:
+        path: "{{ edge_venv_python }}"
+      register: edge_venv_file
+
+    - name: Остановиться, если на станции нет .venv
+      ansible.builtin.fail:
+        msg: "Нет {{ edge_venv_python }}. Сначала создайте виртуальное окружение, плейбук его не пересобирает."
+      when: not edge_venv_file.stat.exists
+
+    - name: Общая группа и запись апдейтера на /opt/station-edge/.venv
+      ansible.builtin.shell: |
+        set -euo pipefail
+        chgrp -R station-edge "{{ edge_dir }}/.venv"
+        find "{{ edge_dir }}/.venv" -type d -exec chmod 2775 {} +
+        find "{{ edge_dir }}/.venv" -type f -exec chmod g+rw {} +
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Установить cryptography в .venv
+      ansible.builtin.command:
+        argv:
+          - "{{ edge_venv_python }}"
+          - -m
+          - pip
+          - install
+          - --disable-pip-version-check
+          - cryptography>=42.0
+      register: pip_crypto
+      changed_when: "'Successfully installed' in pip_crypto.stdout"
+
+    - name: Вернуть группу station-edge на файлы, которые pip создал от root
+      ansible.builtin.shell: |
+        set -euo pipefail
+        chgrp -R station-edge "{{ edge_dir }}/.venv"
+        find "{{ edge_dir }}/.venv" -type d -exec chmod 2775 {} +
+        find "{{ edge_dir }}/.venv" -type f -exec chmod g+rw {} +
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Проверить, где лежит station_edge.db
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ edge_dir }}/station_edge.db"
+        - "{{ edge_state_dir }}/station_edge.db"
+      register: edge_db_stat
+
+    - name: Отказаться от переноса, если БД есть и в /opt, и в /var/lib
+      ansible.builtin.fail:
+        msg: >-
+          station_edge.db есть и в {{ edge_dir }}, и в {{ edge_state_dir }}.
+          Автоперенос не затирает ни одну из копий.
+      when:
+        - edge_db_stat.results[0].stat.exists
+        - edge_db_stat.results[1].stat.exists
+
+    - name: Абсолютный путь БД, если файл уже не в /opt/station-edge
+      ansible.builtin.lineinfile:
+        path: "{{ edge_dir }}/.env"
+        regexp: '^AGZS_DB_PATH='
+        line: AGZS_DB_PATH=/var/lib/station-edge/station_edge.db
+      when: not (edge_db_stat.results[0].stat.exists and not edge_db_stat.results[1].stat.exists)
+
     - name: Установить правило udev для стабильного симлинка /dev/aska02
       ansible.builtin.copy:
         src: "{{ src_station_edge }}/99-aska02.rules"
@@ -20,25 +142,124 @@
         mode: "0644"
       notify: Reload udev
 
-    - name: Установить systemd-юнит основного демона с Graceful Shutdown
-      ansible.builtin.copy:
-        src: "{{ src_station_edge }}/station-edge.service"
-        dest: /etc/systemd/system/station-edge.service
-        mode: "0644"
-      notify: Reload systemd
-
-    - name: Установить systemd-сервис и таймер Pull-автообновления
+    - name: Установить systemd-юниты демона, монитора и Pull-автообновления
       ansible.builtin.copy:
         src: "{{ src_station_edge }}/{{ item }}"
         dest: "/etc/systemd/system/{{ item }}"
         mode: "0644"
       loop:
+        - station-edge.service
+        - station-edge-monitor.service
         - station-edge-updater.service
         - station-edge-updater.timer
+      register: edge_units_copy
       notify: Reload systemd
 
-    - name: Выполнить reload systemd до запуска таймера и апдейтера
+    - name: Выполнить reload systemd до остановки служб и запуска таймера
       ansible.builtin.meta: flush_handlers
+
+    - name: Перенос БД из /opt/station-edge в /var/lib/station-edge
+      when:
+        - edge_db_stat.results[0].stat.exists
+        - not edge_db_stat.results[1].stat.exists
+      block:
+        - name: Пока файл ещё в /opt, .env указывает на него
+          ansible.builtin.lineinfile:
+            path: "{{ edge_dir }}/.env"
+            regexp: '^AGZS_DB_PATH='
+            line: AGZS_DB_PATH={{ edge_dir }}/station_edge.db
+
+        - name: Остановить демон и монитор перед переносом БД
+          ansible.builtin.command: systemctl stop station-edge.service station-edge-monitor.service
+
+        - name: Убедиться, что station-edge не активен перед mv базы
+          ansible.builtin.command: systemctl is-active station-edge.service
+          register: edge_active
+          changed_when: false
+          failed_when: edge_active.stdout == "active"
+
+        - name: Перенести station_edge.db и журналы SQLite
+          ansible.builtin.shell: |
+            set -euo pipefail
+            moved=0
+            for name in station_edge.db station_edge.db-wal station_edge.db-shm station_edge.db-journal; do
+              if [ -e "{{ edge_dir }}/$name" ]; then
+                mv -f "{{ edge_dir }}/$name" "{{ edge_state_dir }}/$name"
+                moved=1
+              fi
+            done
+            test -f "{{ edge_state_dir }}/station_edge.db"
+            test ! -e "{{ edge_dir }}/station_edge.db"
+            [ "$moved" -eq 1 ]
+          args:
+            executable: /bin/bash
+
+        - name: Права группы station-edge на перенесённую БД
+          ansible.builtin.shell: |
+            set -euo pipefail
+            chown station-edge:station-edge {{ edge_state_dir }}/station_edge.db*
+            chmod 660 {{ edge_state_dir }}/station_edge.db*
+          args:
+            executable: /bin/bash
+
+        - name: Абсолютный путь БД после переноса
+          ansible.builtin.lineinfile:
+            path: "{{ edge_dir }}/.env"
+            regexp: '^AGZS_DB_PATH='
+            line: AGZS_DB_PATH=/var/lib/station-edge/station_edge.db
+
+        - name: Запустить демон после переноса БД
+          ansible.builtin.systemd:
+            name: station-edge.service
+            state: started
+            enabled: true
+
+        - name: Запустить монитор tty1 после переноса БД
+          ansible.builtin.systemd:
+            name: station-edge-monitor.service
+            state: started
+            enabled: true
+
+      rescue:
+        - name: Выбрать файл БД, который ещё на диске
+          ansible.builtin.shell: |
+            set -euo pipefail
+            if [ -f "{{ edge_state_dir }}/station_edge.db" ]; then
+              printf '%s\n' "{{ edge_state_dir }}/station_edge.db"
+            else
+              printf '%s\n' "{{ edge_dir }}/station_edge.db"
+            fi
+          args:
+            executable: /bin/bash
+          register: edge_db_rescue_path
+          changed_when: false
+
+        - name: Вернуть AGZS_DB_PATH на уцелевший файл
+          ansible.builtin.lineinfile:
+            path: "{{ edge_dir }}/.env"
+            regexp: '^AGZS_DB_PATH='
+            line: AGZS_DB_PATH={{ edge_db_rescue_path.stdout }}
+
+        - name: Поднять демон после неудачного переноса
+          ansible.builtin.systemd:
+            name: station-edge.service
+            state: started
+            enabled: true
+
+        - name: Остановиться, перенос БД не завершён
+          ansible.builtin.fail:
+            msg: >-
+              Перенос station_edge.db оборвался. station-edge снова запущена,
+              AGZS_DB_PATH указывает на {{ edge_db_rescue_path.stdout }}.
+
+    - name: Перезапустить монитор, если юнит сменился, а БД уже была на месте
+      ansible.builtin.systemd:
+        name: station-edge-monitor.service
+        state: restarted
+        enabled: true
+      when:
+        - not (edge_db_stat.results[0].stat.exists and not edge_db_stat.results[1].stat.exists)
+        - (edge_units_copy.results | selectattr('item', 'equalto', 'station-edge-monitor.service') | list | first).changed
 
     - name: Включить запуск апдейтера при старте компьютера (возобновление после сбоя питания)
       ansible.builtin.systemd:

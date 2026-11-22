@@ -131,8 +131,12 @@ AGZS_LOCK_BUTTONS_ON_UPDATE=0
 
 1. Создайте системного пользователя без shell (если `station-edge.service` работает под другим пользователем — добавьте права чтения на каталог `/opt/station-edge` и файл `station_edge.db` или запускайте оба сервиса от одного пользователя `station-edge`):
    ```bash
-   sudo useradd -r -s /usr/sbin/nologin -G tty,dialout station-edge
-   sudo chown -R station-edge:tty /opt/station-edge
+   sudo groupadd --system station-edge
+   sudo useradd -r -s /usr/sbin/nologin -g station-edge -G tty,dialout station-edge
+   sudo useradd -r -s /usr/sbin/nologin -G station-edge station-edge-updater
+   sudo install -d -o station-edge -g station-edge -m 2770 /var/lib/station-edge
+   sudo chgrp station-edge /opt/station-edge/.env && sudo chmod 640 /opt/station-edge/.env
+   sudo chgrp -R station-edge /opt/station-edge/.venv
    ```
 2. Настройте смену в `/opt/station-edge/.env`:
    ```ini
@@ -180,7 +184,7 @@ python -m agzs_edge update --wait-idle-sec 180 --restart-cmd "systemctl restart 
 
 # Установка таймера, авто-возобновления при старте, udev-правила /dev/aska02 и юнита с Graceful Shutdown на Linux
 sudo cp 99-aska02.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo cp station-edge.service station-edge-updater.service station-edge-updater.timer /etc/systemd/system/
+sudo cp station-edge.service station-edge-monitor.service station-edge-updater.service station-edge-updater.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable station-edge-updater.service && sudo systemctl enable --now station-edge-updater.timer
 ```
 

@@ -760,13 +760,7 @@ export default function CashierPage() {
                       </td>
                       <td>
                         {sh.discrepancy_liters != null ? (
-                          <strong
-                            className={
-                              Math.abs(sh.discrepancy_liters) > 50 ? "text-danger" : ""
-                            }
-                          >
-                            {signedLiters(sh.discrepancy_liters)}
-                          </strong>
+                          <strong>{signedLiters(sh.discrepancy_liters)}</strong>
                         ) : (
                           <span className="dash-muted">—</span>
                         )}

@@ -18,6 +18,7 @@ from app.domain.tank_book import (
     build_tank_ingest_state,
     recompute_tank_book,
 )
+from app.services.balance_log import publish_pending_sensor_alert
 from app.schemas.ingest import (
     CalibrationIn,
     DispenseBatchAck,
@@ -321,7 +322,9 @@ def accept_level(body: LevelIngest) -> IngestAck:
             book.calibration,
             capacity_liters=capacity,
             heard_at=heard_at,
+            recorded_at=body.recorded_at,
         )
+        publish_pending_sensor_alert(book, station_id=station_id, tank_id=tank_id)
         if not changed:
             ack = ack_to_schema(build_ingest_ack(book, message="level unchanged"))
         else:
@@ -351,7 +354,7 @@ def accept_dispense(body: DispenseIngest) -> IngestAck:
             ack = IngestAck(accepted=True, message="dispense accepted", entity_id=entity_id)
         else:
             book = _book(body.station_id, body.tank_id)
-            apply_dispense_volume(book, body.volume_liters)
+            apply_dispense_volume(book, body.volume_liters, at=body.started_at)
             ack = ack_to_schema(build_ingest_ack(book, message="dispense accepted", entity_id=entity_id))
         station_rows = _dispenses_by_station.setdefault(body.station_id, [])
         station_rows.append(
@@ -447,7 +450,7 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
         if key in _seen:
             return ack_to_schema(build_ingest_ack(book, message="duplicate", duplicate=True))
         _remember_seen(key)
-        apply_receipt_volume(book, body.volume_liters)
+        apply_receipt_volume(book, body.volume_liters, at=body.recorded_at)
         _receipts_by_station.setdefault(station_id, []).append(
             (_utc_dt(body.recorded_at), float(body.volume_liters))
         )
@@ -484,6 +487,12 @@ def snapshot() -> dict:
                     "last_measured_at": None
                     if book.last_measured_at is None
                     else book.last_measured_at.isoformat(),
+                    "sensor_watch_liters": book.sensor_watch_liters,
+                    "sensor_watch_at": None
+                    if book.sensor_watch_at is None
+                    else book.sensor_watch_at.isoformat(),
+                    "sensor_watch_receipts": book.sensor_watch_receipts,
+                    "sensor_watch_dispense": book.sensor_watch_dispense,
                     "level_ids": {key: str(value) for key, value in book.level_ids.items()},
                 }
                 for book in _books.values()
@@ -565,8 +574,15 @@ def restore_snapshot(data: dict) -> None:
                 actual_remainder_liters=fields["actual_remainder_liters"],  # type: ignore[arg-type]
                 last_volts=fields["last_volts"],  # type: ignore[arg-type]
                 last_measured_at=fields["last_measured_at"],  # type: ignore[arg-type]
+                sensor_watch_liters=fields["sensor_watch_liters"],  # type: ignore[arg-type]
+                sensor_watch_at=fields["sensor_watch_at"],  # type: ignore[arg-type]
+                sensor_watch_receipts=float(fields["sensor_watch_receipts"]),  # type: ignore[arg-type]
+                sensor_watch_dispense=float(fields["sensor_watch_dispense"]),  # type: ignore[arg-type]
                 calibration=cal,
             )
+            device = _devices_by_tank.get(tank_id)
+            if device is not None:
+                book.capacity_liters = device.capacity_liters
             for key, value in (row.get("level_ids") or {}).items():
                 book.level_ids[str(key)] = UUID(str(value))
             recompute_tank_book(book)

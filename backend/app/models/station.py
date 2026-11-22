@@ -81,6 +81,10 @@ class Tank(Base):
     pending_dispense_liters: Mapped[float] = mapped_column(Float, default=0.0)
     pending_receipt_liters: Mapped[float] = mapped_column(Float, default=0.0)
     last_volts: Mapped[float | None] = mapped_column(Float)
+    sensor_watch_liters: Mapped[float | None] = mapped_column(Float)
+    sensor_watch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sensor_watch_receipts: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    sensor_watch_dispense: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     station = relationship("Station", back_populates="tanks")

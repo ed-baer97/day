@@ -38,6 +38,7 @@ from app.domain.tank_book import (
     build_tank_ingest_state,
     recompute_tank_book,
 )
+from app.services.balance_log import publish_pending_sensor_alert
 from app.models.batch import Batch, BatchStatus, BatchTrailEvent, TrailNodeType
 from app.models.dispenser import DispenseRecord, ReceiptRecord
 from app.models.shift import StationShiftRecord
@@ -570,7 +571,9 @@ def _accept_level(db: Session, body: LevelIngest) -> IngestAck:
             calibration,
             capacity_liters=row.capacity_liters,
             heard_at=heard_at,
+            recorded_at=body.recorded_at,
         )
+        publish_pending_sensor_alert(row, station_id=station_id, tank_id=tank_id)
         if changed:
             row.level_source = LevelSource.electronic
             db.add(
@@ -644,7 +647,7 @@ def _accept_dispense(db: Session, body: DispenseIngest) -> IngestAck:
     entity_id = uuid4()
     nested = db.begin_nested()
     try:
-        apply_dispense_volume(row, body.volume_liters)
+        apply_dispense_volume(row, body.volume_liters, at=body.started_at)
         db.add(
             DispenseRecord(
                 id=entity_id,
@@ -748,7 +751,7 @@ def accept_receipt(body: ReceiptIngest) -> IngestAck:
         if existing is not None:
             return ack_to_schema(build_ingest_ack(row, message="duplicate", duplicate=True, entity_id=existing.id))
 
-        apply_receipt_volume(row, body.volume_liters)
+        apply_receipt_volume(row, body.volume_liters, at=body.recorded_at)
         entity_id = uuid4()
         db.add(
             ReceiptRecord(
@@ -1736,6 +1739,10 @@ def import_memory_snapshot(data: dict) -> None:
                 actual_remainder_liters=fields["actual_remainder_liters"],  # type: ignore[arg-type]
                 last_volts=fields["last_volts"],  # type: ignore[arg-type]
                 last_measured_at=fields["last_measured_at"],  # type: ignore[arg-type]
+                sensor_watch_liters=fields["sensor_watch_liters"],  # type: ignore[arg-type]
+                sensor_watch_at=fields["sensor_watch_at"],  # type: ignore[arg-type]
+                sensor_watch_receipts=float(fields["sensor_watch_receipts"]),  # type: ignore[arg-type]
+                sensor_watch_dispense=float(fields["sensor_watch_dispense"]),  # type: ignore[arg-type]
                 cal_low_volts=None if cal is None else cal.low_volts,  # type: ignore[union-attr]
                 cal_low_percent=None if cal is None else cal.low_percent,  # type: ignore[union-attr]
                 cal_high_volts=None if cal is None else cal.high_volts,  # type: ignore[union-attr]

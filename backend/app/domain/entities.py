@@ -62,9 +62,15 @@ class TankBook:
     calculated_remainder_liters: float | None = None
     delta_liters: float | None = None
     balance_status: str = "unknown"
+    capacity_liters: float | None = None
     calibration: LevelCalibration | None = None
     last_volts: float | None = None
     last_measured_at: datetime | None = None
+    sensor_watch_liters: float | None = None
+    sensor_watch_at: datetime | None = None
+    sensor_watch_receipts: float = 0.0
+    sensor_watch_dispense: float = 0.0
+    pending_sensor_alert: object | None = None
     level_ids: dict[str, UUID] = field(default_factory=dict)
 
 

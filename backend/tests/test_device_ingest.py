@@ -23,7 +23,7 @@ def _clean_store():
     reset_device_ingest()
 
 
-def test_opening_dispense_and_shortage():
+def test_opening_dispense_stays_outside_the_sensor_band():
     opened = client.post(
         "/api/v1/ingest/level",
         json={
@@ -52,7 +52,7 @@ def test_opening_dispense_and_shortage():
         },
     )
     assert sale.json()["calculated_remainder_liters"] == 9600
-    assert sale.json()["balance_status"] == "surplus"
+    assert sale.json()["balance_status"] == "outside_band"
 
     again = client.post(
         "/api/v1/ingest/dispense",
@@ -78,7 +78,7 @@ def test_opening_dispense_and_shortage():
             "source_event_id": "lvl-2",
         },
     )
-    assert measured.json()["balance_status"] == "shortage"
+    assert measured.json()["balance_status"] == "outside_band"
     assert measured.json()["delta_liters"] == -600
 
 
@@ -180,7 +180,77 @@ def test_receipt_moves_the_book():
     )
     state = client.get(f"/api/v1/ingest/tanks/{TANK}").json()
     assert state["delta_liters"] == pytest.approx(-200)
-    assert state["balance_status"] == "shortage"
+    assert state["balance_status"] == "outside_band"
+
+
+def test_quiet_drop_opens_unmetered_event_and_a_documented_rise_does_not():
+    client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "actual_remainder_liters": 8000,
+            "recorded_at": "2026-10-04T08:00:00Z",
+            "source_event_id": "watch-open",
+        },
+    )
+    armed = client.post(
+        "/api/v1/ingest/dispense",
+        json={
+            "station_id": STATION,
+            "dispenser_id": DISPENSER,
+            "tank_id": TANK,
+            "volume_liters": 10,
+            "started_at": "2026-10-04T08:05:00Z",
+            "external_txn_id": "watch-sale",
+        },
+    )
+    assert armed.json()["calculated_remainder_liters"] == 7990
+
+    quiet = client.get("/api/v1/events", params={"station_id": STATION, "unresolved_only": True})
+    assert quiet.status_code == 200
+    assert quiet.json() == []
+
+    dropped = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "actual_remainder_liters": 7500,
+            "recorded_at": "2026-10-04T12:05:00Z",
+            "source_event_id": "watch-drop",
+        },
+    )
+    assert dropped.json()["balance_status"] == "outside_band"
+    events = client.get("/api/v1/events", params={"station_id": STATION, "unresolved_only": True})
+    assert [row["event_type"] for row in events.json()] == ["unregistered_dispense"]
+
+    client.post(
+        "/api/v1/ingest/receipt",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "volume_liters": 4000,
+            "recorded_at": "2026-10-04T13:00:00Z",
+            "source_event_id": "watch-rcv",
+        },
+    )
+    risen = client.post(
+        "/api/v1/ingest/level",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "actual_remainder_liters": 11400,
+            "recorded_at": "2026-10-04T13:20:00Z",
+            "source_event_id": "watch-rise",
+        },
+    )
+    assert risen.status_code == 200
+    types = [
+        row["event_type"]
+        for row in client.get("/api/v1/events", params={"station_id": STATION}).json()
+    ]
+    assert types == ["unregistered_dispense"]
 
 
 def test_level_without_reading_is_rejected():

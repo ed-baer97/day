@@ -301,6 +301,10 @@ def extract_book_fields(row: dict) -> dict[str, object]:
         "actual_remainder_liters": row.get("actual_remainder_liters"),
         "last_volts": row.get("last_volts"),
         "last_measured_at": parse_iso_utc(row.get("last_measured_at")),
+        "sensor_watch_liters": row.get("sensor_watch_liters"),
+        "sensor_watch_at": parse_iso_utc(row.get("sensor_watch_at")),
+        "sensor_watch_receipts": float(row.get("sensor_watch_receipts") or 0.0),
+        "sensor_watch_dispense": float(row.get("sensor_watch_dispense") or 0.0),
         "calibration": calibration_from_dict(row.get("calibration")),
     }
 

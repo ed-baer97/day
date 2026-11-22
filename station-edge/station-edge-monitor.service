@@ -8,7 +8,8 @@ Conflicts=getty@tty1.service
 Type=simple
 User=station-edge
 Group=tty
-WorkingDirectory=/opt/station-edge
+SupplementaryGroups=station-edge
+WorkingDirectory=/var/lib/station-edge
 EnvironmentFile=/opt/station-edge/.env
 Environment=TERM=linux
 Environment=PYTHONUNBUFFERED=1
@@ -28,6 +29,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=/var/lib/station-edge
 
 [Install]
 WantedBy=multi-user.target

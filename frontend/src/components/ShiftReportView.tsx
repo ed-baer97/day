@@ -1,5 +1,6 @@
 import type { ShiftDetail, ShiftRecord, ShiftTankSnapshot } from "../api/client";
 import { dateTime, liters, signedLiters, tenge } from "../format";
+import { sensorCue } from "../sensorBand";
 
 function formatDuration(startIso: string, endIso?: string | null): string {
   const start = new Date(startIso).getTime();
@@ -52,8 +53,14 @@ export default function ShiftReportView({
   const dispenses = "dispenses" in report && Array.isArray(report.dispenses) ? report.dispenses : [];
   const labelName = stationName ?? report.station_name ?? "АГЗС";
   const labelCode = stationCode ?? report.station_code ?? "";
-  const discrepancyWarn =
-    report.discrepancy_liters != null && Math.abs(report.discrepancy_liters) > 50;
+  const shiftTanks = report.closing_tanks?.length ? report.closing_tanks : report.opening_tanks;
+  const shiftCapacity = (shiftTanks ?? []).reduce((sum, tank) => sum + (tank.capacity_liters || 0), 0);
+  const sensor = sensorCue({
+    discrepancyLiters: report.discrepancy_liters ?? null,
+    outflowLiters: report.tank_delta_liters ?? null,
+    dispensedLiters: report.dispensed_liters,
+    capacityLiters: shiftCapacity > 0 ? shiftCapacity : null,
+  });
 
   function downloadCsv() {
     const lines: string[] = [];
@@ -229,21 +236,15 @@ export default function ShiftReportView({
           <strong>
             {report.tank_delta_liters == null ? "нет данных" : formatVolumePrecise(report.tank_delta_liters)}
           </strong>
-          <em>фактический расход в резервуарах</em>
+          <em>ориентир, не учёт продажи</em>
         </div>
         <div className="fiscal-link">=</div>
         <div className="fiscal-step">
-          <span>Разница (ТРК − цистерна)</span>
-          <strong className={discrepancyWarn ? "text-danger" : ""}>
+          <span>Ориентир датчика</span>
+          <strong className={sensor.status === "warn" ? "text-danger" : ""}>
             {report.discrepancy_liters == null ? "—" : signedLiters(report.discrepancy_liters)}
           </strong>
-          <em>
-            {report.discrepancy_liters == null
-              ? "нужны оба замера цистерны"
-              : discrepancyWarn
-                ? "есть расхождение по смене"
-                : "в пределах допуска"}
-          </em>
+          <em>{sensor.note}</em>
         </div>
       </div>
 

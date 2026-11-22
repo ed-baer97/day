@@ -20,7 +20,7 @@ def test_map_overview():
     stations = [point for point in body["points"] if point["kind"] == "station"]
     assert {point["meta"]["code"] for point in stations} == {"AGZS-AKT-12"}
     assert body["active_trips"] == 0
-    assert body["open_events"] == 1
+    assert body["open_events"] == 0
 
 
 def test_unknown_batch_trail_is_missing():
@@ -28,7 +28,7 @@ def test_unknown_batch_trail_is_missing():
     assert r.status_code == 404
 
 
-def test_reconcile_creates_shortage_event():
+def test_reconcile_marks_sensor_outside_band_without_shortage():
     from datetime import datetime, timezone
 
     payload = {
@@ -43,7 +43,7 @@ def test_reconcile_creates_shortage_event():
     }
     r = client.post("/api/v1/balance/reconcile", json=payload)
     assert r.status_code == 200
-    assert r.json()["status"] == "shortage"
+    assert r.json()["status"] == "outside_band"
 
 
 def test_ingest_dispense_idempotent():

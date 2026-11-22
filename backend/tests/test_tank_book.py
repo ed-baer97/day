@@ -66,7 +66,7 @@ def test_tank_book_lifecycle_and_recompute():
     assert ack.calculated_remainder_liters == 11500.0
     assert ack.actual_remainder_liters == 10000.0
     assert ack.delta_liters == -1500.0
-    assert ack.balance_status == "shortage"
+    assert ack.balance_status == "outside_band"
 
     state = build_tank_ingest_state(book, station_id=station_id, tank_id=tank_id, calibrated=False)
     assert state.calculated_remainder_liters == 11500.0
@@ -183,7 +183,7 @@ def test_summarize_station_tanks():
     assert remainder == 14500.0
     assert capacity == 25000.0
     assert delta == -500.0
-    assert status == "shortage"
+    assert status == "ok"
 
 
 def test_accept_dispense_and_list_dispense_records_roundtrip():

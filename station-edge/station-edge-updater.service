@@ -8,6 +8,7 @@ Before=station-edge.service
 Type=oneshot
 User=station-edge-updater
 Group=station-edge-updater
+SupplementaryGroups=station-edge
 WorkingDirectory=/var/lib/station-edge
 EnvironmentFile=/opt/station-edge/.env
 Environment=PYTHONUNBUFFERED=1

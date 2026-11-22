@@ -94,7 +94,8 @@ assert.equal(fallbackReport.columns[1].total, 0);
 assert.equal(fallbackReport.total, 0);
 assert.equal(fallbackReport.tankOutflowLiters, 251);
 assert.equal(fallbackReport.discrepancyLiters, -251);
-assert.equal(fallbackReport.status, "warn");
+assert.equal(fallbackReport.status, "ok");
+assert.match(fallbackReport.sensorNote, /вне полосы/);
 assert.equal(fallbackReport.opsTotal, 0);
 
 const riseOnly = columnDispenseReport(
@@ -168,6 +169,7 @@ assert.equal(strictEdgeEmpty.total, 0);
 assert.equal(strictEdgeEmpty.tankOutflowLiters, 300);
 assert.equal(strictEdgeEmpty.discrepancyLiters, -300);
 assert.equal(strictEdgeEmpty.status, "warn");
+assert.equal(strictEdgeEmpty.sensorNote, "уход без колонки");
 
 const virtualFourCols = columnDispenseReport(
   [reading(new Date(2026, 10, 18, 1, 0, 0), 10000, null)],
@@ -204,7 +206,8 @@ assert.equal(zeroSensorEdge.source, "edge");
 assert.equal(zeroSensorEdge.total, 80);
 assert.equal(zeroSensorEdge.tankOutflowLiters, 0);
 assert.equal(zeroSensorEdge.discrepancyLiters, 80);
-assert.equal(zeroSensorEdge.status, "warn");
+assert.equal(zeroSensorEdge.status, "ok");
+assert.match(zeroSensorEdge.sensorNote, /ориентир/);
 
 const silentSensorEdge = columnDispenseReport([], today, [], now, 0, realDispenses, {
   columnCount: 2,
@@ -215,7 +218,8 @@ assert.equal(silentSensorEdge.source, "edge");
 assert.equal(silentSensorEdge.total, 32.75);
 assert.equal(silentSensorEdge.tankOutflowLiters, null);
 assert.equal(silentSensorEdge.discrepancyLiters, null);
-assert.equal(silentSensorEdge.status, "warn");
+assert.equal(silentSensorEdge.status, "ok");
+assert.equal(silentSensorEdge.sensorNote, "датчик недоступен");
 
 const silentSensorIdle = columnDispenseReport([], today, [], now, 0, [], {
   columnCount: 2,
@@ -245,7 +249,7 @@ const zeroSensorUnder50 = columnDispenseReport(
 assert.equal(zeroSensorUnder50.total, 40);
 assert.equal(zeroSensorUnder50.tankOutflowLiters, 0);
 assert.equal(zeroSensorUnder50.discrepancyLiters, 40);
-assert.equal(zeroSensorUnder50.status, "warn");
+assert.equal(zeroSensorUnder50.status, "ok");
 
 const zeroSensorIdle = columnDispenseReport([], today, [], now, 0, [], {
   columnCount: 2,
@@ -296,6 +300,6 @@ const activeSensorOverTolerance = columnDispenseReport(
 assert.equal(activeSensorOverTolerance.total, 160);
 assert.equal(activeSensorOverTolerance.tankOutflowLiters, 100);
 assert.equal(activeSensorOverTolerance.discrepancyLiters, 60);
-assert.equal(activeSensorOverTolerance.status, "warn");
+assert.equal(activeSensorOverTolerance.status, "ok");
 
 console.log("columnReport.check ok");

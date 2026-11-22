@@ -1,5 +1,6 @@
 import type { ColumnsMode, DispenseReading, LevelReading } from "./api/client";
 import type { TimeRange } from "./period";
+import { sensorCue } from "./sensorBand";
 
 /** Базовое число колонок по умолчанию, если в паспорте АГЗС оно не задано явно. */
 export const CONNECTED_COLUMNS = 2;
@@ -25,6 +26,7 @@ export type ColumnReport = {
   tankOutflowLiters: number | null;
   opsTotal: number;
   discrepancyLiters: number | null;
+  sensorNote: string;
   status: "ok" | "warn";
   source: "edge" | "level";
   labels: string[];
@@ -94,7 +96,12 @@ export function columnDispenseReport(
   _now = new Date(),
   fallbackOutflow = 0,
   realDispenses: DispenseReading[] = [],
-  options?: { columnCount?: number; mode?: ColumnsMode; sensorOutflowLiters?: number | null },
+  options?: {
+    columnCount?: number;
+    mode?: ColumnsMode;
+    sensorOutflowLiters?: number | null;
+    capacityLiters?: number | null;
+  },
 ): ColumnReport {
   const colCount = Math.max(1, Math.min(8, Math.round(options?.columnCount ?? CONNECTED_COLUMNS)));
 
@@ -141,30 +148,26 @@ export function columnDispenseReport(
 
   let tankOutflowLiters: number | null;
   let discrepancyLiters: number | null;
-  let status: "ok" | "warn";
 
-  if (source === "edge") {
-    const rawSensorOutflow =
-      options?.sensorOutflowLiters !== undefined ? options.sensorOutflowLiters : fallbackOutflow;
-    if (rawSensorOutflow == null || !Number.isFinite(rawSensorOutflow)) {
-      tankOutflowLiters = null;
-      discrepancyLiters = null;
-      status = total > 0 ? "warn" : "ok";
-    } else {
-      const normalizedOutflow = Math.round(rawSensorOutflow * 1000) / 1000;
-      tankOutflowLiters = normalizedOutflow === 0 ? 0 : normalizedOutflow;
-      const diff = Math.round(total - tankOutflowLiters);
-      discrepancyLiters = diff === 0 ? 0 : diff;
-      status =
-        (tankOutflowLiters === 0 && total > 0) || Math.abs(discrepancyLiters) > 50
-          ? "warn"
-          : "ok";
-    }
+  const rawSensorOutflow =
+    options?.sensorOutflowLiters !== undefined ? options.sensorOutflowLiters : fallbackOutflow;
+  if (rawSensorOutflow == null || !Number.isFinite(rawSensorOutflow)) {
+    tankOutflowLiters = null;
+    discrepancyLiters = null;
   } else {
-    tankOutflowLiters = total;
-    discrepancyLiters = 0;
-    status = "ok";
+    const normalizedOutflow = Math.round(rawSensorOutflow * 1000) / 1000;
+    tankOutflowLiters = normalizedOutflow === 0 ? 0 : normalizedOutflow;
+    const diff = Math.round(total - tankOutflowLiters);
+    discrepancyLiters = diff === 0 ? 0 : diff;
   }
+  const cue = sensorCue({
+    discrepancyLiters,
+    outflowLiters: tankOutflowLiters,
+    dispensedLiters: total,
+    capacityLiters: options?.capacityLiters,
+  });
+  const status = cue.status;
+  const sensorNote = cue.note;
 
   return {
     columnCount: colCount,
@@ -174,6 +177,7 @@ export function columnDispenseReport(
     tankOutflowLiters,
     opsTotal,
     discrepancyLiters,
+    sensorNote,
     status,
     source,
     labels: range.labels,

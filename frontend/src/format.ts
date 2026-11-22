@@ -1,4 +1,4 @@
-import type { FiscalStatus, LinkQuality, SensorStatus, StationBalance, SupplyStatus } from "./types";
+import type { FiscalStatus, LinkQuality, SensorStatus, SupplyStatus } from "./types";
 
 export const REGIONS = [
   "г. Актау",
@@ -66,17 +66,33 @@ export function signedLiters(v: number) {
   return `${r > 0 ? "+" : ""}${r.toLocaleString("ru-RU")} л`;
 }
 
-export function balBadge(status: StationBalance["status"]) {
-  if (status === "ok") return "ok";
-  if (status === "warn") return "warn";
-  return "danger";
+export function balBadge(status: string) {
+  if (status === "ok" || status === "in_band") return "ok";
+  if (
+    status === "warn" ||
+    status === "outside_band" ||
+    status === "measurement_error" ||
+    status === "unregistered_receipt" ||
+    status === "unregistered_dispense"
+  ) {
+    return "warn";
+  }
+  if (status === "unknown") return "";
+  if (status === "shortage" || status === "surplus") return "danger";
+  return "";
 }
 
-export function balText(status: StationBalance["status"]) {
-  if (status === "ok") return "сходится";
-  if (status === "warn") return "погрешность";
+export function balText(status: string) {
+  if (status === "ok" || status === "in_band") return "в полосе датчика";
+  if (status === "warn" || status === "outside_band" || status === "measurement_error") {
+    return "датчик вне полосы";
+  }
+  if (status === "unknown") return "датчик недоступен";
+  if (status === "unregistered_receipt") return "слив без документа";
+  if (status === "unregistered_dispense") return "уход без колонки";
   if (status === "shortage") return "недостача";
-  return "излишек";
+  if (status === "surplus") return "излишек";
+  return status;
 }
 
 export function phaseLabel(status?: string | null) {
@@ -165,6 +181,10 @@ export function eventTypeLabel(eventType?: string | null): string {
   const map: Record<string, string> = {
     shortage: "Недостача",
     surplus: "Излишек",
+    unregistered_receipt: "Слив без документа",
+    unregistered_dispense: "Уход без колонки",
+    measurement_error: "Погрешность датчика",
+    outside_band: "Датчик вне полосы",
     sensor_offline: "Нет связи",
     calibration: "Калибровка",
     ok: "Норма",

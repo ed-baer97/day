@@ -381,6 +381,11 @@ def test_deploy_hardening_guards():
     ansible_playbook = (REPO_ROOT / "deploy" / "fleet" / "update-stations.yml").read_text(encoding="utf-8")
     assert "require_release_signature: true" in ansible_playbook
     assert "AGZS_REQUIRE_RELEASE_SIGNATURE" in ansible_playbook
+    assert "station-edge-updater" in ansible_playbook
+    assert "/var/lib/station-edge" in ansible_playbook
+    assert "station_edge.db" in ansible_playbook
+    assert "cryptography>=42.0" in ansible_playbook
+    assert "station-edge-monitor.service" in ansible_playbook
 
     compose = (REPO_ROOT / "deploy" / "docker-compose.yml").read_text(encoding="utf-8")
     deploy_env = (REPO_ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")

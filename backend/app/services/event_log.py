@@ -7,22 +7,7 @@ from uuid import UUID
 
 from app.services.balance_log import generated_events
 
-_SEED: list[dict] = [
-    {
-        "id": UUID("91111111-1111-1111-1111-111111111101"),
-        "station_id": UUID("a1111111-1111-1111-1111-111111111101"),
-        "tank_id": UUID("b1111111-1111-1111-1111-111111111101"),
-        "balance_snapshot_id": None,
-        "event_type": "shortage",
-        "severity": "warning",
-        "delta_liters": -150.0,
-        "title": "Недостача",
-        "description": "Факт ниже расчёта на 150 л",
-        "is_resolved": False,
-        "detected_at": datetime.now(timezone.utc),
-        "resolved_at": None,
-    }
-]
+_SEED: list[dict] = []
 
 
 def all_events() -> list[dict]:

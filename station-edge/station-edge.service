@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=station-edge
 Group=dialout
-SupplementaryGroups=tty
+SupplementaryGroups=tty station-edge
 WorkingDirectory=/var/lib/station-edge
 EnvironmentFile=/opt/station-edge/.env
 Environment=PYTHONUNBUFFERED=1

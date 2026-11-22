@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Публичный адрес сайта для карточки резервуара и скрипта Shelly.
     public_base_url: str = "http://localhost:8000"
 
-    # Баланс: пороги расхождений (литры)
+    # Не используются сверкой. Полоса датчика: max(100 л, 2% ёмкости) в domain.balance.
     balance_tolerance_liters: float = 50.0
     measurement_error_band_liters: float = 150.0
 
