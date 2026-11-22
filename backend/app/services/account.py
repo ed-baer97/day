@@ -383,18 +383,20 @@ def bind_level(body: LevelIngest, token: str | None) -> LevelIngest:
     return body
 
 
-def bind_calibration(body: CalibrationIn, token: str | None) -> CalibrationIn:
-    device = tank_by_token(token)
-    if device is not None:
-        _assert_device_scope(device, body.station_id, body.tank_id)
+def bind_calibration(body: CalibrationIn, token: str | None = None) -> CalibrationIn:
+    del token
+    station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id)
+    try:
+        card = backend().get_tank_device(station_id, tank_id)
         return body.model_copy(
             update={
-                "station_id": device.station_id,
-                "tank_id": device.tank_id,
-                "capacity_liters": device.capacity_liters,
+                "station_id": card.station_id,
+                "tank_id": card.tank_id,
+                "capacity_liters": card.capacity_liters,
             }
         )
-    require_station_and_tank(body.station_id, body.tank_id)
+    except NotFoundError:
+        pass
     if body.capacity_liters is None:
         raise ValidationError("укажите объём резервуара на карточке")
     return body

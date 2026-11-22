@@ -32,11 +32,9 @@ export default function AdminEdgeTab({
 
   // Форма публикации OTA-релиза
   const [channel, setChannel] = useState<"ring0" | "ring1" | "ring2">("ring0");
-  const [version, setVersion] = useState("0.1.0");
-  const [artifactUrl, setArtifactUrl] = useState(
-    "/releases/agzs_edge-0.1.0-py3-none-any.whl"
-  );
-  const [sha256, setSha256] = useState("0".repeat(64));
+  const [version, setVersion] = useState("");
+  const [artifactUrl, setArtifactUrl] = useState("");
+  const [sha256, setSha256] = useState("");
   const [minVersion, setMinVersion] = useState("");
   const [notes, setNotes] = useState("");
   const [signature, setSignature] = useState("");
@@ -95,8 +93,8 @@ export default function AdminEdgeTab({
       setFormError("Укажите версию и URL пакета");
       return null;
     }
-    if (!/^[0-9a-f]{64}$/.test(cleanedSha)) {
-      setFormError("SHA-256 должен состоять ровно из 64 hex-символов");
+    if (!/^[0-9a-f]{64}$/.test(cleanedSha) || cleanedSha === "0".repeat(64)) {
+      setFormError("Укажите реальный SHA-256 (64 hex-символа, не нули)");
       return null;
     }
     setFormError(null);
@@ -238,7 +236,9 @@ export default function AdminEdgeTab({
                     <div className="dash-muted" style={{ marginTop: 4 }}>
                       SHA-256: <code>{rel.sha256.slice(0, 12)}…</code> ·{" "}
                       {rel.signature ? (
-                        <span className="badge ok">HMAC подписан</span>
+                        <span className="badge ok">
+                          {rel.signature.startsWith("ed25519:") ? "Ed25519 подписан" : "HMAC подписан"}
+                        </span>
                       ) : (
                         <span className="badge warn">без подписи</span>
                       )}
@@ -433,7 +433,7 @@ export default function AdminEdgeTab({
             <input value={sha256} onChange={(e) => setSha256(e.target.value)} required />
           </label>
           <label>
-            HMAC-подпись (опционально)
+            Подпись релиза (Ed25519 / HMAC, опционально)
             <input
               placeholder="автоподпись сервером при пустом поле"
               value={signature}

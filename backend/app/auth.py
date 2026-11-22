@@ -223,6 +223,17 @@ def is_admin_authorization(authorization: str | None) -> bool:
     return principal is not None and principal.is_admin
 
 
+def has_valid_admin_token(authorization: str | None) -> bool:
+    """Проверяет реальный Bearer-токен администратора, не учитывая AUTH_DISABLED."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        return False
+    principal = read_principal(token, get_settings().auth_secret)
+    return principal is not None and principal.is_admin
+
+
 def current_principal(authorization: str | None) -> Principal | None:
     settings = get_settings()
     if settings.auth_disabled:

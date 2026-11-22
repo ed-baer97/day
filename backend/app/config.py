@@ -34,8 +34,11 @@ class Settings(BaseSettings):
     balance_tolerance_liters: float = 50.0
     measurement_error_band_liters: float = 150.0
 
-    # Пусто — приём открыт (стенд). На площадке задайте INGEST_TOKEN.
+    # Пусто — анонимный доступ закрыт (приёму нужен токен устройства или сессия админа).
+    # ALLOW_ANONYMOUS_INGEST=true — только для локального стенда и тестов.
     ingest_token: str = ""
+    gps_ingest_token: str = ""
+    allow_anonymous_ingest: bool = False
 
     # Как часто сервер спрашивает привязанные Shelly по локальной сети.
     # Тот же poll_seconds, что у витрины и скрипта Shelly. Env перекрывает.
@@ -50,7 +53,9 @@ class Settings(BaseSettings):
     auth_secret: str = "lpg-dev-secret-change-me"
     auth_disabled: bool = False
 
-    # Секрет HMAC-SHA256 для криптоподписи OTA-релизов station-edge (EDGE_RELEASE_SIGNING_KEY).
+    # Ключи криптоподписи OTA-релизов station-edge: Ed25519 (основной) и legacy HMAC.
+    edge_release_private_key: str = ""
+    edge_release_public_key: str = ""
     edge_release_signing_key: str = ""
 
     @property

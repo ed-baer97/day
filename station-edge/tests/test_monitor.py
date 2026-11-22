@@ -294,7 +294,14 @@ def test_cli_commands_end_to_end(monkeypatch, tmp_path: Path, capsys) -> None:
     db_path = tmp_path / "cli_all.db"
     env_file = tmp_path / ".env"
     env_file.write_text(
-        f"AGZS_DB_PATH={db_path}\nAGZS_POLL_INTERVAL_SEC=0\nAGZS_SYNC_ENABLED=1\n",
+        f"AGZS_DB_PATH={db_path}\n"
+        "AGZS_POLL_INTERVAL_SEC=0\n"
+        "AGZS_SYNC_ENABLED=1\n"
+        "AGZS_VPS_BASE_URL=https://vps.example.com\n"
+        "AGZS_DEVICE_TOKEN=tok-cli\n"
+        "AGZS_STATION_CODE=AKT-CLI\n"
+        "AGZS_STATION_ID=a2222222-2222-2222-2222-222222222201\n"
+        "AGZS_TANK_ID=b2222222-2222-2222-2222-222222222201\n",
         encoding="utf-8",
     )
     for k in (
@@ -303,6 +310,11 @@ def test_cli_commands_end_to_end(monkeypatch, tmp_path: Path, capsys) -> None:
         "AGZS_SYNC_ENABLED",
         "AGZS_SOURCE_MODE",
         "AGZS_SERIAL_PORT",
+        "AGZS_VPS_BASE_URL",
+        "AGZS_DEVICE_TOKEN",
+        "AGZS_STATION_CODE",
+        "AGZS_STATION_ID",
+        "AGZS_TANK_ID",
     ):
         monkeypatch.delenv(k, raising=False)
 

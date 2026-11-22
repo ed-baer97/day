@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import replace
@@ -32,6 +34,7 @@ from pathlib import Path
 
 from agzs_edge.config import EdgeSettings, FrameLayout, MAX_PUMP_ADDRESS, MIN_PUMP_ADDRESS
 from agzs_edge.iskra import IskraFrameError, parse_iskra_frame
+from agzs_edge.port_lock import ExclusivePortLock, PortBusyError
 from agzs_edge.psu_controller import (
     PsuControlError,
     Uzsg01PsuController,
@@ -121,33 +124,43 @@ def _cmd_probe(args: argparse.Namespace, settings: EdgeSettings) -> int:
     )
 
     any_reply = False
+    use_emulator = bool(getattr(args, "emulator", False) or settings.source_mode == "emulator")
+    lock_cm = (
+        contextlib.nullcontext()
+        if use_emulator
+        else ExclusivePortLock(port, lock_dir=settings.db_path.parent)
+    )
     try:
-        for addr in addresses:
-            for tx_mode in tx_modes:
-                res = link.poll_test(addr, checksum_mode=tx_mode)
-                req_hex = res.request_bytes.hex(" ").upper()
-                tag = f"Адрес {addr}, {tx_mode}" if len(tx_modes) > 1 else f"Адрес {addr}"
-                if res.error_message:
-                    print(f"  [{tag}] TX: {req_hex} -> ОШИБКА ПОРТА: {res.error_message}")
-                    continue
-                if not res.has_response:
-                    print(f"  [{tag}] TX: {req_hex} -> НЕТ ОТВЕТА (0 байт)")
-                    continue
+        with lock_cm:
+            for addr in addresses:
+                for tx_mode in tx_modes:
+                    res = link.poll_test(addr, checksum_mode=tx_mode)
+                    req_hex = res.request_bytes.hex(" ").upper()
+                    tag = f"Адрес {addr}, {tx_mode}" if len(tx_modes) > 1 else f"Адрес {addr}"
+                    if res.error_message:
+                        print(f"  [{tag}] TX: {req_hex} -> ОШИБКА ПОРТА: {res.error_message}")
+                        continue
+                    if not res.has_response:
+                        print(f"  [{tag}] TX: {req_hex} -> НЕТ ОТВЕТА (0 байт)")
+                        continue
 
-                any_reply = True
-                resp_hex = res.response_bytes.hex(" ").upper()
-                try:
-                    frame = parse_iskra_frame(res.response_bytes, parse_layout)
-                    print(
-                        f"  [{tag}] TX: {req_hex} -> RX ({len(res.response_bytes)} Б): {resp_hex}\n"
-                        f"             ОК: адрес={frame.address}, сост={frame.state_code}({frame.state_name}), "
-                        f"ошибка={frame.error_code}, {_describe_fields(frame)}, BCC=0x{frame.checksum_byte:02X}"
-                    )
-                except IskraFrameError as exc:
-                    print(
-                        f"  [{tag}] TX: {req_hex} -> RX ({len(res.response_bytes)} Б): {resp_hex}\n"
-                        f"             ВНИМАНИЕ (нестандартный кадр): {exc}"
-                    )
+                    any_reply = True
+                    resp_hex = res.response_bytes.hex(" ").upper()
+                    try:
+                        frame = parse_iskra_frame(res.response_bytes, parse_layout)
+                        print(
+                            f"  [{tag}] TX: {req_hex} -> RX ({len(res.response_bytes)} Б): {resp_hex}\n"
+                            f"             ОК: адрес={frame.address}, сост={frame.state_code}({frame.state_name}), "
+                            f"ошибка={frame.error_code}, {_describe_fields(frame)}, BCC=0x{frame.checksum_byte:02X}"
+                        )
+                    except IskraFrameError as exc:
+                        print(
+                            f"  [{tag}] TX: {req_hex} -> RX ({len(res.response_bytes)} Б): {resp_hex}\n"
+                            f"             ВНИМАНИЕ (нестандартный кадр): {exc}"
+                        )
+    except PortBusyError as exc:
+        print(f"Ошибка доступа к порту: {exc}", file=sys.stderr)
+        return 1
     finally:
         link.close()
 
@@ -173,25 +186,35 @@ def _cmd_listen(args: argparse.Namespace, settings: EdgeSettings) -> int:
         f"({baudrate} 8N1, timeout={effective_wait:.2f}с, BCC={layout.checksum_mode}, Ctrl+C для выхода)..."
     )
     step = 0
+    use_emulator = bool(getattr(args, "emulator", False) or settings.source_mode == "emulator")
+    lock_cm = (
+        contextlib.nullcontext()
+        if use_emulator
+        else ExclusivePortLock(port, lock_dir=settings.db_path.parent)
+    )
     try:
         if addr < MIN_PUMP_ADDRESS or addr > MAX_PUMP_ADDRESS:
             raise ValueError(f"Адрес колонки должен быть в диапазоне {MIN_PUMP_ADDRESS}..{MAX_PUMP_ADDRESS}, получено: {addr}")
-        while args.count is None or step < args.count:
-            step += 1
-            res = link.poll_test(addr)
-            if not res.has_response:
-                print(f"[{step:04d}] Нет ответа ({res.error_message or 'таймаут'})")
-            else:
-                try:
-                    frame = parse_iskra_frame(res.response_bytes, layout)
-                    print(
-                        f"[{step:04d}] RX: {frame.raw_hex} | сост={frame.state_code}({frame.state_name}) "
-                        f"ош={frame.error_code} {_describe_fields(frame)}"
-                    )
-                except IskraFrameError as exc:
-                    print(f"[{step:04d}] RX RAW ({len(res.response_bytes)}B): {res.response_bytes.hex(' ').upper()} | {exc}")
-            if args.count is None or step < args.count:
-                time.sleep(settings.poll_interval_sec)
+        with lock_cm:
+            while args.count is None or step < args.count:
+                step += 1
+                res = link.poll_test(addr)
+                if not res.has_response:
+                    print(f"[{step:04d}] Нет ответа ({res.error_message or 'таймаут'})")
+                else:
+                    try:
+                        frame = parse_iskra_frame(res.response_bytes, layout)
+                        print(
+                            f"[{step:04d}] RX: {frame.raw_hex} | сост={frame.state_code}({frame.state_name}) "
+                            f"ош={frame.error_code} {_describe_fields(frame)}"
+                        )
+                    except IskraFrameError as exc:
+                        print(f"[{step:04d}] RX RAW ({len(res.response_bytes)}B): {res.response_bytes.hex(' ').upper()} | {exc}")
+                if args.count is None or step < args.count:
+                    time.sleep(settings.poll_interval_sec)
+    except PortBusyError as exc:
+        print(f"Ошибка доступа к порту: {exc}", file=sys.stderr)
+        return 1
     except ValueError as exc:
         print(f"Ошибка параметра: {exc}", file=sys.stderr)
         return 2
@@ -208,7 +231,7 @@ def _cmd_watch_fill(args: argparse.Namespace, settings: EdgeSettings) -> int:
     addr = args.addr
     checksum_arg = getattr(args, "checksum", None)
     layout = replace(settings.layout, checksum_mode=checksum_arg) if checksum_arg else settings.layout
-    link, _port, _baudrate, _effective_wait = _build_diagnostic_link(args, settings, layout=layout)
+    link, port, _baudrate, _effective_wait = _build_diagnostic_link(args, settings, layout=layout)
     if addr < MIN_PUMP_ADDRESS or addr > MAX_PUMP_ADDRESS:
         link.close()
         print(
@@ -229,15 +252,25 @@ def _cmd_watch_fill(args: argparse.Namespace, settings: EdgeSettings) -> int:
             flush=True,
         )
 
+    use_emulator = bool(getattr(args, "emulator", False) or settings.source_mode == "emulator")
+    lock_cm = (
+        contextlib.nullcontext()
+        if use_emulator
+        else ExclusivePortLock(port, lock_dir=settings.db_path.parent)
+    )
     try:
-        report = watch_fill(
-            link,
-            addr,
-            layout=layout,
-            max_seconds=args.seconds,
-            idle_seconds=args.idle,
-            on_sample=_show,
-        )
+        with lock_cm:
+            report = watch_fill(
+                link,
+                addr,
+                layout=layout,
+                max_seconds=args.seconds,
+                idle_seconds=args.idle,
+                on_sample=_show,
+            )
+    except PortBusyError as exc:
+        print(f"Ошибка доступа к порту: {exc}", file=sys.stderr)
+        return 1
     except ValueError as exc:
         print(f"Ошибка параметра: {exc}", file=sys.stderr)
         return 2
@@ -262,9 +295,25 @@ def _cmd_serve(args: argparse.Namespace, settings: EdgeSettings) -> int:
     if getattr(args, "auto_reset", False):
         settings.auto_reset_on_stop = True
         settings.read_only = False
+    if settings.sync_enabled:
+        try:
+            settings.validate_vps_binding(require_tank=True)
+        except ValueError as exc:
+            print(f"Ошибка конфигурации VPS: {exc}", file=sys.stderr)
+            return 2
     service = StationEdgeService(settings)
-    service.serve(max_cycles=args.cycles)
+    try:
+        service.serve(max_cycles=args.cycles)
+    except PortBusyError as exc:
+        print(f"Ошибка запуска службы: {exc}", file=sys.stderr)
+        return 1
     return 0
+
+
+def _is_cli_control_allowed(args: argparse.Namespace) -> bool:
+    if getattr(args, "allow_control", False):
+        return True
+    return os.environ.get("AGZS_ALLOW_CLI_CONTROL", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _build_psu_controller(
@@ -272,12 +321,13 @@ def _build_psu_controller(
     settings: EdgeSettings,
     *,
     initial_locked: bool = False,
-) -> tuple[AskaLink, Uzsg01PsuController]:
+) -> tuple[AskaLink, Uzsg01PsuController, str]:
     if getattr(args, "emulator", False) or settings.source_mode == "emulator":
         link: AskaLink = EmulatorAskaLink(layout=settings.layout, initial_locked=initial_locked)
+        port = "emulator"
     else:
-        link, _port, _baud, _wait = _build_diagnostic_link(args, settings, layout=settings.layout)
-    return link, Uzsg01PsuController(link, layout=settings.layout)
+        link, port, _baud, _wait = _build_diagnostic_link(args, settings, layout=settings.layout)
+    return link, Uzsg01PsuController(link, layout=settings.layout), port
 
 
 def _run_psu_action(
@@ -287,9 +337,26 @@ def _run_psu_action(
     *,
     initial_locked: bool = False,
 ) -> int:
-    link, ctrl = _build_psu_controller(args, settings, initial_locked=initial_locked)
+    is_emulator = bool(getattr(args, "emulator", False) or settings.source_mode == "emulator")
+    if not is_emulator and not _is_cli_control_allowed(args):
+        print(
+            "Ошибка безопасности: ручная команда на живой порт требует флаг --allow-control "
+            "(предварительно остановите службу station-edge).",
+            file=sys.stderr,
+        )
+        return 2
+    link, ctrl, port = _build_psu_controller(args, settings, initial_locked=initial_locked)
+    lock_cm = (
+        contextlib.nullcontext()
+        if is_emulator
+        else ExclusivePortLock(port, lock_dir=settings.db_path.parent)
+    )
     try:
-        return action(ctrl)
+        with lock_cm:
+            return action(ctrl)
+    except PortBusyError as exc:
+        print(f"Ошибка доступа к порту: {exc}", file=sys.stderr)
+        return 1
     except (PsuControlError, ValueError) as exc:
         print(f"Ошибка управления УЗСГ-01: {exc}", file=sys.stderr)
         return 1
@@ -454,6 +521,8 @@ def _cmd_status(args: argparse.Namespace, settings: EdgeSettings) -> int:
     print(f"  Суммарный уход    : {info['total_dispensed_ml']} мл ({info['total_liters']} л)")
     print(f"  Отправлено на VPS : {info['outbox_sent']}")
     print(f"  В очереди на VPS  : {info['outbox_pending']}")
+    if info.get("outbox_auth_blocked", 0):
+        print(f"  Ошибка токена VPS : {info['outbox_auth_blocked']} ({info.get('last_auth_error') or '401/403'})")
 
     pumps = info.get("pumps") or []
     if isinstance(pumps, list) and pumps:
@@ -480,11 +549,18 @@ def _cmd_status(args: argparse.Namespace, settings: EdgeSettings) -> int:
 
 
 def _cmd_flush(args: argparse.Namespace, settings: EdgeSettings) -> int:
+    try:
+        settings.validate_vps_binding(require_tank=False)
+    except ValueError as exc:
+        print(f"Ошибка конфигурации VPS: {exc}", file=sys.stderr)
+        return 2
     db = EdgeDatabase(settings.db_path)
+    db.requeue_auth_blocked()
     worker = OutboxSyncWorker(
         db,
         vps_base_url=settings.vps_base_url,
         device_token=settings.device_token,
+        allow_insecure_http=settings.allow_insecure_http,
     )
     sent, failed = worker.flush_due(limit=args.limit)
     print(f"Отправка очереди на VPS ({settings.vps_base_url}): отправлено={sent}, ошибок={failed}")
@@ -544,9 +620,19 @@ def _cmd_update(args: argparse.Namespace, settings: EdgeSettings) -> int:
     if args.wait_idle_sec < 0:
         print("Ошибка: --wait-idle-sec должен быть >= 0", file=sys.stderr)
         return 2
+    try:
+        settings.validate_vps_binding(require_tank=False)
+    except ValueError as exc:
+        print(f"Ошибка конфигурации VPS: {exc}", file=sys.stderr)
+        return 2
 
     db = EdgeDatabase(settings.db_path, read_only=True)
-    updater = EdgeUpdater(settings, db=db)
+    marker_arg = getattr(args, "restart_marker", "")
+    updater = EdgeUpdater(
+        settings,
+        db=db,
+        restart_marker_path=Path(marker_arg) if marker_arg else None,
+    )
     result = updater.run_update(
         check_only=args.check,
         wait_idle_sec=args.wait_idle_sec,
@@ -640,6 +726,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--timeout", type=float, default=None, help="Таймаут ожидания ответа в секундах")
         p.add_argument("--addr", type=int, default=1, help="Адрес колонки (1..8)")
         p.add_argument("--emulator", action="store_true", help="Использовать встроенный имитатор УЗСГ-01")
+        p.add_argument(
+            "--allow-control",
+            action="store_true",
+            help="Явное разрешение на команду колонке на живом COM/TTY порту",
+        )
 
     p_unlock = sub.add_parser(
         "unlock",
@@ -748,6 +839,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--releases-dir",
         default="",
         help="Каталог хранения скачанных .whl пакетов",
+    )
+    p_update.add_argument(
+        "--restart-marker",
+        default="",
+        help="Путь к маркеру рестарта после успешного обновления (для systemd ExecStartPost=+)",
     )
 
     return parser

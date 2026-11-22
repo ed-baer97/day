@@ -137,15 +137,16 @@ def test_link_shows_voltage_before_calibration():
 def test_calibration_writes_shelly_voltage_into_the_book():
     device = MemoryShelly(volts=2.5)
     set_shelly_rpc(device)
-    tank_id, token = _tank_with_token()
+    tank_id, _token = _tank_with_token()
     client.put(
         f"/api/v1/stations/{STATION}/devices/{tank_id}/shelly",
         json={"host": "192.168.0.104"},
     )
     calibrated = client.put(
         "/api/v1/ingest/calibration",
-        headers={"X-Device-Token": token},
         json={
+            "station_id": STATION,
+            "tank_id": tank_id,
             "low_volts": 1.2,
             "low_percent": 20,
             "high_volts": 3.8,

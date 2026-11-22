@@ -10,6 +10,7 @@ from pathlib import Path
 
 from agzs_edge.config import EdgeSettings, MAX_PUMP_ADDRESS, MIN_PUMP_ADDRESS, resolve_preferred_port
 from agzs_edge.iskra import IskraFrameError, build_test_command, parse_iskra_frame
+from agzs_edge.port_lock import ExclusivePortLock, PortBusyError
 from agzs_edge.serial_link import SerialAskaLink, list_available_serial_ports
 
 
@@ -184,39 +185,47 @@ def run_diagnose(settings: EdgeSettings, *, address: int = 1) -> DiagnoseReport:
         min_wait_sec=1.5,
     )
     try:
-        res = link.poll_test(address)
-        report.access = "OK" if res.error_message is None else "ERROR"
-        report.tx_bytes = len(res.request_bytes)
-        report.rx_bytes = len(res.response_bytes)
-        report.last_tx_hex = res.request_bytes.hex(" ").upper()
-        report.last_rx_hex = res.response_bytes.hex(" ").upper() if res.response_bytes else ""
-        if res.error_message:
-            err_lower = res.error_message.lower()
-            is_busy = any(
-                tok in err_lower for tok in ("busy", "permission", "access is denied", "отказано в доступе")
-            )
-            report.status = "PORT_BUSY" if is_busy else "DRIVER_ERROR"
-            report.notes.append(res.error_message)
-        elif not res.has_response:
-            report.timeouts = 1
-            report.status = "NO_RESPONSE"
-            report.notes.append(
-                "TX ушёл, RX=0. Индикаторы АСКА не доказывают ответ колонки. "
-                "Совместимость Искра 1.72 с прошивкой АСКА-02 07.2026 не подтверждена производителем."
-            )
-            report.notes.append(
-                "Гипотеза (не доказательство): возможен PROTOCOL_MISMATCH_SUSPECTED — нужна спецификация АСКА-02."
-            )
-        else:
-            try:
-                parse_iskra_frame(res.response_bytes, settings.layout)
-                report.status = "CONNECTED"
-                report.frame_validation = "OK"
-            except IskraFrameError as exc:
-                report.invalid_frames = 1
-                report.status = "PROTOCOL_MISMATCH_SUSPECTED"
-                report.frame_validation = "FAIL"
-                report.notes.append(str(exc))
+        try:
+            with ExclusivePortLock(port, lock_dir=settings.db_path.parent):
+                res = link.poll_test(address)
+        except PortBusyError as exc:
+            report.access = "ERROR"
+            report.status = "PORT_BUSY"
+            report.notes.append(str(exc))
+            res = None
+        if res is not None:
+            report.access = "OK" if res.error_message is None else "ERROR"
+            report.tx_bytes = len(res.request_bytes)
+            report.rx_bytes = len(res.response_bytes)
+            report.last_tx_hex = res.request_bytes.hex(" ").upper()
+            report.last_rx_hex = res.response_bytes.hex(" ").upper() if res.response_bytes else ""
+            if res.error_message:
+                err_lower = res.error_message.lower()
+                is_busy = any(
+                    tok in err_lower for tok in ("busy", "permission", "access is denied", "отказано в доступе")
+                )
+                report.status = "PORT_BUSY" if is_busy else "DRIVER_ERROR"
+                report.notes.append(res.error_message)
+            elif not res.has_response:
+                report.timeouts = 1
+                report.status = "NO_RESPONSE"
+                report.notes.append(
+                    "TX ушёл, RX=0. Индикаторы АСКА не доказывают ответ колонки. "
+                    "Совместимость Искра 1.72 с прошивкой АСКА-02 07.2026 не подтверждена производителем."
+                )
+                report.notes.append(
+                    "Гипотеза (не доказательство): возможен PROTOCOL_MISMATCH_SUSPECTED — нужна спецификация АСКА-02."
+                )
+            else:
+                try:
+                    parse_iskra_frame(res.response_bytes, settings.layout)
+                    report.status = "CONNECTED"
+                    report.frame_validation = "OK"
+                except IskraFrameError as exc:
+                    report.invalid_frames = 1
+                    report.status = "PROTOCOL_MISMATCH_SUSPECTED"
+                    report.frame_validation = "FAIL"
+                    report.notes.append(str(exc))
     finally:
         link.close()
 

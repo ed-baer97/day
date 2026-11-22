@@ -1,12 +1,23 @@
-"""Тесты централизованного управления релизами (3 кольца: ring0, ring1, ring2) и телеметрии парка АГЗС."""
+"""Тесты централизованного управления релизами (3 кольца: ring0, ring1, ring2), Ed25519 и PostgreSQL-хранилища."""
 
+from __future__ import annotations
+
+import contextlib
 import hmac
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.auth import require_admin
 from app.config import get_settings
+from app.domain.edge_release import (
+    generate_ed25519_keypair,
+    sign_release_ed25519,
+    verify_release_ed25519,
+)
 from app.domain.errors import ValidationError
+from app.models.edge import EdgeNodeStatusRecord, EdgeReleaseRecord, EdgeRingStationRecord
 from app.routers.ingest import (
     get_edge_fleet,
     get_edge_release,
@@ -15,7 +26,11 @@ from app.routers.ingest import (
     router as ingest_router,
 )
 from app.schemas.ingest import EdgeHeartbeatIn, EdgeReleaseManifest
+from app.services import edge_fleet
 from app.services.edge_fleet import reset_edge_fleet, sign_release_manifest
+from app.services.ingest_auth import IngestCaller
+
+ADMIN_CALLER = IngestCaller(kind="admin")
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +41,31 @@ def _clean_fleet():
 
 
 def test_three_ring_rollout_and_fleet_heartbeat():
+    # Без опубликованных релизов заглушка 0.1.0 / 0*64 не отдаётся
+    unpub = get_edge_release(
+        channel="stable",
+        station_code="AKT-R2-099",
+        current_version="0.1.0",
+        outbox_pending=0,
+        caller=ADMIN_CALLER,
+    )
+    assert unpub.published is False
+    assert unpub.version == ""
+    assert unpub.sha256 == ""
+    assert unpub.update_required is False
+
+    # Нулевой SHA-256 при публикации отклоняется
+    with pytest.raises(ValidationError):
+        put_edge_release(
+            EdgeReleaseManifest(
+                version="0.1.0",
+                artifact_url="/releases/agzs_edge-0.1.0.whl",
+                sha256="0" * 64,
+                channel="ring2",
+            ),
+            _="admin",
+        )
+
     sha_v2 = "a" * 64
     sha_v3 = "b" * 64
 
@@ -39,7 +79,7 @@ def test_three_ring_rollout_and_fleet_heartbeat():
             notes="Кольцо 0: обкатка сутки рядом с инженером",
         ),
         canary_stations=["AKT-R0-1", "AKT-R0-2"],
-        _=None,
+        _="admin",
     )
     assert r0.version == "0.3.0"
     assert r0.channel == "ring0"
@@ -54,7 +94,7 @@ def test_three_ring_rollout_and_fleet_heartbeat():
             notes="Кольцо 1: 10% станций, обкатка 1 смену",
         ),
         ring1_stations=["AKT-R1-1"],
-        _=None,
+        _="admin",
     )
     assert r1.version == "0.2.0"
     assert r1.channel == "ring1"
@@ -65,8 +105,9 @@ def test_three_ring_rollout_and_fleet_heartbeat():
         station_code="AKT-R0-1",
         current_version="0.1.0",
         outbox_pending=0,
-        _=None,
+        caller=ADMIN_CALLER,
     )
+    assert rel_r0.published is True
     assert rel_r0.version == "0.3.0"
     assert rel_r0.channel == "ring0"
     assert rel_r0.update_required is True
@@ -76,7 +117,7 @@ def test_three_ring_rollout_and_fleet_heartbeat():
         station_code="AKT-R1-1",
         current_version="0.1.0",
         outbox_pending=0,
-        _=None,
+        caller=ADMIN_CALLER,
     )
     assert rel_r1.version == "0.2.0"
     assert rel_r1.channel == "ring1"
@@ -87,9 +128,9 @@ def test_three_ring_rollout_and_fleet_heartbeat():
         station_code="AKT-R2-099",
         current_version="0.1.0",
         outbox_pending=0,
-        _=None,
+        caller=ADMIN_CALLER,
     )
-    assert rel_r2.version == "0.1.0"
+    assert rel_r2.published is False
     assert rel_r2.channel == "ring2"
     assert rel_r2.update_required is False
 
@@ -103,7 +144,7 @@ def test_three_ring_rollout_and_fleet_heartbeat():
             active_pumps=0,
             update_status="updated",
         ),
-        _=None,
+        caller=ADMIN_CALLER,
     )
     assert ack_r0.accepted is True
     assert ack_r0.update_required is False
@@ -117,7 +158,7 @@ def test_three_ring_rollout_and_fleet_heartbeat():
             active_pumps=0,
             update_status="updated",
         ),
-        _=None,
+        caller=ADMIN_CALLER,
     )
     assert ack_r1.update_required is False
 
@@ -130,7 +171,7 @@ def test_three_ring_rollout_and_fleet_heartbeat():
             active_pumps=0,
             update_status="up_to_date",
         ),
-        _=None,
+        caller=ADMIN_CALLER,
     )
     assert ack_r2.update_required is False
 
@@ -143,10 +184,10 @@ def test_three_ring_rollout_and_fleet_heartbeat():
             channel="ring2",
             notes="Кольцо 2: массовая раскатка во время простоя",
         ),
-        _=None,
+        _="admin",
     )
 
-    fleet = get_edge_fleet(_=None)
+    fleet = get_edge_fleet(_="admin")
     assert fleet.total_nodes == 3
     assert fleet.up_to_date_nodes == 2
     assert fleet.outdated_nodes == 1
@@ -160,22 +201,104 @@ def test_three_ring_rollout_and_fleet_heartbeat():
     assert by_code["AKT-R2-099"].target_version == "0.2.0"
 
 
-def test_edge_release_signing_and_admin_route_guard(monkeypatch):
-    # 1. Проверяем, что PUT /edge/release и GET /edge/fleet защищены именно require_admin (а не require_device)
+def test_edge_release_signing_ed25519_hmac_and_admin_route_guards(monkeypatch):
+    # 1. Проверяем защитников ingest-роутера: PUT /edge/release, GET /edge/fleet, PUT /calibration, POST /receipt
     by_path_method = {
         (route.path, tuple(sorted(route.methods))): [dep.call for dep in route.dependant.dependencies]
         for route in ingest_router.routes
     }
     assert require_admin in by_path_method[("/ingest/edge/release", ("PUT",))]
     assert require_admin in by_path_method[("/ingest/edge/fleet", ("GET",))]
+    assert require_admin in by_path_method[("/ingest/calibration", ("PUT",))]
+    assert require_admin in by_path_method[("/ingest/receipt", ("POST",))]
     assert require_admin not in by_path_method[("/ingest/edge/release", ("GET",))]
     assert require_admin not in by_path_method[("/ingest/edge/heartbeat", ("POST",))]
 
-    # 2. Проверяем HMAC-SHA256 подпись релиза при заданном EDGE_RELEASE_SIGNING_KEY
+    # 2. Асимметричная подпись Ed25519 (приватный ключ на центре, публичный на станциях)
+    priv_hex, pub_hex = generate_ed25519_keypair()
+    sha = "d" * 64
+    monkeypatch.setenv("EDGE_RELEASE_PRIVATE_KEY", priv_hex)
+    monkeypatch.setenv("EDGE_RELEASE_PUBLIC_KEY", pub_hex)
+    monkeypatch.setenv("EDGE_RELEASE_SIGNING_KEY", "")
+    get_settings.cache_clear()
+    try:
+        signed_r0 = put_edge_release(
+            EdgeReleaseManifest(
+                version="0.6.0",
+                artifact_url="/releases/agzs_edge-0.6.0-py3-none-any.whl",
+                sha256=sha,
+                channel="ring0",
+                min_version="0.2.0",
+            ),
+            _="admin",
+        )
+        assert signed_r0.signature is not None
+        assert signed_r0.signature.startswith("ed25519:")
+        assert verify_release_ed25519(
+            "0.6.0",
+            sha,
+            "0.2.0",
+            signed_r0.signature,
+            pub_hex,
+            channel="ring0",
+            artifact_url="https://lpg.example.com/releases/agzs_edge-0.6.0-py3-none-any.whl",
+        )
+
+        # Подмена канала при проверке отклоняется
+        assert not verify_release_ed25519(
+            "0.6.0",
+            sha,
+            "0.2.0",
+            signed_r0.signature,
+            pub_hex,
+            channel="ring2",
+            artifact_url="/releases/agzs_edge-0.6.0-py3-none-any.whl",
+        )
+
+        # Поддельная Ed25519-подпись при публикации отклоняется с 422
+        with pytest.raises(ValidationError) as bad_ed:
+            put_edge_release(
+                EdgeReleaseManifest(
+                    version="0.6.1",
+                    artifact_url="/releases/agzs_edge-0.6.1.whl",
+                    sha256=sha,
+                    channel="ring0",
+                    signature="ed25519:" + "0" * 128,
+                ),
+                _="admin",
+            )
+        assert bad_ed.value.status_code == 422
+
+        # Валидная внешняя подпись Ed25519 принимается
+        ext_ed = sign_release_ed25519(
+            "0.6.2",
+            sha,
+            None,
+            priv_hex,
+            channel="ring2",
+            artifact_url="/releases/agzs_edge-0.6.2.whl",
+        )
+        pub_r2 = put_edge_release(
+            EdgeReleaseManifest(
+                version="0.6.2",
+                artifact_url="/releases/agzs_edge-0.6.2.whl",
+                sha256=sha,
+                channel="ring2",
+                signature=ext_ed,
+            ),
+            _="admin",
+        )
+        assert pub_r2.signature == ext_ed
+    finally:
+        monkeypatch.delenv("EDGE_RELEASE_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("EDGE_RELEASE_PUBLIC_KEY", raising=False)
+        get_settings.cache_clear()
+
+    # 3. Legacy HMAC-SHA256 подпись релиза с канонической строкой v2
+    reset_edge_fleet()
     monkeypatch.setenv("EDGE_RELEASE_SIGNING_KEY", "fleet-secret-key")
     get_settings.cache_clear()
     try:
-        sha = "d" * 64
         auto_signed = put_edge_release(
             EdgeReleaseManifest(
                 version="0.4.0",
@@ -186,14 +309,20 @@ def test_edge_release_signing_and_admin_route_guard(monkeypatch):
             ),
             _="admin",
         )
-        expected = sign_release_manifest("0.4.0", sha, "0.2.0", "fleet-secret-key")
+        expected = sign_release_manifest(
+            "0.4.0",
+            sha,
+            "0.2.0",
+            "fleet-secret-key",
+            channel="ring0",
+            artifact_url="https://cdn.example.com/agzs_edge-0.4.0-py3-none-any.whl",
+        )
         assert auto_signed.signature is not None
         assert hmac.compare_digest(auto_signed.signature, expected)
 
-        fetched = get_edge_release(channel="ring0", _=None)
+        fetched = get_edge_release(channel="ring0", caller=ADMIN_CALLER)
         assert fetched.signature == expected
 
-        # Поддельная подпись отклоняется с 422 ValidationError
         with pytest.raises(ValidationError) as exc:
             put_edge_release(
                 EdgeReleaseManifest(
@@ -207,8 +336,14 @@ def test_edge_release_signing_and_admin_route_guard(monkeypatch):
             )
         assert exc.value.status_code == 422
 
-        # Корректная внешняя подпись принимается
-        ext_sig = sign_release_manifest("0.4.2", sha, None, "fleet-secret-key")
+        ext_sig = sign_release_manifest(
+            "0.4.2",
+            sha,
+            None,
+            "fleet-secret-key",
+            channel="ring2",
+            artifact_url="https://cdn.example.com/agzs_edge-0.4.2-py3-none-any.whl",
+        )
         published = put_edge_release(
             EdgeReleaseManifest(
                 version="0.4.2",
@@ -242,7 +377,7 @@ def test_edge_fleet_persists_and_restores_via_memory_state(tmp_path, monkeypatch
                 notes="canary persist",
             ),
             canary_stations=["AKT-PERSIST-1"],
-            _=None,
+            _="admin",
         )
         post_edge_heartbeat(
             EdgeHeartbeatIn(
@@ -253,16 +388,17 @@ def test_edge_fleet_persists_and_restores_via_memory_state(tmp_path, monkeypatch
                 active_pumps=0,
                 update_status="updated",
             ),
-            _=None,
+            caller=ADMIN_CALLER,
         )
         assert state_file.is_file()
 
         reset_edge_fleet()
-        assert get_edge_fleet(_=None).total_nodes == 0
-        assert get_edge_release(channel="ring0", station_code="AKT-PERSIST-1", _=None).version == "0.1.0"
+        assert get_edge_fleet(_="admin").total_nodes == 0
+        empty_rel = get_edge_release(channel="ring0", station_code="AKT-PERSIST-1", caller=ADMIN_CALLER)
+        assert empty_rel.published is False
 
         boot.restore_memory_state()
-        restored = get_edge_fleet(_=None)
+        restored = get_edge_fleet(_="admin")
         assert restored.canary_stations == ["AKT-PERSIST-1"]
         assert restored.releases["ring0"].version == "0.5.0"
         assert restored.total_nodes == 1
@@ -270,3 +406,74 @@ def test_edge_fleet_persists_and_restores_via_memory_state(tmp_path, monkeypatch
         assert restored.nodes[0].outbox_pending == 2
     finally:
         get_settings.cache_clear()
+
+
+def test_edge_fleet_postgres_persistence_across_memory_reset(monkeypatch):
+    """При ACCOUNT_STORE=postgres релизы, кольца и heartbeat сохраняются в БД и не пропадают после рестарта."""
+    eng = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    for tbl in (
+        EdgeReleaseRecord.__table__,
+        EdgeRingStationRecord.__table__,
+        EdgeNodeStatusRecord.__table__,
+    ):
+        tbl.create(eng)
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=eng)
+
+    @contextlib.contextmanager
+    def _pg_session():
+        db = TestSession()
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    monkeypatch.setattr("app.services.account_mode.use_postgres", lambda: True)
+    monkeypatch.setattr(edge_fleet, "session", _pg_session)
+
+    sha = "f" * 64
+    put_edge_release(
+        EdgeReleaseManifest(
+            version="0.7.0",
+            artifact_url="/releases/agzs_edge-0.7.0.whl",
+            sha256=sha,
+            channel="ring0",
+        ),
+        canary_stations=["AGZS-PG-01"],
+        _="admin",
+    )
+    post_edge_heartbeat(
+        EdgeHeartbeatIn(
+            station_code="AGZS-PG-01",
+            current_version="0.6.0",
+            channel="stable",
+            outbox_pending=3,
+            active_pumps=1,
+            update_status="deferred_busy",
+        ),
+        caller=ADMIN_CALLER,
+    )
+
+    # Сброс in-memory словарей имитирует перезапуск процесса API
+    reset_edge_fleet()
+
+    rel = get_edge_release(
+        channel="stable",
+        station_code="AGZS-PG-01",
+        current_version="0.6.0",
+        caller=ADMIN_CALLER,
+    )
+    assert rel.published is True
+    assert rel.version == "0.7.0"
+    assert rel.channel == "ring0"
+    assert rel.update_required is True
+
+    fleet = get_edge_fleet(_="admin")
+    assert fleet.canary_stations == ["AGZS-PG-01"]
+    assert fleet.releases["ring0"].version == "0.7.0"
+    assert fleet.total_nodes == 1
+    assert fleet.outdated_nodes == 1
+    assert fleet.nodes[0].station_code == "AGZS-PG-01"

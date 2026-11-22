@@ -139,10 +139,18 @@ class EdgeReleaseManifest(BaseModel):
     channel: str = Field(default="stable", pattern="^(stable|canary|ring0|ring1|ring2)$")
     min_version: str | None = Field(default=None, max_length=64)
     notes: str = Field(default="", max_length=1024)
-    signature: str | None = Field(default=None, max_length=128)
+    signature: str | None = Field(default=None, max_length=256)
 
 
-class EdgeReleaseOut(EdgeReleaseManifest):
+class EdgeReleaseOut(BaseModel):
+    published: bool = True
+    version: str = ""
+    artifact_url: str = ""
+    sha256: str = ""
+    channel: str = "ring2"
+    min_version: str | None = None
+    notes: str = ""
+    signature: str | None = None
     update_required: bool = False
 
 

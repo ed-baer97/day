@@ -1,20 +1,30 @@
 [Unit]
-Description=AGZS Station Edge Pull Updater (Checks VPS release, waits for idle station, power-loss recovery, auto-rollback)
+Description=AGZS Station Edge Pull Updater (Ed25519/SHA-256 verified OTA without RS-232 access)
 After=network-online.target
 Wants=network-online.target
 Before=station-edge.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/station-edge
+User=station-edge-updater
+Group=station-edge-updater
+WorkingDirectory=/var/lib/station-edge
 EnvironmentFile=/opt/station-edge/.env
 Environment=PYTHONUNBUFFERED=1
-# Fail-closed для боевого парка: если флаг не переопределён в .env, без AGZS_RELEASE_SIGNING_KEY обновление отклоняется
+# Fail-closed для боевого парка: если флаг не переопределён в .env, без ключа обновление отклоняется
 Environment=AGZS_REQUIRE_RELEASE_SIGNATURE=1
-ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge update --wait-idle-sec 180 --restart-cmd "systemctl restart station-edge.service station-edge-monitor.service"
+ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge update --wait-idle-sec 180 --restart-marker /var/lib/station-edge/restart_required
+ExecStartPost=+/bin/sh -c 'if [ -f /var/lib/station-edge/restart_required ]; then rm -f /var/lib/station-edge/restart_required && systemctl restart station-edge.service station-edge-monitor.service; fi'
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=360
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+DevicePolicy=closed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/station-edge/.venv /var/lib/station-edge
 
 [Install]
 WantedBy=multi-user.target

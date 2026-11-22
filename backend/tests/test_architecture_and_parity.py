@@ -386,3 +386,14 @@ def test_deploy_hardening_guards():
     deploy_env = (REPO_ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
     assert "EDGE_RELEASE_SIGNING_KEY" in compose
     assert "EDGE_RELEASE_SIGNING_KEY" in deploy_env
+    assert "EDGE_RELEASE_PRIVATE_KEY" in compose
+    assert "EDGE_RELEASE_PUBLIC_KEY" in compose
+
+
+def test_edge_release_signing_module_in_sync():
+    """Контракт канонической строки и Ed25519/HMAC подписи совпадает побайтово в backend и station-edge."""
+    backend_signing = (BACKEND_APP / "domain" / "edge_release.py").read_text(encoding="utf-8")
+    edge_signing = (REPO_ROOT / "station-edge" / "agzs_edge" / "release_signing.py").read_text(
+        encoding="utf-8"
+    )
+    assert backend_signing == edge_signing

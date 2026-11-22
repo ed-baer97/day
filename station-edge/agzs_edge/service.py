@@ -24,8 +24,9 @@ from agzs_edge.iskra import (
     parse_iskra_frame,
     verify_frame_checksum,
 )
+from agzs_edge.port_lock import ExclusivePortLock
 from agzs_edge.psu_controller import PsuControlError, Uzsg01PsuController, send_buttons_param_to_pumps
-from agzs_edge.serial_link import AskaLink, build_link
+from agzs_edge.serial_link import AskaLink, SerialAskaLink, build_link
 from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import OutboxSyncWorker, probe_vps_link
 from agzs_edge.tracker import CompletedDispense, PumpDispenseTracker
@@ -60,6 +61,7 @@ class StationEdgeService:
             self.db,
             vps_base_url=settings.vps_base_url,
             device_token=settings.device_token,
+            allow_insecure_http=settings.allow_insecure_http,
         )
         self._last_sync_ts = 0.0
         self._last_seen: dict[int, tuple[str, str, int, int]] = {}
@@ -704,6 +706,7 @@ class StationEdgeService:
             self.settings.vps_base_url,
             self.settings.device_token,
             self.settings.tank_id,
+            allow_insecure_http=self.settings.allow_insecure_http,
         )
         if not result.ok:
             logger.warning(
@@ -740,6 +743,9 @@ class StationEdgeService:
         if not self.settings.sync_enabled:
             logger.info("Отправка на центральный сервер выключена")
             return
+        requeued = self.db.requeue_auth_blocked()
+        if requeued > 0:
+            logger.info("Возвращено в очередь %d ранее заблокированных (401/403) записей outbox", requeued)
         self._sync_stop_event.clear()
         self._sync_wake_event.clear()
 
@@ -785,6 +791,12 @@ class StationEdgeService:
         """Непрерывный цикл работы на станции с мягким завершением при остановке."""
         # Опрос не шлёт «Пуск» (0x35). В режиме только чтения команда остаётся выключенной.
         computer_sends_start = False
+        port_lock: ExclusivePortLock | None = None
+        if self.settings.source_mode != "emulator" and isinstance(self.link, SerialAskaLink):
+            port_lock = ExclusivePortLock(
+                self.settings.serial_port, lock_dir=self.settings.db_path.parent
+            )
+            port_lock.acquire()
         logger.info(
             "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s), "
             "пуск 0x35=%s, стоп 0x36 при 07=%s, стоп 0x36 при 03→01=%s, сброс 07=%s через %.0f с, пауза 04=%s, кнопки=%s, кадры=%s",
@@ -885,3 +897,5 @@ class StationEdgeService:
                     except (ValueError, OSError):
                         pass
             self.link.close()
+            if port_lock is not None:
+                port_lock.release()

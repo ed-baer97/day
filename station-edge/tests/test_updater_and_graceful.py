@@ -181,8 +181,10 @@ def test_updater_scenarios_up_to_date_success_sha_fail_busy_and_rollback(tmp_pat
     settings = EdgeSettings(
         db_path=db_path,
         releases_dir=releases_dir,
+        vps_base_url="https://example.com",
         station_code="AKT-TEST-01",
         update_channel="stable",
+        require_release_signature=False,
     )
     heartbeats: list[dict] = []
 
@@ -317,7 +319,11 @@ def test_cli_update_check_command(tmp_path: Path, monkeypatch, capsys) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
         f"AGZS_DB_PATH={tmp_path / 'cli.db'}\n"
+        "AGZS_VPS_BASE_URL=https://vps.example.com\n"
+        "AGZS_DEVICE_TOKEN=cli-tok\n"
         "AGZS_STATION_CODE=AKT-CLI\n"
+        "AGZS_STATION_ID=a2222222-2222-2222-2222-222222222201\n"
+        "AGZS_REQUIRE_RELEASE_SIGNATURE=0\n"
         "AGZS_UPDATE_CHANNEL=canary\n",
         encoding="utf-8",
     )
@@ -325,7 +331,7 @@ def test_cli_update_check_command(tmp_path: Path, monkeypatch, capsys) -> None:
         "agzs_edge.updater.fetch_release_manifest",
         lambda *a, **kw: ReleaseManifest(
             version="9.9.9",
-            artifact_url="https://example.com/agzs_edge-9.9.9.whl",
+            artifact_url="https://vps.example.com/agzs_edge-9.9.9.whl",
             sha256="b" * 64,
             channel="canary",
         ),
@@ -407,10 +413,12 @@ def test_power_loss_recovery_and_tty1_update_banner(tmp_path: Path) -> None:
     settings = EdgeSettings(
         db_path=db_path,
         releases_dir=releases_dir,
+        vps_base_url="https://example.com",
         pump_addresses=(1,),
         station_code="AKT-RECOVERY",
         update_channel="ring2",
         update_idle_quiet_sec=0.0,
+        require_release_signature=False,
     )
 
     # Имитируем внезапное выключение питания прямо в момент phase="installing"
@@ -632,8 +640,10 @@ def test_updater_calls_lock_and_unlock_pumps_on_success_and_rollback(tmp_path: P
     settings = EdgeSettings(
         db_path=db_path,
         releases_dir=releases_dir,
+        vps_base_url="https://example.com",
         station_code="AKT-LOCK",
         update_idle_quiet_sec=0.0,
+        require_release_signature=False,
     )
 
     events: list[str] = []
@@ -710,7 +720,8 @@ def test_updater_calls_lock_and_unlock_pumps_on_success_and_rollback(tmp_path: P
 
 
 def test_updater_hmac_signature_verification_and_resume(tmp_path: Path) -> None:
-    """Подпись HMAC-SHA256 блокирует подмену релиза при старте, при check_only и при resume после сбоя."""
+    """Подпись HMAC-SHA256 и Ed25519 блокирует подмену релиза, канала, пути и downgrade при resume."""
+    from agzs_edge.release_signing import generate_ed25519_keypair, sign_release_ed25519
     from agzs_edge.updater import canonical_release_payload, sign_release_manifest
 
     db_path = tmp_path / "sig.db"
@@ -721,10 +732,21 @@ def test_updater_hmac_signature_verification_and_resume(tmp_path: Path) -> None:
 
     wheel_v2 = b"signed-wheel-0.2.0"
     sha_v2 = hashlib.sha256(wheel_v2).hexdigest()
-    good_sig = sign_release_manifest("0.2.0", sha_v2, "0.1.0", signing_key)
-    assert canonical_release_payload("0.2.0", sha_v2, "0.1.0") == (
-        f"0.2.0\n{sha_v2}\n0.1.0".encode("utf-8")
+    good_sig = sign_release_manifest(
+        "0.2.0",
+        sha_v2,
+        "0.1.0",
+        signing_key,
+        channel="stable",
+        artifact_url="https://example.com/agzs_edge-0.2.0.whl",
     )
+    assert canonical_release_payload(
+        "0.2.0",
+        sha_v2,
+        "0.1.0",
+        channel="stable",
+        artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+    ) == (f"agzs-edge-release-v2\n0.2.0\n{sha_v2}\n0.1.0\nring2\n/agzs_edge-0.2.0.whl".encode("utf-8"))
 
     def _download(url: str, dest: Path, *, device_token: str = "") -> Path:
         del url, device_token
@@ -735,11 +757,15 @@ def test_updater_hmac_signature_verification_and_resume(tmp_path: Path) -> None:
     settings = EdgeSettings(
         db_path=db_path,
         releases_dir=releases_dir,
+        vps_base_url="https://example.com",
         station_code="AKT-SIG",
         update_idle_quiet_sec=0.0,
         release_signing_key=signing_key,
         require_release_signature=True,
     )
+
+    # 0. По умолчанию require_release_signature == True (fail-closed)
+    assert EdgeSettings().require_release_signature is True
 
     # 1. Отсутствующая или поддельная подпись отклоняется ДО скачивания
     download_calls: list[str] = []
@@ -788,13 +814,74 @@ def test_updater_hmac_signature_verification_and_resume(tmp_path: Path) -> None:
     assert ok_res.status == "updated"
     assert installed == ["agzs_edge-0.2.0.whl"]
 
+    # 2b. Ed25519 подпись и запрет downgrade на HMAC при заданном release_public_key
+    priv_hex, pub_hex = generate_ed25519_keypair()
+    ed_settings = EdgeSettings(
+        db_path=db_path,
+        releases_dir=releases_dir,
+        vps_base_url="https://example.com",
+        station_code="AKT-ED",
+        update_idle_quiet_sec=0.0,
+        release_public_key=pub_hex,
+        release_signing_key=signing_key,
+        require_release_signature=True,
+    )
+    ed_sig = sign_release_ed25519(
+        "0.2.0",
+        sha_v2,
+        "0.1.0",
+        priv_hex,
+        channel="stable",
+        artifact_url="/agzs_edge-0.2.0.whl",
+    )
+    # HMAC-подпись при заданном Ed25519 публичном ключе отклоняется!
+    hmac_downgrade = EdgeUpdater(
+        ed_settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+            min_version="0.1.0",
+            signature=good_sig,
+        ),
+        heartbeat_fn=lambda *a, **kw: True,
+    )
+    assert hmac_downgrade.run_update().status == "failed"
+
+    installed.clear()
+    ed_ok = EdgeUpdater(
+        ed_settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+            min_version="0.1.0",
+            signature=ed_sig,
+        ),
+        artifact_downloader=_download,
+        installer_fn=lambda p: installed.append(p.name),
+        self_test_fn=lambda: True,
+        restart_fn=lambda _cmd: None,
+        heartbeat_fn=lambda *a, **kw: True,
+        lock_pumps_fn=lambda: None,
+        unlock_pumps_fn=lambda: None,
+    )
+    assert ed_ok.run_update().status == "updated"
+    assert installed == ["agzs_edge-0.2.0.whl"]
+
     # 3. Если require_release_signature=True, но ключ не задан на станции — обновление запрещено
     nokey_settings = EdgeSettings(
         db_path=db_path,
         releases_dir=releases_dir,
+        vps_base_url="https://example.com",
         station_code="AKT-NOKEY",
         require_release_signature=True,
         release_signing_key="",
+        release_public_key="",
     )
     nokey_updater = EdgeUpdater(
         nokey_settings,
@@ -845,6 +932,83 @@ def test_updater_hmac_signature_verification_and_resume(tmp_path: Path) -> None:
     assert resume_res.status == "failed"
     assert not forged_whl.exists()
     assert installed == []
+
+
+def test_updater_blocks_foreign_artifact_origin_redirects_and_writes_restart_marker(tmp_path: Path, monkeypatch) -> None:
+    """Запрет чужого origin в artifact_url/редиректах, обработка published=False и запись restart_marker."""
+    import io
+    import pytest
+    from agzs_edge.updater import download_release_artifact, resolve_safe_artifact_url
+
+    # Чужой host и открытый http отклоняются
+    with pytest.raises(ValueError, match="чужой хост"):
+        resolve_safe_artifact_url("https://vps.example.com", "https://evil.com/x.whl")
+    with pytest.raises(ValueError, match="protocol-relative"):
+        resolve_safe_artifact_url("https://vps.example.com", "//evil.com/x.whl")
+    with pytest.raises(ValueError, match="http://"):
+        resolve_safe_artifact_url("https://vps.example.com", "http://vps.example.com/x.whl")
+    assert (
+        resolve_safe_artifact_url("https://vps.example.com", "/releases/a.whl")
+        == "https://vps.example.com/releases/a.whl"
+    )
+
+    # Проверка _SameOriginRedirectHandler на кросс-доменный 302 редирект
+    from agzs_edge.updater import _SameOriginRedirectHandler
+    import urllib.request
+
+    handler = _SameOriginRedirectHandler(("https", "vps.example.com", 443))
+    req = urllib.request.Request("https://vps.example.com/releases/a.whl")
+    with pytest.raises(ValueError, match="чужой адрес"):
+        handler.redirect_request(req, io.BytesIO(b""), 302, "Found", {}, "https://evil.com/bad.whl")
+
+    # published=False -> up_to_date без скачивания
+    db_path = tmp_path / "unpub.db"
+    EdgeDatabase(db_path)
+    db_ro = EdgeDatabase(db_path, read_only=True)
+    marker = tmp_path / "restart_required"
+    settings = EdgeSettings(
+        db_path=db_path,
+        releases_dir=tmp_path / "releases",
+        vps_base_url="https://vps.example.com",
+        require_release_signature=False,
+        update_idle_quiet_sec=0.0,
+    )
+    updater_unpub = EdgeUpdater(
+        settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(version="", published=False, channel="ring2"),
+        heartbeat_fn=lambda *a, **kw: True,
+        restart_marker_path=marker,
+    )
+    res_unpub = updater_unpub.run_update()
+    assert res_unpub.status == "up_to_date"
+    assert not marker.exists()
+
+    # Успешное обновление без restart_cmd пишет marker
+    whl_bytes = b"whl-marker-v2"
+    sha_v2 = hashlib.sha256(whl_bytes).hexdigest()
+    updater_marker = EdgeUpdater(
+        settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://vps.example.com/releases/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+            published=True,
+        ),
+        artifact_downloader=lambda _u, d, **kw: (d.parent.mkdir(parents=True, exist_ok=True), d.write_bytes(whl_bytes), d)[2],
+        installer_fn=lambda _p: None,
+        self_test_fn=lambda: True,
+        heartbeat_fn=lambda *a, **kw: True,
+        lock_pumps_fn=lambda: None,
+        unlock_pumps_fn=lambda: None,
+        restart_marker_path=marker,
+    )
+    res_ok = updater_marker.run_update(restart_cmd="")
+    assert res_ok.status == "updated"
+    assert marker.is_file()
 
 
 def test_updater_does_not_import_service_cycle() -> None:
@@ -936,8 +1100,8 @@ def test_restore_pump_buttons_retries_after_partial_error(tmp_path: Path) -> Non
     assert link.param_calls == ["000016", "000016"]
 
 
-def test_write_update_state_refreshes_updated_at_and_skips_direct_port_after_restart(tmp_path: Path, monkeypatch) -> None:
-    """write_update_state всегда обновляет updated_at после replace(), а при restart_cmd апдейтер не лезет в порт."""
+def test_write_update_state_refreshes_updated_at_and_never_touches_serial_port(tmp_path: Path) -> None:
+    """write_update_state обновляет updated_at после replace(), а апдейтер ждёт buttons_locked от службы serve без COM-порта."""
     from dataclasses import replace
 
     db_path = tmp_path / "upd_ts.db"
@@ -946,9 +1110,13 @@ def test_write_update_state_refreshes_updated_at_and_skips_direct_port_after_res
     settings = EdgeSettings(
         db_path=db_path,
         releases_dir=tmp_path / "releases",
+        vps_base_url="https://example.com",
         lock_buttons_on_update=True,
         read_only=False,
         update_idle_quiet_sec=0.0,
+        poll_interval_sec=0.05,
+        serial_timeout_sec=0.05,
+        require_release_signature=False,
     )
     initial = UpdateProgressState(
         in_progress=True,
@@ -968,8 +1136,6 @@ def test_write_update_state_refreshes_updated_at_and_skips_direct_port_after_res
 
     wheel_v2 = b"wheel-v2-norace"
     sha_v2 = hashlib.sha256(wheel_v2).hexdigest()
-    send_calls: list[str] = []
-    monkeypatch.setattr(EdgeUpdater, "_send_buttons_param", lambda self, code: send_calls.append(code) or True)
 
     def _dl(url: str, dest: Path, *, device_token: str = "") -> Path:
         del url, device_token
@@ -991,10 +1157,11 @@ def test_write_update_state_refreshes_updated_at_and_skips_direct_port_after_res
         self_test_fn=lambda: True,
         restart_fn=lambda _cmd: None,
         heartbeat_fn=lambda *a, **kw: True,
+        sleep_fn=lambda _s: None,
     )
+    assert not hasattr(EdgeUpdater, "_send_buttons_param")
     res = updater.run_update(restart_cmd="systemctl restart station-edge.service")
     assert res.status == "updated"
-    assert send_calls == ["0.17"]
 
 
 

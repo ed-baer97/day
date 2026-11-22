@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid5
@@ -10,6 +11,7 @@ from uuid import UUID, uuid5
 _DEFAULT_DISPENSER_NS = UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
 MIN_PUMP_ADDRESS = 1
 MAX_PUMP_ADDRESS = 8
+_LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def load_dotenv(path: Path) -> None:
@@ -57,6 +59,24 @@ def _parse_bool(raw: str | None, *, default: bool = False) -> bool:
     return default
 
 
+def validate_vps_url(url: str, *, allow_insecure_http: bool = False) -> str:
+    """Проверяет URL центрального сервера: для X-Device-Token требуется https:// (или явный флаг стенда)."""
+    cleaned = (url or "").strip().rstrip("/")
+    if not cleaned:
+        raise ValueError("Укажите AGZS_VPS_BASE_URL")
+    parsed = urllib.parse.urlsplit(cleaned)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme not in {"https", "http"} or not host:
+        raise ValueError(f"Некорректный URL VPS '{url}': ожидается https://<host>")
+    if scheme == "http" and host not in _LOCAL_HTTP_HOSTS and not allow_insecure_http:
+        raise ValueError(
+            "Открытый http:// запрещён для передачи X-Device-Token: "
+            "используйте https:// или AGZS_ALLOW_INSECURE_HTTP=1 на стенде"
+        )
+    return cleaned
+
+
 def _parse_addresses(raw: str) -> tuple[int, ...]:
     items: list[int] = []
     for part in raw.split(","):
@@ -77,7 +97,7 @@ def _parse_addresses(raw: str) -> tuple[int, ...]:
     return tuple(items)
 
 
-def _parse_dispenser_map(raw: str, station_id: str) -> dict[int, str]:
+def _parse_dispenser_map(raw: str, station_id: str, station_code: str = "") -> dict[int, str]:
     mapping: dict[int, str] = {}
     for pair in raw.split(","):
         item = pair.strip()
@@ -91,33 +111,16 @@ def _parse_dispenser_map(raw: str, station_id: str) -> dict[int, str]:
             )
         UUID(disp_uuid.strip())  # валидация UUID
         mapping[addr] = disp_uuid.strip()
-    # Для всех адресов 1..8 гарантируем детерминированный UUID, если он не задан явно
-    base_uuid = UUID(station_id)
+    base_seed = str(UUID(station_id)) if station_id else (station_code.strip() or "local")
     for addr in range(MIN_PUMP_ADDRESS, MAX_PUMP_ADDRESS + 1):
         if addr not in mapping:
-            mapping[addr] = str(uuid5(_DEFAULT_DISPENSER_NS, f"{base_uuid}:pump:{addr}"))
+            mapping[addr] = str(uuid5(_DEFAULT_DISPENSER_NS, f"{base_seed}:pump:{addr}"))
     return mapping
 
 
 @dataclass(frozen=True)
 class FrameLayout:
-    """Калибровочная раскладка 23-байтного ответного кадра «Искра 1.72».
-
-    Кадр «Тест» Искра 1.72, 23 байта:
-      [0]      : 0x01 (SOH)
-      [1..3]   : номер ТРК, две ASCII-цифры ('01'..'08')
-      [3]      : код команды ASCII ('4')
-      [4]      : 0x02 (STX)
-      [5..11]  : цена, 6 ASCII-цифр
-      [11..17] : объём, 6 ASCII-цифр (остаток дозы или налитые мл)
-      [17..19] : ошибка протокола, 2 ASCII-символа
-      [19..21] : код состояния ТРК, 2 ASCII-символа
-      [21]     : 0x03 (ETX)
-      [22]     : CRC, XOR байтов после SOH, включая ETX
-
-    При пусконаладке на живом стенде АСКА-02 смещения можно скорректировать
-    без переписывания логики трекера и базы данных.
-    """
+    """Калибровочная раскладка 23-байтного ответного кадра «Искра 1.72»."""
 
     frame_length: int = 23
     soh_byte: int = 0x01
@@ -159,11 +162,12 @@ class EdgeSettings:
     db_path: Path = field(default_factory=lambda: Path("station_edge.db"))
     save_raw_frames: bool = False
     trace_frames: bool = False
-    vps_base_url: str = "http://93.171.232.47"
+    vps_base_url: str = ""
+    allow_insecure_http: bool = False
     device_token: str = ""
-    station_code: str = "AKT-12MKR"
-    station_id: str = "a2222222-2222-2222-2222-222222222201"
-    tank_id: str = "b2222222-2222-2222-2222-222222222201"
+    station_code: str = ""
+    station_id: str = ""
+    tank_id: str = ""
     dispenser_map: dict[int, str] = field(default_factory=dict)
     sync_enabled: bool = True
     sync_interval_sec: float = 5.0
@@ -177,14 +181,30 @@ class EdgeSettings:
     update_idle_quiet_sec: float = 60.0
     lock_buttons_on_update: bool = False
     pump_buttons_mode: str = "enable"
+    release_public_key: str = ""
     release_signing_key: str = ""
-    require_release_signature: bool = False
+    require_release_signature: bool = True
     layout: FrameLayout = field(default_factory=FrameLayout)
 
     def __post_init__(self) -> None:
         if self.read_only:
             self.auto_reset_on_stop = False
             self.auto_stop_on_finish = False
+
+    def validate_vps_binding(self, *, require_tank: bool = True) -> None:
+        """Проверяет явную привязку к станции и VPS перед сетевой синхронизацией/OTA."""
+        validate_vps_url(self.vps_base_url, allow_insecure_http=self.allow_insecure_http)
+        if not self.device_token.strip():
+            raise ValueError("Укажите AGZS_DEVICE_TOKEN")
+        if not self.station_code.strip():
+            raise ValueError("Укажите AGZS_STATION_CODE")
+        if not self.station_id.strip():
+            raise ValueError("Укажите AGZS_STATION_ID (UUID)")
+        UUID(self.station_id.strip())
+        if require_tank:
+            if not self.tank_id.strip():
+                raise ValueError("Укажите AGZS_TANK_ID (UUID)")
+            UUID(self.tank_id.strip())
 
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "EdgeSettings":
@@ -240,21 +260,21 @@ class EdgeSettings:
         db_path = Path(os.environ.get("AGZS_DB_PATH", "station_edge.db").strip() or "station_edge.db")
         save_raw = _parse_bool(os.environ.get("AGZS_SAVE_RAW_FRAMES"), default=False)
         trace_frames = _parse_bool(os.environ.get("AGZS_TRACE_FRAMES"), default=False)
-        vps_base_url = (
-            os.environ.get("AGZS_VPS_BASE_URL", "http://93.171.232.47").strip().rstrip("/")
-            or "http://93.171.232.47"
-        )
+        vps_base_url = os.environ.get("AGZS_VPS_BASE_URL", "").strip().rstrip("/")
+        allow_insecure_http = _parse_bool(os.environ.get("AGZS_ALLOW_INSECURE_HTTP"), default=False)
         device_token = os.environ.get("AGZS_DEVICE_TOKEN", "").strip()
-        station_code = os.environ.get("AGZS_STATION_CODE", "AKT-12MKR").strip() or "AKT-12MKR"
-        station_id = os.environ.get("AGZS_STATION_ID", "a2222222-2222-2222-2222-222222222201").strip()
-        tank_id = os.environ.get("AGZS_TANK_ID", "b2222222-2222-2222-2222-222222222201").strip()
-        UUID(station_id)
+        station_code = os.environ.get("AGZS_STATION_CODE", "").strip()
+        station_id = os.environ.get("AGZS_STATION_ID", "").strip()
+        tank_id = os.environ.get("AGZS_TANK_ID", "").strip()
+        if station_id:
+            UUID(station_id)
         if tank_id:
             UUID(tank_id)
 
         dispenser_map = _parse_dispenser_map(
             os.environ.get("AGZS_DISPENSER_MAP", ""),
             station_id,
+            station_code,
         )
         sync_enabled = _parse_bool(os.environ.get("AGZS_SYNC_ENABLED"), default=True)
         sync_interval_sec = float(os.environ.get("AGZS_SYNC_INTERVAL_SEC", "5.0").strip() or "5.0")
@@ -288,13 +308,13 @@ class EdgeSettings:
         pump_buttons_mode = os.environ.get("AGZS_PUMP_BUTTONS_MODE", "enable").strip().lower() or "enable"
         if pump_buttons_mode not in {"lock-reset", "enable"}:
             raise ValueError("AGZS_PUMP_BUTTONS_MODE должен быть 'lock-reset' или 'enable'")
+        release_public_key = os.environ.get("AGZS_RELEASE_PUBLIC_KEY", "").strip()
         release_signing_key = os.environ.get("AGZS_RELEASE_SIGNING_KEY", "").strip()
         require_release_signature = _parse_bool(
-            os.environ.get("AGZS_REQUIRE_RELEASE_SIGNATURE"), default=False
+            os.environ.get("AGZS_REQUIRE_RELEASE_SIGNATURE"), default=True
         )
 
         layout = FrameLayout(checksum_mode=checksum_mode)
-        # Предпочитаем стабильный by-id на Linux, если порт задан как ttyUSB*
         if serial_port.startswith("/dev/ttyUSB"):
             serial_port = resolve_preferred_port(serial_port)
 
@@ -318,6 +338,7 @@ class EdgeSettings:
             save_raw_frames=save_raw,
             trace_frames=trace_frames,
             vps_base_url=vps_base_url,
+            allow_insecure_http=allow_insecure_http,
             device_token=device_token,
             station_code=station_code,
             station_id=station_id,
@@ -335,6 +356,7 @@ class EdgeSettings:
             update_idle_quiet_sec=update_idle_quiet_sec,
             lock_buttons_on_update=lock_buttons_on_update,
             pump_buttons_mode=pump_buttons_mode,
+            release_public_key=release_public_key,
             release_signing_key=release_signing_key,
             require_release_signature=require_release_signature,
             layout=layout,
@@ -343,4 +365,5 @@ class EdgeSettings:
     def dispenser_uuid(self, address: int) -> str:
         if address in self.dispenser_map:
             return self.dispenser_map[address]
-        return str(uuid5(_DEFAULT_DISPENSER_NS, f"{self.station_id}:pump:{address}"))
+        base_seed = self.station_id.strip() or self.station_code.strip() or "local"
+        return str(uuid5(_DEFAULT_DISPENSER_NS, f"{base_seed}:pump:{address}"))

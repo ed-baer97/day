@@ -1,18 +1,21 @@
-"""Pull-автообновление станционного узла АГЗС: проверка SHA-256, простой, восстановление и авто-откат."""
+"""Pull-автообновление станционного узла АГЗС: подпись Ed25519/HMAC, SHA-256, простой и авто-откат.
+
+К порту RS-232 и контроллеру колонки не обращается: блокировку кнопок на время
+установки координирует через атомарный station_edge_update_state.json со службой serve.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
-import hmac
 import json
 import logging
 import os
-import re
 import shlex
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -21,9 +24,18 @@ from pathlib import Path
 from typing import Callable
 
 from agzs_edge import __version__
-from agzs_edge.config import EdgeSettings, MAX_PUMP_ADDRESS
-from agzs_edge.psu_controller import send_buttons_param_to_pumps
-from agzs_edge.serial_link import build_link
+from agzs_edge.config import EdgeSettings, MAX_PUMP_ADDRESS, validate_vps_url
+from agzs_edge.release_signing import (
+    CANONICAL_VERSION,
+    ED25519_PREFIX,
+    canonical_release_payload,
+    normalize_channel,
+    parse_version_tuple,
+    sign_release_ed25519,
+    sign_release_manifest,
+    verify_release_ed25519,
+    verify_release_signature,
+)
 from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import send_vps_request
 
@@ -38,13 +50,14 @@ class ReleaseManifest:
     """Манифест целевого релиза station-edge, полученный с центрального VPS."""
 
     version: str
-    artifact_url: str
-    sha256: str
+    artifact_url: str = ""
+    sha256: str = ""
     channel: str = "stable"
     min_version: str | None = None
     notes: str = ""
     signature: str | None = None
     update_required: bool = False
+    published: bool = True
 
 
 @dataclass(frozen=True)
@@ -151,22 +164,10 @@ def clear_update_state(settings: EdgeSettings) -> None:
         update_state_path(settings).unlink(missing_ok=True)
 
 
-def parse_version_tuple(version: str) -> tuple[int, ...]:
-    """Разбирает строку версии ('0.2.1', 'v1.0.3') в кортеж целых чисел для сравнения."""
-    cleaned = version.strip().lstrip("vV")
-    if not cleaned:
-        return (0,)
-    parts: list[int] = []
-    for token in cleaned.split("."):
-        match = re.match(r"^(\d+)", token.strip())
-        parts.append(int(match.group(1)) if match else 0)
-    while len(parts) > 1 and parts[-1] == 0:
-        parts.pop()
-    return tuple(parts) or (0,)
-
-
 def is_newer_version(current: str, candidate: str) -> bool:
     """Возвращает True, если версия candidate новее current."""
+    if not candidate.strip():
+        return False
     return parse_version_tuple(candidate) > parse_version_tuple(current)
 
 
@@ -182,44 +183,54 @@ def compute_sha256(file_path: Path) -> str:
 def verify_sha256(file_path: Path, expected_sha256: str) -> bool:
     """Проверяет соответствие SHA-256 файла ожидаемому хэшу."""
     expected = expected_sha256.strip().lower()
-    if not expected or not file_path.is_file():
+    if not expected or expected == "0" * 64 or not file_path.is_file():
         return False
     return compute_sha256(file_path) == expected
 
 
-def canonical_release_payload(version: str, sha256: str, min_version: str | None) -> bytes:
-    """Каноническая строка для проверки HMAC-SHA256 подписи релиза station-edge."""
-    return f"{version.strip()}\n{sha256.strip().lower()}\n{(min_version or '').strip()}".encode("utf-8")
+def _url_origin(url: str) -> tuple[str, str, int]:
+    parsed = urllib.parse.urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, host, port
 
 
-def sign_release_manifest(
-    version: str,
-    sha256: str,
-    min_version: str | None,
-    signing_key: str,
+def resolve_safe_artifact_url(
+    vps_base_url: str,
+    artifact_url: str,
+    *,
+    allow_insecure_http: bool = False,
 ) -> str:
-    """Вычисляет HMAC-SHA256 (hex lowercase) для манифеста релиза station-edge."""
-    return hmac.new(
-        signing_key.strip().encode("utf-8"),
-        canonical_release_payload(version, sha256, min_version),
-        hashlib.sha256,
-    ).hexdigest().lower()
+    """Разрешает только относительный путь (/releases/...) или тот же origin, что и VPS."""
+    safe_base = validate_vps_url(vps_base_url, allow_insecure_http=allow_insecure_http)
+    raw = (artifact_url or "").strip()
+    if not raw:
+        raise ValueError("пустой URL артефакта релиза")
+    if raw.startswith("//"):
+        raise ValueError(f"небезопасный protocol-relative URL артефакта: {artifact_url}")
+    if raw.startswith("/"):
+        return f"{safe_base}{raw}"
+    validate_vps_url(raw, allow_insecure_http=allow_insecure_http)
+    if _url_origin(raw) != _url_origin(safe_base):
+        raise ValueError(
+            f"URL артефакта указывает на чужой хост ({_url_origin(raw)[1]} != {_url_origin(safe_base)[1]})"
+        )
+    return raw
 
 
-def verify_release_signature(
-    version: str,
-    sha256: str,
-    min_version: str | None,
-    signature: str | None,
-    signing_key: str,
-) -> bool:
-    """Проверяет HMAC-SHA256 подпись манифеста релиза (constant-time сравнение)."""
-    sig = (signature or "").strip().lower()
-    key = signing_key.strip()
-    if not sig or not key:
-        return False
-    expected = sign_release_manifest(version, sha256, min_version, key)
-    return hmac.compare_digest(sig, expected)
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, expected_origin: tuple[str, str, int]) -> None:
+        super().__init__()
+        self._expected_origin = expected_origin
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        if _url_origin(target) != self._expected_origin:
+            raise ValueError(f"Перенаправление скачивания артефакта на чужой адрес запрещено: {target}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def fetch_release_manifest(
@@ -230,6 +241,7 @@ def fetch_release_manifest(
     current_version: str,
     channel: str = "stable",
     outbox_pending: int = 0,
+    allow_insecure_http: bool = False,
     timeout_sec: float = 10.0,
 ) -> ReleaseManifest:
     """Запрашивает манифест целевого релиза с центрального сервера."""
@@ -246,15 +258,35 @@ def fetch_release_manifest(
         f"/api/v1/ingest/edge/release?{query}",
         device_token,
         method="GET",
+        allow_insecure_http=allow_insecure_http,
         timeout_sec=timeout_sec,
     )
     if not res.ok:
         raise RuntimeError(res.error_text or "Ошибка связи с VPS при проверке релиза")
 
     data = json.loads(res.response_text)
-    artifact_url = str(data.get("artifact_url") or "")
-    if artifact_url.startswith("/"):
-        artifact_url = f"{vps_base_url.rstrip('/')}{artifact_url}"
+    if not isinstance(data, dict):
+        raise ValueError("Некорректный JSON-манифест релиза от VPS")
+
+    published = bool(data.get("published", True))
+    if not published or not str(data.get("version") or "").strip():
+        return ReleaseManifest(
+            version="",
+            artifact_url="",
+            sha256="",
+            channel=str(data.get("channel") or channel),
+            min_version=None,
+            notes=str(data.get("notes") or ""),
+            signature=None,
+            update_required=False,
+            published=False,
+        )
+
+    artifact_url = resolve_safe_artifact_url(
+        vps_base_url,
+        str(data.get("artifact_url") or ""),
+        allow_insecure_http=allow_insecure_http,
+    )
     raw_sig = data.get("signature")
     return ReleaseManifest(
         version=str(data["version"]),
@@ -265,6 +297,7 @@ def fetch_release_manifest(
         notes=str(data.get("notes") or ""),
         signature=str(raw_sig) if raw_sig is not None else None,
         update_required=bool(data.get("update_required", False)),
+        published=True,
     )
 
 
@@ -280,6 +313,7 @@ def report_edge_heartbeat(
     active_pumps: int,
     update_status: str,
     last_error: str | None = None,
+    allow_insecure_http: bool = False,
     timeout_sec: float = 10.0,
 ) -> bool:
     """Отправляет на центральный VPS версию узла, очередь outbox и статус обновления."""
@@ -299,6 +333,7 @@ def report_edge_heartbeat(
         device_token,
         method="POST",
         body_text=json.dumps(payload, ensure_ascii=False),
+        allow_insecure_http=allow_insecure_http,
         timeout_sec=timeout_sec,
     )
     if not res.ok:
@@ -311,17 +346,28 @@ def download_release_artifact(
     dest_path: Path,
     *,
     device_token: str = "",
+    vps_base_url: str = "",
+    allow_insecure_http: bool = False,
     timeout_sec: float = 60.0,
 ) -> Path:
-    """Атомарно скачивает артефакт обновления (.whl) на диск станции."""
+    """Атомарно скачивает артефакт (.whl) только с origin центрального VPS и без cross-origin редиректов."""
+    if vps_base_url.strip():
+        safe_url = resolve_safe_artifact_url(
+            vps_base_url, artifact_url, allow_insecure_http=allow_insecure_http
+        )
+    else:
+        safe_url = validate_vps_url(artifact_url, allow_insecure_http=allow_insecure_http)
+
+    origin = _url_origin(safe_url)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".part")
     headers: dict[str, str] = {}
     if device_token:
         headers["X-Device-Token"] = device_token
-    req = urllib.request.Request(url=artifact_url, headers=headers, method="GET")
+    req = urllib.request.Request(url=safe_url, headers=headers, method="GET")
+    opener = urllib.request.build_opener(_SameOriginRedirectHandler(origin))
     try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp, tmp_path.open("wb") as fh:
+        with opener.open(req, timeout=timeout_sec) as resp, tmp_path.open("wb") as fh:
             while chunk := resp.read(65_536):
                 fh.write(chunk)
         tmp_path.replace(dest_path)
@@ -337,7 +383,10 @@ def _default_installer(wheel_path: Path) -> None:
         "-m",
         "pip",
         "install",
+        "--no-index",
+        "--no-build-isolation",
         "--no-deps",
+        "--only-binary=:all:",
         "--force-reinstall",
         str(wheel_path),
     ]
@@ -358,7 +407,7 @@ def _default_restart(restart_cmd: str) -> None:
 
 
 class EdgeUpdater:
-    """Безопасный клиент Pull-обновления для сотен станционных серверов."""
+    """Клиент Pull-обновления без прямого доступа к RS-232."""
 
     def __init__(
         self,
@@ -375,19 +424,43 @@ class EdgeUpdater:
         sleep_fn: Callable[[float], None] | None = None,
         lock_pumps_fn: Callable[[], None] | None = None,
         unlock_pumps_fn: Callable[[], None] | None = None,
+        restart_marker_path: Path | None = None,
     ) -> None:
         self.settings = settings
         self.db = db or EdgeDatabase(settings.db_path, read_only=True)
         self.current_version = (current_version or __version__).strip() or __version__
-        self._manifest_fetcher = manifest_fetcher or fetch_release_manifest
-        self._artifact_downloader = artifact_downloader or download_release_artifact
+        self._manifest_fetcher = manifest_fetcher or (
+            lambda url, token, **kw: fetch_release_manifest(
+                url,
+                token,
+                allow_insecure_http=self.settings.allow_insecure_http,
+                **kw,
+            )
+        )
+        self._artifact_downloader = artifact_downloader or (
+            lambda url, dest, **kw: download_release_artifact(
+                url,
+                dest,
+                vps_base_url=self.settings.vps_base_url,
+                allow_insecure_http=self.settings.allow_insecure_http,
+                **kw,
+            )
+        )
         self._installer_fn = installer_fn or _default_installer
         self._self_test_fn = self_test_fn or _default_self_test
         self._restart_fn = restart_fn or _default_restart
-        self._heartbeat_fn = heartbeat_fn or report_edge_heartbeat
+        self._heartbeat_fn = heartbeat_fn or (
+            lambda url, token, **kw: report_edge_heartbeat(
+                url,
+                token,
+                allow_insecure_http=self.settings.allow_insecure_http,
+                **kw,
+            )
+        )
         self._sleep_fn = sleep_fn or time.sleep
         self._lock_pumps_fn = lock_pumps_fn
         self._unlock_pumps_fn = unlock_pumps_fn
+        self.restart_marker_path = restart_marker_path
 
     def _safe_outbox_pending(self) -> int:
         try:
@@ -452,27 +525,20 @@ class EdgeUpdater:
         ptr.parent.mkdir(parents=True, exist_ok=True)
         ptr.write_text(str(wheel_path), encoding="utf-8")
 
-    def _send_buttons_param(self, param_code: str) -> bool:
-        link = build_link(self.settings)
-        try:
-            _succeeded, errors = send_buttons_param_to_pumps(
-                link,
-                self.settings.pump_addresses,
-                param_code,
-                checksum_mode=self.settings.layout.tx_checksum_mode,
-            )
-            for address, err in errors:
-                logger.debug("Колонка #%d: не удалось отправить %s (%s)", address, param_code, err)
-            return not errors
-        except Exception as exc:
-            logger.debug("Ошибка прямого доступа к порту для команды %s: %s", param_code, exc)
-            return False
-        finally:
-            with contextlib.suppress(Exception):
-                link.close()
+    def _write_restart_marker(self) -> None:
+        if self.restart_marker_path is None:
+            return
+        self.restart_marker_path.parent.mkdir(parents=True, exist_ok=True)
+        self.restart_marker_path.write_text(
+            datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8"
+        )
 
     def _signature_required(self) -> bool:
-        return bool(self.settings.release_signing_key.strip() or self.settings.require_release_signature)
+        return bool(
+            self.settings.release_public_key.strip()
+            or self.settings.release_signing_key.strip()
+            or self.settings.require_release_signature
+        )
 
     def _has_valid_signature(
         self,
@@ -480,17 +546,33 @@ class EdgeUpdater:
         version: str,
         sha256: str,
         min_version: str | None,
+        channel: str,
+        artifact_url: str,
         signature: str | None,
     ) -> bool:
-        if not self._signature_required():
-            return True
-        return verify_release_signature(
-            version,
-            sha256,
-            min_version,
-            signature,
-            self.settings.release_signing_key,
-        )
+        pub_key = self.settings.release_public_key.strip()
+        if pub_key:
+            return verify_release_ed25519(
+                version,
+                sha256,
+                min_version,
+                signature,
+                pub_key,
+                channel=channel,
+                artifact_url=artifact_url,
+            )
+        hmac_key = self.settings.release_signing_key.strip()
+        if hmac_key:
+            return verify_release_signature(
+                version,
+                sha256,
+                min_version,
+                signature,
+                hmac_key,
+                channel=channel,
+                artifact_url=artifact_url,
+            )
+        return not self.settings.require_release_signature
 
     def _write_progress(
         self,
@@ -564,28 +646,22 @@ class EdgeUpdater:
             return
         if self.settings.read_only or not self.settings.lock_buttons_on_update:
             return
-        if not self._send_buttons_param("0.17"):
-            # Порт занят работающим station-edge.service: ждём подтверждения buttons_locked от службы.
-            wait_budget = max(3.0, self.settings.poll_interval_sec * 4 + self.settings.serial_timeout_sec)
-            deadline = time.monotonic() + wait_budget
-            while time.monotonic() < deadline:
-                state = read_update_state(self.settings)
-                if state is not None and state.buttons_locked:
-                    return
-                self._sleep_fn(0.2)
+        # Апдейтер не открывает COM-порт напрямую: ждёт подтверждения buttons_locked от службы serve.
+        wait_budget = max(3.0, self.settings.poll_interval_sec * 4 + self.settings.serial_timeout_sec)
+        deadline = time.monotonic() + wait_budget
+        while time.monotonic() < deadline:
+            state = read_update_state(self.settings)
+            if state is not None and state.buttons_locked:
+                return
+            self._sleep_fn(0.2)
 
     def _unlock_pumps_after_install(self, *, service_restarted: bool = False) -> None:
+        del service_restarted
         if self._unlock_pumps_fn is not None:
             try:
                 self._unlock_pumps_fn()
             except Exception as exc:
                 logger.warning("Ошибка включения кнопок колонок после обновления: %s", exc)
-            return
-        if service_restarted or self.settings.read_only or not self.settings.lock_buttons_on_update:
-            return
-        param_code = "0.16"
-        with contextlib.suppress(Exception):
-            self._send_buttons_param(param_code)
 
     def wait_until_idle(
         self,
@@ -626,6 +702,8 @@ class EdgeUpdater:
             self._installer_fn(previous_wheel)
             if restarted:
                 self._restart_fn(restart_cmd)
+            else:
+                self._write_restart_marker()
         except Exception as rb_exc:
             return self._fail_update(
                 f"{error_msg}; ошибка отката: {rb_exc}",
@@ -675,11 +753,12 @@ class EdgeUpdater:
             interrupted_count=interrupted_count,
         )
         self._lock_pumps_before_install()
+        restarted = bool(restart_cmd.strip())
         try:
             self._installer_fn(wheel_path)
             if not self._self_test_fn():
                 raise RuntimeError("smoke-тест `python -m agzs_edge --help` завершился с ошибкой")
-            if restart_cmd.strip():
+            if restarted:
                 cur_state = read_update_state(self.settings)
                 self._write_progress(
                     phase="restarting",
@@ -695,11 +774,13 @@ class EdgeUpdater:
                     buttons_locked=bool(cur_state.buttons_locked) if cur_state else False,
                 )
                 self._restart_fn(restart_cmd)
+            else:
+                self._write_restart_marker()
         except Exception as exc:
             return self._rollback(previous_wheel, restart_cmd, str(exc))
 
         self._save_current_wheel(wheel_path)
-        self._cleanup_interrupted(True, service_restarted=bool(restart_cmd.strip()))
+        self._cleanup_interrupted(True, service_restarted=restarted)
         self._send_heartbeat(
             version=target_version,
             update_status="updated",
@@ -746,15 +827,18 @@ class EdgeUpdater:
         prev_wheel = self._read_previous_wheel(fallback_path=prev_state.previous_wheel)
 
         if local_pkg is not None and prev_state.sha256 and verify_sha256(local_pkg, prev_state.sha256):
+            eff_channel = prev_state.channel or self.settings.update_channel
             if not self._has_valid_signature(
                 version=prev_state.target_version,
                 sha256=prev_state.sha256,
                 min_version=prev_state.min_version or None,
+                channel=eff_channel,
+                artifact_url=prev_state.artifact_url,
                 signature=prev_state.signature or None,
             ):
                 local_pkg.unlink(missing_ok=True)
                 return self._fail_update(
-                    "Недействительная или отсутствует подпись релиза (HMAC-SHA256)",
+                    "Недействительная или отсутствует подпись релиза",
                     target_version=prev_state.target_version,
                     clear_interrupted=True,
                 )
@@ -796,7 +880,7 @@ class EdgeUpdater:
             return self._apply_verified_wheel(
                 wheel_path=local_pkg,
                 target_version=prev_state.target_version,
-                channel=prev_state.channel or self.settings.update_channel,
+                channel=eff_channel,
                 artifact_url=prev_state.artifact_url,
                 sha256=prev_state.sha256,
                 min_version=prev_state.min_version,
@@ -856,6 +940,19 @@ class EdgeUpdater:
                     )
             return self._fail_update(err, clear_interrupted=has_interrupted)
 
+        if not manifest.published or not manifest.version.strip():
+            self._cleanup_interrupted(has_interrupted)
+            self._send_heartbeat(
+                version=self.current_version,
+                update_status="up_to_date",
+            )
+            return UpdateResult(
+                status="up_to_date",
+                current_version=self.current_version,
+                target_version=self.current_version,
+                message=f"Релиз для кольца {manifest.channel} ещё не опубликован, текущая версия {self.current_version}",
+            )
+
         if not is_newer_version(self.current_version, manifest.version):
             self._cleanup_interrupted(has_interrupted)
             self._send_heartbeat(
@@ -882,10 +979,12 @@ class EdgeUpdater:
             version=manifest.version,
             sha256=manifest.sha256,
             min_version=manifest.min_version,
+            channel=manifest.channel,
+            artifact_url=manifest.artifact_url,
             signature=manifest.signature,
         ):
             return self._fail_update(
-                "Недействительная или отсутствует подпись релиза (HMAC-SHA256)",
+                "Недействительная или отсутствует подпись релиза",
                 target_version=manifest.version,
                 clear_interrupted=has_interrupted,
             )
@@ -956,3 +1055,31 @@ class EdgeUpdater:
             restart_cmd=restart_cmd,
             interrupted_count=interrupted_count,
         )
+
+
+__all__ = [
+    "CANONICAL_VERSION",
+    "ED25519_PREFIX",
+    "EdgeUpdater",
+    "ReleaseManifest",
+    "UpdateProgressState",
+    "UpdateResult",
+    "canonical_release_payload",
+    "clear_update_state",
+    "compute_sha256",
+    "download_release_artifact",
+    "fetch_release_manifest",
+    "is_newer_version",
+    "normalize_channel",
+    "parse_version_tuple",
+    "read_update_state",
+    "report_edge_heartbeat",
+    "resolve_safe_artifact_url",
+    "sign_release_ed25519",
+    "sign_release_manifest",
+    "update_state_path",
+    "verify_release_ed25519",
+    "verify_release_signature",
+    "verify_sha256",
+    "write_update_state",
+]

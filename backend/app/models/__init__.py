@@ -3,6 +3,7 @@
 from app.models.balance import BalanceSnapshot
 from app.models.batch import Batch, BatchTrailEvent
 from app.models.dispenser import DispenseRecord, ReceiptRecord
+from app.models.edge import EdgeNodeStatusRecord, EdgeReleaseRecord, EdgeRingStationRecord
 from app.models.event import DiscrepancyEvent
 from app.models.shift import StationShiftRecord
 from app.models.station import LevelReading, Station, StationUser, Tank
@@ -18,6 +19,9 @@ __all__ = [
     "StationShiftRecord",
     "DispenseRecord",
     "ReceiptRecord",
+    "EdgeReleaseRecord",
+    "EdgeRingStationRecord",
+    "EdgeNodeStatusRecord",
     "Batch",
     "BatchTrailEvent",
     "BalanceSnapshot",

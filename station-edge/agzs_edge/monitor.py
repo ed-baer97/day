@@ -81,6 +81,7 @@ class ShiftDashboardSnapshot:
     total_amount: float
     outbox_pending: int
     outbox_sent: int
+    outbox_auth_blocked: int = 0
     update_state: UpdateProgressState | None = None
 
 
@@ -282,6 +283,7 @@ def build_shift_snapshot(
         total_amount=round(total_amount, 2),
         outbox_pending=int(summary.get("outbox_pending", 0) or 0),
         outbox_sent=int(summary.get("outbox_sent", 0) or 0),
+        outbox_auth_blocked=int(summary.get("outbox_auth_blocked", 0) or 0),
         update_state=active_update,
     )
 
@@ -319,11 +321,19 @@ def render_shift_dashboard(snapshot: ShiftDashboardSnapshot, *, kiosk: bool = Fa
     now_str = snapshot.generated_at.strftime("%d.%m.%Y %H:%M:%S")
 
     lines: list[str] = [
-        f" АГЗС {snapshot.station_code} — МОНИТОР КОЛОНОК".ljust(58) + now_str.rjust(22),
+        f" АГЗС {snapshot.station_code or '—'} — МОНИТОР КОЛОНОК".ljust(58) + now_str.rjust(22),
         f" {snapshot.shift.label}: {shift_start} – {shift_end} | "
         f"VPS: отпр. {snapshot.outbox_sent}, очер. {snapshot.outbox_pending}",
         "",
     ]
+    if snapshot.outbox_auth_blocked > 0:
+        lines.insert(
+            2,
+            _clip(
+                f" ! ОШИБКА ТОКЕНА VPS (401/403): в auth_blocked {snapshot.outbox_auth_blocked} зап.",
+                80,
+            ),
+        )
 
     if snapshot.update_state is not None and snapshot.update_state.in_progress:
         st = snapshot.update_state

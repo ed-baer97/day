@@ -1,6 +1,6 @@
 """Отправка очереди исходящих событий (outbox_queue) со станции на центральный VPS.
 
-Шлёт пакеты на `POST /api/v1/ingest/dispense` с заголовком `X-Device-Token`.
+Шлёт пакеты на `POST /api/v1/ingest/dispense` / `/dispenses/batch` с заголовком `X-Device-Token`.
 Повторная отправка одного и того же `external_txn_id` идемпотентна: сервер возвращает
 `duplicate: true`, не создавая вторую заправку и не списывая литры повторно.
 Центр никаких команд пуска или останова на станцию не возвращает.
@@ -17,10 +17,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+from agzs_edge.config import validate_vps_url
 from agzs_edge.storage import EdgeDatabase, OutboxItem
 
 logger = logging.getLogger(__name__)
 MAX_BATCH_SIZE = 200
+_AUTH_ERROR_CODES = frozenset({401, 403})
 
 
 @dataclass(frozen=True)
@@ -40,11 +42,17 @@ def send_vps_request(
     method: str,
     body_text: str | None = None,
     accept_json: bool = False,
+    allow_insecure_http: bool = False,
     timeout_sec: float = 10.0,
 ) -> VpsSendResult:
     """Выполняет HTTP-запрос к VPS и возвращает унифицированный VpsSendResult."""
     del accept_json
-    url = base_url.rstrip("/") + path
+    try:
+        safe_base = validate_vps_url(base_url, allow_insecure_http=allow_insecure_http)
+    except ValueError as exc:
+        return VpsSendResult(ok=False, status_code=0, error_text=str(exc))
+
+    url = safe_base + path
     headers: dict[str, str] = {"Accept": "application/json"}
     if body_text is not None:
         headers["Content-Type"] = "application/json"
@@ -78,12 +86,10 @@ def probe_vps_link(
     device_token: str,
     tank_id: str,
     *,
+    allow_insecure_http: bool = False,
     timeout_sec: float = 10.0,
 ) -> VpsSendResult:
-    """Проверяет, что центральный сервер принимает токен этой станции.
-
-    Читает книгу резервуара (`GET /api/v1/ingest/tanks/{id}`) и ничего не записывает.
-    """
+    """Проверяет, что центральный сервер принимает токен этой станции."""
     if not tank_id:
         return VpsSendResult(ok=False, error_text="не задан идентификатор резервуара")
     return send_vps_request(
@@ -92,8 +98,13 @@ def probe_vps_link(
         device_token,
         method="GET",
         accept_json=True,
+        allow_insecure_http=allow_insecure_http,
         timeout_sec=timeout_sec,
     )
+
+
+def _is_non_bool_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def post_dispense_to_vps(
@@ -101,34 +112,42 @@ def post_dispense_to_vps(
     device_token: str,
     payload_json: str,
     *,
+    allow_insecure_http: bool = False,
     timeout_sec: float = 10.0,
 ) -> VpsSendResult:
-    """Выполняет HTTP POST `/api/v1/ingest/dispense` на центральный сервер (Ubuntu VPS)."""
+    """Выполняет HTTP POST `/api/v1/ingest/dispense` и требует явный JSON ACK (`accepted: true`)."""
     result = send_vps_request(
         base_url,
         "/api/v1/ingest/dispense",
         device_token,
         method="POST",
         body_text=payload_json,
+        allow_insecure_http=allow_insecure_http,
         timeout_sec=timeout_sec,
     )
     if not result.ok:
         return result
     try:
         body = json.loads(result.response_text)
-    except json.JSONDecodeError:
-        body = {}
-    if bool(body.get("accepted", True)):
+    except json.JSONDecodeError as exc:
         return VpsSendResult(
-            ok=True,
-            duplicate=bool(body.get("duplicate", False)),
+            ok=False,
             status_code=result.status_code,
             response_text=result.response_text,
+            error_text=f"Некорректный JSON-ответ сервера: {exc}",
+        )
+    if not isinstance(body, dict) or body.get("accepted") is not True:
+        return VpsSendResult(
+            ok=False,
+            status_code=result.status_code,
+            response_text=result.response_text,
+            error_text=f"Сервер не подтвердил приём (accepted != true): {result.response_text[:300]}",
         )
     return VpsSendResult(
-        ok=False,
+        ok=True,
+        duplicate=bool(body.get("duplicate", False)),
         status_code=result.status_code,
-        error_text=f"Сервер отклонил пакет: {result.response_text}",
+        response_text=result.response_text,
     )
 
 
@@ -137,9 +156,10 @@ def post_dispenses_batch_to_vps(
     device_token: str,
     items: list[dict],
     *,
+    allow_insecure_http: bool = False,
     timeout_sec: float = 15.0,
 ) -> VpsSendResult:
-    """Выполняет пакетный HTTP POST `/api/v1/ingest/dispenses/batch` на центральный VPS."""
+    """Выполняет пакетный HTTP POST `/api/v1/ingest/dispenses/batch` и проверяет подсчёт принятых/дублей."""
     payload = json.dumps({"items": items}, ensure_ascii=False)
     result = send_vps_request(
         base_url,
@@ -147,20 +167,56 @@ def post_dispenses_batch_to_vps(
         device_token,
         method="POST",
         body_text=payload,
+        allow_insecure_http=allow_insecure_http,
         timeout_sec=timeout_sec,
     )
     if not result.ok:
         return result
     try:
         body = json.loads(result.response_text)
-    except json.JSONDecodeError:
-        body = {}
-    if isinstance(body, dict) and body.get("accepted") is False:
+    except json.JSONDecodeError as exc:
         return VpsSendResult(
             ok=False,
             status_code=result.status_code,
-            error_text=f"Сервер отклонил пакет: {result.response_text}",
+            response_text=result.response_text,
+            error_text=f"Некорректный JSON-ответ пакетного приёма: {exc}",
         )
+    if not isinstance(body, dict) or body.get("accepted") is False:
+        return VpsSendResult(
+            ok=False,
+            status_code=result.status_code,
+            response_text=result.response_text,
+            error_text=f"Сервер отклонил пакет: {result.response_text[:300]}",
+        )
+
+    accepted_count = body.get("accepted_count")
+    duplicates_count = body.get("duplicates_count", 0)
+    if (
+        not _is_non_bool_int(accepted_count)
+        or not _is_non_bool_int(duplicates_count)
+        or accepted_count < 0
+        or duplicates_count < 0
+        or (accepted_count + duplicates_count) != len(items)
+    ):
+        return VpsSendResult(
+            ok=False,
+            status_code=result.status_code,
+            response_text=result.response_text,
+            error_text=f"Неполный ACK пакетного приёма ({accepted_count}+{duplicates_count} != {len(items)})",
+        )
+    if "results" in body:
+        results = body["results"]
+        if (
+            not isinstance(results, list)
+            or len(results) != len(items)
+            or not all(isinstance(row, dict) and row.get("accepted") is True for row in results)
+        ):
+            return VpsSendResult(
+                ok=False,
+                status_code=result.status_code,
+                response_text=result.response_text,
+                error_text="Сервер подтвердил не все элементы пакета в results",
+            )
     return result
 
 
@@ -173,26 +229,27 @@ class OutboxSyncWorker:
         *,
         vps_base_url: str,
         device_token: str,
+        allow_insecure_http: bool = False,
         sender: Callable[[str, str, str], VpsSendResult] | None = None,
         batch_sender: Callable[[str, str, list[dict]], VpsSendResult] | None = None,
     ) -> None:
         self.db = db
         self.vps_base_url = vps_base_url
         self.device_token = device_token
+        self.allow_insecure_http = allow_insecure_http
         self._sender = sender or (
-            lambda url, token, payload: post_dispense_to_vps(url, token, payload)
+            lambda url, token, payload: post_dispense_to_vps(
+                url, token, payload, allow_insecure_http=self.allow_insecure_http
+            )
         )
         self._batch_sender = batch_sender or (
-            lambda url, token, items: post_dispenses_batch_to_vps(url, token, items)
+            lambda url, token, items: post_dispenses_batch_to_vps(
+                url, token, items, allow_insecure_http=self.allow_insecure_http
+            )
         )
 
     def flush_due(self, *, limit: int = 25, now: datetime | None = None) -> tuple[int, int]:
-        """Пытается отправить все готовые к отправке записи из `outbox_queue`.
-
-        Если готовых записей больше одной, сначала пробует пакетную отправку (Bulk Ingest)
-        чанками до `MAX_BATCH_SIZE` (200 записей). При сбое чанка откатывается к поштучной отправке
-        с индивидуальным retry-бэкоффом. Возвращает кортеж `(sent_count, failed_count)`.
-        """
+        """Пытается отправить готовые записи из `outbox_queue` пакетами до `MAX_BATCH_SIZE`."""
         items: list[OutboxItem] = self.db.fetch_due_outbox(limit=limit, now=now)
         if not items:
             return 0, 0
@@ -224,6 +281,7 @@ class OutboxSyncWorker:
                 continue
             valid_pairs.append((it, parsed_obj))
 
+        auth_aborted = False
         for start in range(0, len(valid_pairs), MAX_BATCH_SIZE):
             chunk_pairs = valid_pairs[start : start + MAX_BATCH_SIZE]
             chunk = [it for it, _ in chunk_pairs]
@@ -238,6 +296,17 @@ class OutboxSyncWorker:
                         sent_count += len(chunk)
                         logger.info("Пакет из %d наливов успешно доставлен на VPS в 1 запросе", len(chunk))
                         continue
+                    if batch_res.status_code in _AUTH_ERROR_CODES:
+                        remaining_ids = [it.external_txn_id for it, _ in valid_pairs[start:]]
+                        self.db.mark_outbox_auth_blocked(remaining_ids, batch_res.error_text, now=now)
+                        failed_count += len(remaining_ids)
+                        logger.error(
+                            "Токен устройства отклонён сервером (HTTP %d): очередь (%d записей) переведена в auth_blocked",
+                            batch_res.status_code,
+                            len(remaining_ids),
+                        )
+                        auth_aborted = True
+                        break
                     if batch_res.status_code == 0:
                         for it in chunk:
                             self.db.mark_outbox_failed(it.external_txn_id, batch_res.error_text, now=now)
@@ -252,7 +321,7 @@ class OutboxSyncWorker:
                 except Exception as exc:
                     logger.warning("Ошибка пакетной отправки (%s), переход на поштучную", exc)
 
-            for item in chunk:
+            for idx, item in enumerate(chunk):
                 result = self._sender(self.vps_base_url, self.device_token, item.payload_json)
                 if result.ok:
                     self.db.mark_outbox_sent(item.external_txn_id, result.response_text)
@@ -262,6 +331,19 @@ class OutboxSyncWorker:
                         item.external_txn_id,
                         "дубликат проигнорирован" if result.duplicate else "принят",
                     )
+                elif result.status_code in _AUTH_ERROR_CODES:
+                    remaining_ids = [it.external_txn_id for it in chunk[idx:]] + [
+                        it.external_txn_id for it, _ in valid_pairs[start + len(chunk) :]
+                    ]
+                    self.db.mark_outbox_auth_blocked(remaining_ids, result.error_text, now=now)
+                    failed_count += len(remaining_ids)
+                    logger.error(
+                        "Токен устройства отклонён сервером (HTTP %d): остановлена отправка (%d записей в auth_blocked)",
+                        result.status_code,
+                        len(remaining_ids),
+                    )
+                    auth_aborted = True
+                    break
                 else:
                     permanent = result.status_code in {400, 422}
                     self.db.mark_outbox_failed(
@@ -285,5 +367,7 @@ class OutboxSyncWorker:
                             item.attempts + 1,
                             result.error_text,
                         )
+            if auth_aborted:
+                break
 
         return sent_count, failed_count

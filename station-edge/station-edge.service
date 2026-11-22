@@ -8,7 +8,7 @@ Type=simple
 User=station-edge
 Group=dialout
 SupplementaryGroups=tty
-WorkingDirectory=/opt/station-edge
+WorkingDirectory=/var/lib/station-edge
 EnvironmentFile=/opt/station-edge/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/station-edge/.venv/bin/python -m agzs_edge serve
@@ -19,6 +19,19 @@ TimeoutStopSec=180
 StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/station-edge /run/lock
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+DevicePolicy=closed
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
 
 [Install]
 WantedBy=multi-user.target

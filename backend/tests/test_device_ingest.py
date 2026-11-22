@@ -197,6 +197,7 @@ def test_level_without_reading_is_rejected():
 
 def test_token_required_when_configured(monkeypatch):
     monkeypatch.setenv("INGEST_TOKEN", "secret")
+    monkeypatch.setenv("ALLOW_ANONYMOUS_INGEST", "false")
     get_settings.cache_clear()
     try:
         payload = {
@@ -240,10 +241,12 @@ def test_site_tank_card_sets_volume_and_token():
     )
     assert duplicate.status_code == 409
 
+    # Токен резервуара не может менять калибровку (это делает администратор), а сам уровень по токену принимается.
     calibrated = client.put(
         "/api/v1/ingest/calibration",
-        headers={"X-Device-Token": token},
         json={
+            "station_id": station,
+            "tank_id": tank_id,
             "capacity_liters": 1,
             "low_volts": 1.2,
             "low_percent": 20,

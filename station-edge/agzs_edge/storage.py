@@ -631,6 +631,46 @@ class EdgeDatabase:
                 (attempts, error_text[:1000], next_retry, external_txn_id),
             )
 
+    def mark_outbox_auth_blocked(
+        self,
+        external_txn_ids: list[str],
+        error_text: str,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        """Переводит записи в статус 'auth_blocked' без удаления при 401/403 (для восстановления после смены токена)."""
+        if not external_txn_ids:
+            return 0
+        now_iso = (now or datetime.now(timezone.utc)).isoformat()
+        with self._lock, self._session() as conn:
+            cur = conn.executemany(
+                """
+                UPDATE outbox_queue
+                SET status = 'auth_blocked',
+                    attempts = attempts + 1,
+                    last_error = ?,
+                    next_retry_at = ?
+                WHERE external_txn_id = ? AND status != 'sent'
+                """,
+                [(error_text[:1000], now_iso, txn_id) for txn_id in external_txn_ids],
+            )
+            return int(cur.rowcount or 0)
+
+    def requeue_auth_blocked(self, *, now: datetime | None = None) -> int:
+        """Возвращает записи из 'auth_blocked' обратно в очередь 'pending' (после обновления токена)."""
+        now_iso = (now or datetime.now(timezone.utc)).isoformat()
+        with self._lock, self._session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE outbox_queue
+                SET status = 'pending',
+                    next_retry_at = ?
+                WHERE status = 'auth_blocked'
+                """,
+                (now_iso,),
+            )
+            return int(cur.rowcount or 0)
+
     @staticmethod
     def _empty_summary() -> dict[str, object]:
         return {
@@ -638,6 +678,8 @@ class EdgeDatabase:
             "total_dispensed_ml": 0,
             "total_liters": 0.0,
             "outbox_pending": 0,
+            "outbox_auth_blocked": 0,
+            "last_auth_error": None,
             "outbox_sent": 0,
             "pumps": [],
         }
@@ -714,6 +756,9 @@ class EdgeDatabase:
                 pending = conn.execute(
                     "SELECT COUNT(*) AS cnt FROM outbox_queue WHERE status IN ('pending', 'retry')"
                 ).fetchone()
+                auth_blocked = conn.execute(
+                    "SELECT COUNT(*) AS cnt, MAX(last_error) AS last_err FROM outbox_queue WHERE status = 'auth_blocked'"
+                ).fetchone()
                 sent = conn.execute(
                     "SELECT COUNT(*) AS cnt FROM outbox_queue WHERE status = 'sent'"
                 ).fetchone()
@@ -729,6 +774,8 @@ class EdgeDatabase:
             "total_dispensed_ml": int(totals["total_dispensed_ml"]) if totals else 0,
             "total_liters": round(float(totals["total_liters"]) if totals else 0.0, 3),
             "outbox_pending": int(pending["cnt"]) if pending else 0,
+            "outbox_auth_blocked": int(auth_blocked["cnt"]) if auth_blocked else 0,
+            "last_auth_error": auth_blocked["last_err"] if auth_blocked else None,
             "outbox_sent": int(sent["cnt"]) if sent else 0,
             "pumps": [dict(row) for row in pumps],
         }

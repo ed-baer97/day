@@ -280,7 +280,7 @@ def test_service_corrupted_frames_delayed_auto_reset_and_announce_vps(monkeypatc
     monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
     monkeypatch.setattr(
         "agzs_edge.service.probe_vps_link",
-        lambda url, tok, tank: VpsSendResult(ok=True, status_code=200, response_text='{"actual_remainder_liters": 4200}'),
+        lambda url, tok, tank, **_kw: VpsSendResult(ok=True, status_code=200, response_text='{"actual_remainder_liters": 4200}'),
     )
 
     svc._announce_vps()  # noqa: SLF001
@@ -294,7 +294,7 @@ def test_service_corrupted_frames_delayed_auto_reset_and_announce_vps(monkeypatc
     # Проверка _announce_vps при ошибке и KeyboardInterrupt в serve
     monkeypatch.setattr(
         "agzs_edge.service.probe_vps_link",
-        lambda url, tok, tank: VpsSendResult(ok=False, status_code=401, error_text="unauthorized"),
+        lambda url, tok, tank, **_kw: VpsSendResult(ok=False, status_code=401, error_text="unauthorized"),
     )
     monkeypatch.setattr(svc, "poll_cycle_once", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
     svc.serve(max_cycles=1)
