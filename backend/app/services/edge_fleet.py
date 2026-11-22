@@ -18,6 +18,7 @@ from app.schemas.ingest import (
     EdgeReleaseManifest,
     EdgeReleaseOut,
 )
+from app.services.memory_state import persist, register_store
 
 _LOCK = threading.RLock()
 
@@ -186,6 +187,7 @@ def get_release_for_station(
 ) -> EdgeReleaseOut:
     """Возвращает целевой манифест релиза для конкретной АГЗС (учитывая кольца ring0/ring1/ring2)."""
     safe_channel = normalize_channel(channel)
+    should_persist = False
     with _LOCK:
         target = _resolve_target_manifest(safe_channel, station_code)
         update_required = False
@@ -213,8 +215,9 @@ def get_release_for_station(
                     update_status=prev.update_status if prev else ("up_to_date" if up_to_date else "checking"),
                     last_error=prev.last_error if prev else None,
                 )
+                should_persist = True
 
-        return EdgeReleaseOut(
+        out = EdgeReleaseOut(
             version=target.version,
             artifact_url=target.artifact_url,
             sha256=target.sha256,
@@ -224,6 +227,9 @@ def get_release_for_station(
             signature=target.signature,
             update_required=update_required,
         )
+    if should_persist:
+        persist()
+    return out
 
 
 def publish_release(
@@ -253,7 +259,8 @@ def publish_release(
         _RELEASES[ring] = stored
         _replace_ring_stations(_RING0_STATIONS, canary_stations)
         _replace_ring_stations(_RING1_STATIONS, ring1_stations)
-        return stored
+    persist()
+    return stored
 
 
 def record_heartbeat(hb: EdgeHeartbeatIn) -> EdgeHeartbeatAck:
@@ -277,11 +284,13 @@ def record_heartbeat(hb: EdgeHeartbeatIn) -> EdgeHeartbeatAck:
             update_status=hb.update_status,
             last_error=hb.last_error,
         )
-        return EdgeHeartbeatAck(
+        ack = EdgeHeartbeatAck(
             accepted=True,
             update_required=not up_to_date,
             release=release,
         )
+    persist()
+    return ack
 
 
 def fleet_summary() -> EdgeFleetSummaryOut:
@@ -331,3 +340,40 @@ def reset_edge_fleet() -> None:
         _RING0_STATIONS.clear()
         _RING1_STATIONS.clear()
         _NODES.clear()
+
+
+def snapshot() -> dict:
+    with _LOCK:
+        return {
+            "releases": {ring: rel.model_dump(mode="json") for ring, rel in _RELEASES.items()},
+            "ring0_stations": sorted(_RING0_STATIONS),
+            "ring1_stations": sorted(_RING1_STATIONS),
+            "nodes": [node.model_dump(mode="json") for node in _NODES.values()],
+        }
+
+
+def restore_snapshot(data: dict) -> None:
+    if not isinstance(data, dict):
+        return
+    with _LOCK:
+        releases = data.get("releases")
+        if isinstance(releases, dict):
+            restored_releases = _default_releases()
+            for ring in _RING_ORDER:
+                raw_rel = releases.get(ring)
+                if isinstance(raw_rel, dict):
+                    restored_releases[ring] = EdgeReleaseManifest.model_validate(raw_rel)
+            _RELEASES.clear()
+            _RELEASES.update(restored_releases)
+        if "ring0_stations" in data and isinstance(data["ring0_stations"], list):
+            _replace_ring_stations(_RING0_STATIONS, [str(x) for x in data["ring0_stations"]])
+        if "ring1_stations" in data and isinstance(data["ring1_stations"], list):
+            _replace_ring_stations(_RING1_STATIONS, [str(x) for x in data["ring1_stations"]])
+        if "nodes" in data and isinstance(data["nodes"], list):
+            _NODES.clear()
+            for raw_node in data["nodes"]:
+                node = EdgeNodeStatus.model_validate(raw_node)
+                _NODES[node.station_code] = node
+
+
+register_store("edge_fleet", snapshot, restore_snapshot)

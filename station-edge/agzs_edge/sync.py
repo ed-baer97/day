@@ -199,12 +199,37 @@ class OutboxSyncWorker:
 
         sent_count = 0
         failed_count = 0
+        valid_pairs: list[tuple[OutboxItem, dict]] = []
+        for it in items:
+            try:
+                parsed_obj = json.loads(it.payload_json)
+            except ValueError as exc:
+                self.db.mark_outbox_failed(
+                    it.external_txn_id,
+                    f"Некорректный JSON: {exc}",
+                    now=now,
+                    permanent=True,
+                )
+                failed_count += 1
+                logger.error("Запись %s переведена в dead-letter (битый JSON): %s", it.external_txn_id, exc)
+                continue
+            if not isinstance(parsed_obj, dict):
+                self.db.mark_outbox_failed(
+                    it.external_txn_id,
+                    "Некорректный JSON: ожидался объект",
+                    now=now,
+                    permanent=True,
+                )
+                failed_count += 1
+                continue
+            valid_pairs.append((it, parsed_obj))
 
-        for start in range(0, len(items), MAX_BATCH_SIZE):
-            chunk = items[start : start + MAX_BATCH_SIZE]
-            if len(chunk) > 1:
+        for start in range(0, len(valid_pairs), MAX_BATCH_SIZE):
+            chunk_pairs = valid_pairs[start : start + MAX_BATCH_SIZE]
+            chunk = [it for it, _ in chunk_pairs]
+            if len(chunk_pairs) > 1:
                 try:
-                    parsed = [json.loads(it.payload_json) for it in chunk]
+                    parsed = [obj for _, obj in chunk_pairs]
                     batch_res = self._batch_sender(self.vps_base_url, self.device_token, parsed)
                     if batch_res.ok:
                         self.db.mark_outbox_batch_sent(
@@ -238,13 +263,27 @@ class OutboxSyncWorker:
                         "дубликат проигнорирован" if result.duplicate else "принят",
                     )
                 else:
-                    self.db.mark_outbox_failed(item.external_txn_id, result.error_text, now=now)
-                    failed_count += 1
-                    logger.warning(
-                        "Не удалось отправить пакет %s (попытка %d): %s",
+                    permanent = result.status_code in {400, 422}
+                    self.db.mark_outbox_failed(
                         item.external_txn_id,
-                        item.attempts + 1,
                         result.error_text,
+                        now=now,
+                        permanent=permanent,
                     )
+                    failed_count += 1
+                    if permanent:
+                        logger.error(
+                            "Пакет %s отклонён сервером (HTTP %d) и переведён в dead-letter: %s",
+                            item.external_txn_id,
+                            result.status_code,
+                            result.error_text,
+                        )
+                    else:
+                        logger.warning(
+                            "Не удалось отправить пакет %s (попытка %d): %s",
+                            item.external_txn_id,
+                            item.attempts + 1,
+                            result.error_text,
+                        )
 
         return sent_count, failed_count

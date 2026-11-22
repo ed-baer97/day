@@ -240,15 +240,17 @@ def test_sqlite_connections_are_closed_on_every_operation(monkeypatch, tmp_path:
 
 
 def test_env_defaults_to_power_supply_cycle(monkeypatch, tmp_path: Path) -> None:
-    """Без явных флагов служба с блоком питания сама возвращает колонку из '07' и не шлёт 0x38."""
+    """Без явных флагов служба с блоком питания сама гасит насос 0x36, сбрасывает '07' и не шлёт 0x38."""
     for key in (
         "AGZS_READ_ONLY",
+        "AGZS_AUTO_STOP_ON_FINISH",
         "AGZS_AUTO_RESET",
         "AGZS_AUTO_RESET_STOPPED_DELAY_SEC",
         "AGZS_LOCK_BUTTONS_ON_UPDATE",
     ):
         monkeypatch.delenv(key, raising=False)
     settings = EdgeSettings.from_env(tmp_path / "missing.env")
+    assert settings.auto_stop_on_finish is True
     assert settings.auto_reset_on_stop is True
     assert settings.read_only is False
     assert settings.auto_reset_delay_sec == 15.0
@@ -257,21 +259,26 @@ def test_env_defaults_to_power_supply_cycle(monkeypatch, tmp_path: Path) -> None
 
 
 def test_read_only_overrides_auto_reset_and_blocks_0x37(monkeypatch, tmp_path: Path) -> None:
-    """AGZS_READ_ONLY=1 / read_only=True выключает автосброс 0x37 и блокирует его в _maybe_auto_reset."""
+    """AGZS_READ_ONLY=1 / read_only=True выключает 0x36 и автосброс 0x37 и блокирует команды колонке."""
     direct = EdgeSettings(read_only=True)
     assert direct.read_only is True
     assert direct.auto_reset_on_stop is False
+    assert direct.auto_stop_on_finish is False
 
     monkeypatch.setenv("AGZS_READ_ONLY", "1")
     monkeypatch.delenv("AGZS_AUTO_RESET", raising=False)
+    monkeypatch.delenv("AGZS_AUTO_STOP_ON_FINISH", raising=False)
     env_only_ro = EdgeSettings.from_env(tmp_path / "ro_default_reset.env")
     assert env_only_ro.read_only is True
     assert env_only_ro.auto_reset_on_stop is False
+    assert env_only_ro.auto_stop_on_finish is False
 
     monkeypatch.setenv("AGZS_AUTO_RESET", "1")
+    monkeypatch.setenv("AGZS_AUTO_STOP_ON_FINISH", "1")
     env_conflict = EdgeSettings.from_env(tmp_path / "ro_with_reset.env")
     assert env_conflict.read_only is True
     assert env_conflict.auto_reset_on_stop is False
+    assert env_conflict.auto_stop_on_finish is False
 
     captured_stop07 = bytes.fromhex("01 30 31 34 02 30 39 30 30 30 30 30 30 30 30 30 30 50 8A 30 37 03 E0")
 
@@ -318,6 +325,34 @@ def test_read_only_overrides_auto_reset_and_blocks_0x37(monkeypatch, tmp_path: P
     assert link.poll_calls == 1
     assert link.send_command_calls == []
     assert svc._stop_07_since == {}  # noqa: SLF001
+
+    # При read_only=True и trace_frames=False в состоянии '05' (0x50) команда 0x38 (000016) также заблокирована
+    idle_05_locked_rst = bytes.fromhex("01 30 31 34 02 30 30 37 32 30 30 30 30 30 30 30 30 50 8A 30 35 03 EE")
+
+    class _IdleReadOnlyLink(_ReadOnlySpyLink):
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            from agzs_edge.iskra import build_test_command
+
+            self.poll_calls += 1
+            return PollRawResult(
+                address=address,
+                request_bytes=build_test_command(address, checksum_mode=checksum_mode or "xor"),
+                response_bytes=idle_05_locked_rst,
+            )
+
+    ro_idle_link = _IdleReadOnlyLink()
+    ro_idle_settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "read_only_idle_buttons.db",
+        sync_enabled=False,
+        read_only=True,
+        trace_frames=False,
+    )
+    ro_idle_svc = StationEdgeService(ro_idle_settings, link=ro_idle_link, db=EdgeDatabase(ro_idle_settings.db_path))
+    ro_idle_svc.poll_cycle_once(observed_at=datetime.now(timezone.utc))
+    assert ro_idle_link.poll_calls == 1
+    assert ro_idle_link.send_command_calls == []
 
 
 def test_env_allows_read_only_zero_and_auto_reset(monkeypatch, tmp_path: Path) -> None:
@@ -570,28 +605,30 @@ def test_column_start_and_stop_are_repeated_once_from_the_computer(tmp_path: Pat
     assert commands.count(CMD_SET_DOSE_ASCII) == 0
 
 
-def test_column_stop_while_running_sends_one_stop(tmp_path: Path) -> None:
-    """Из пуска '03' кнопка «Стоп» (шаг дозы) шлёт один 0x36. Набор в '01' и повтор кадра — нет."""
-    from agzs_edge.iskra import CMD_START_ASCII, CMD_STOP_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+def test_stop_0x36_sent_once_immediately_on_03_to_07_even_with_zero_volume(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Переход 03 -> 07 (в т.ч. с volume=0 и 090000) сразу шлёт один 0x36, а 0x37 позже по задержке."""
+    from agzs_edge.iskra import CMD_RESET_ASCII, CMD_START_ASCII, CMD_STOP_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
     from agzs_edge.serial_link import PollRawResult
 
-    def _frame(state: str, price: bytes, status: int) -> bytes:
-        body = b"01" + bytes([0x34, STX]) + price + b"000000" + bytes([status, 0x8D]) + state.encode("ascii") + bytes([ETX])
+    def _frame(state: str, price: bytes, volume: bytes, status: int) -> bytes:
+        body = b"01" + bytes([0x34, STX]) + price + volume + bytes([status, 0x8D]) + state.encode("ascii") + bytes([ETX])
         return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
 
     polls = [
-        _frame("01", b"000000", 0x51),
-        _frame("01", b"001000", 0x51),
-        _frame("03", b"001000", 0x51),
-        _frame("03", b"001000", 0xD1),
-        _frame("03", b"002000", 0xD1),
-        _frame("03", b"003000", 0xD1),
+        _frame("05", b"007200", b"000000", 0x70),
+        _frame("01", b"001000", b"000000", 0x71),
+        _frame("03", b"090000", b"000000", 0xF0),
+        _frame("07", b"090000", b"000000", 0x70),
+        _frame("07", b"090000", b"000000", 0x70),
+        _frame("07", b"090000", b"000000", 0x70),
     ]
 
     class _Link:
-        def __init__(self) -> None:
+        def __init__(self, frames: list[bytes]) -> None:
             self.sent: list[bytes] = []
-            self._polls = list(polls)
+            self._polls = list(frames)
 
         def open(self) -> None:
             return
@@ -611,36 +648,99 @@ def test_column_stop_while_running_sends_one_stop(tmp_path: Path) -> None:
             self.sent.append(request)
             return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
 
-    link = _Link()
+    # 1. Боевой режим: 05/01/03 -> без команд; 03->07 сразу шлёт один 0x36; повтор '07' не дублирует 0x36; через 15с уходит 0x37
+    ticks = iter([10.0, 11.0, 26.0])
+    monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
+    link = _Link(polls)
     settings = EdgeSettings(
         source_mode="serial",
         pump_addresses=(1,),
-        db_path=tmp_path / "stop-button.db",
+        db_path=tmp_path / "stop_on_03_07.db",
         sync_enabled=False,
-        read_only=True,
-        trace_frames=True,
+        read_only=False,
+        auto_stop_on_finish=True,
+        auto_reset_on_stop=True,
+        auto_reset_delay_sec=15.0,
     )
     svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
     now = datetime.now(timezone.utc)
-    for _ in range(len(polls)):
+    for _ in range(3):
         svc.poll_cycle_once(observed_at=now)
+    assert [req[3] for req in link.sent] == [CMD_TEST_ASCII, CMD_TEST_ASCII, CMD_TEST_ASCII]
 
-    commands = [req[3] for req in link.sent]
-    assert commands.count(CMD_TEST_ASCII) == len(polls)
-    assert commands.count(CMD_START_ASCII) == 0
-    assert commands.count(CMD_STOP_ASCII) == 1
+    svc.poll_cycle_once(observed_at=now)  # 03 -> 07 (t=10.0): немедленный 0x36
+    assert [req[3] for req in link.sent if req[3] != CMD_TEST_ASCII] == [CMD_STOP_ASCII]
+
+    svc.poll_cycle_once(observed_at=now)  # повторный 07 (t=11.0): 0x36 не повторяется, 0x37 ждёт
+    assert [req[3] for req in link.sent if req[3] != CMD_TEST_ASCII] == [CMD_STOP_ASCII]
+
+    svc.poll_cycle_once(observed_at=now)  # 07 (t=26.0 >= 10.0 + 15.0): уходит 0x37
+    non_test = [req[3] for req in link.sent if req[3] != CMD_TEST_ASCII]
+    assert non_test == [CMD_STOP_ASCII, CMD_RESET_ASCII]
+    assert CMD_START_ASCII not in non_test
+
+    # 2. При read_only=True или auto_stop_on_finish=False команда 0x36 не отправляется
+    for label, ro, auto_stop in [("ro", True, True), ("disabled", False, False)]:
+        link_off = _Link(polls[:4])
+        cfg_off = EdgeSettings(
+            source_mode="serial",
+            pump_addresses=(1,),
+            db_path=tmp_path / f"stop_off_{label}.db",
+            sync_enabled=False,
+            read_only=ro,
+            auto_stop_on_finish=auto_stop,
+            auto_reset_on_stop=False,
+        )
+        svc_off = StationEdgeService(cfg_off, link=link_off, db=EdgeDatabase(cfg_off.db_path))
+        for _ in range(4):
+            svc_off.poll_cycle_once(observed_at=now)
+        assert [req[3] for req in link_off.sent if req[3] != CMD_TEST_ASCII] == []
+
+    # 3. Старт службы сразу на '07' (без предшествующего '03') не отправляет 0x36
+    link_start07 = _Link([_frame("07", b"090000", b"000000", 0x70)])
+    svc_start07 = StationEdgeService(
+        EdgeSettings(
+            source_mode="serial",
+            pump_addresses=(1,),
+            db_path=tmp_path / "start_on_07.db",
+            sync_enabled=False,
+            read_only=False,
+            auto_stop_on_finish=True,
+            auto_reset_on_stop=False,
+        ),
+        link=link_start07,
+        db=EdgeDatabase(tmp_path / "start_on_07.db"),
+    )
+    svc_start07.poll_cycle_once(observed_at=now)
+    assert [req[3] for req in link_start07.sent if req[3] != CMD_TEST_ASCII] == []
 
 
-def test_column_stop_when_open_valve_closes_sends_one_stop(tmp_path: Path) -> None:
-    """Клапан, открытый в пуске, закрылся, а состояние ещё '03' — один 0x36 и не больше."""
-    from agzs_edge.iskra import CMD_STOP_ASCII, ETX, SOH, STX, compute_bcc
+def test_stop_04_closes_dispense_immediately_and_sends_0x36(tmp_path: Path) -> None:
+    """Переход 03 -> 04 сразу закрывает заправку в SQLite (без паузы) и шлёт один 0x36."""
+    from agzs_edge.iskra import CMD_STOP_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
     from agzs_edge.serial_link import PollRawResult
 
-    def _frame(status: int) -> bytes:
-        body = b"01" + bytes([0x34, STX]) + b"001000" + b"000000" + bytes([status, 0x8D]) + b"03" + bytes([ETX])
+    def _frame(state: str, volume: bytes, status: int) -> bytes:
+        body = b"01" + bytes([0x34, STX]) + b"002000" + volume + bytes([status, 0x8D]) + state.encode("ascii") + bytes([ETX])
         return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
 
-    polls = [_frame(0xD1), _frame(0x51), _frame(0x51)]
+    polls = [
+        _frame("05", b"000000", 0x70),
+        _frame("01", b"000000", 0x71),
+        _frame("03", b"006500", 0xF1),
+        _frame("04", b"006500", 0x71),
+    ]
+    # В состоянии 01/03 для дозы 20л Price=002000; в 05 Price=007200
+    polls[0] = (
+        bytes([SOH])
+        + b"014"
+        + bytes([STX])
+        + b"007200000000"
+        + bytes([0x70, 0x8D])
+        + b"05"
+        + bytes([ETX])
+        + bytes([compute_bcc(b"014" + bytes([STX]) + b"007200000000" + bytes([0x70, 0x8D]) + b"05" + bytes([ETX]), "xor")])
+    )
 
     class _Link:
         def __init__(self) -> None:
@@ -666,17 +766,30 @@ def test_column_stop_when_open_valve_closes_sends_one_stop(tmp_path: Path) -> No
             return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
 
     link = _Link()
+    db_path = tmp_path / "stop_04_immediate.db"
     settings = EdgeSettings(
         source_mode="serial",
         pump_addresses=(1,),
-        db_path=tmp_path / "valve-stop.db",
+        db_path=db_path,
         sync_enabled=False,
-        read_only=True,
-        trace_frames=True,
+        read_only=False,
+        auto_stop_on_finish=True,
+        auto_reset_on_stop=False,
     )
-    svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
+    db = EdgeDatabase(db_path)
+    svc = StationEdgeService(settings, link=link, db=db)
     now = datetime.now(timezone.utc)
-    for _ in range(len(polls)):
-        svc.poll_cycle_once(observed_at=now)
+    for _ in range(3):
+        assert svc.poll_cycle_once(observed_at=now) == []
 
-    assert [req[3] for req in link.sent].count(CMD_STOP_ASCII) == 1
+    closed = svc.poll_cycle_once(observed_at=now)
+    assert len(closed) == 1
+    assert closed[0].dispensed_ml == 6500
+    assert closed[0].mode == "dose"
+    assert closed[0].preset_ml == 20_000
+    assert closed[0].price_kzt_per_liter == 72.0
+    assert svc.tracker.has_active_sessions() is False
+    assert svc.tracker.has_paused_sessions() is False
+    assert [req[3] for req in link.sent if req[3] != CMD_TEST_ASCII] == [CMD_STOP_ASCII]
+    assert db.summary()["total_dispenses"] == 1
+    assert db.summary()["total_dispensed_ml"] == 6500

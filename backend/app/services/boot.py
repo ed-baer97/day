@@ -32,6 +32,7 @@ def restore_memory_state() -> None:
     if settings.use_postgres:
         return
     import app.services.batch_book  # noqa: F401
+    import app.services.edge_fleet  # noqa: F401
     import app.services.memory_account  # noqa: F401
     import app.services.shelly_link  # noqa: F401
     from app.services.memory_state import restore

@@ -224,6 +224,9 @@ class EdgeDatabase:
                 CREATE INDEX IF NOT EXISTS ix_dispenses_finished_at
                     ON dispenses(finished_at);
 
+                CREATE INDEX IF NOT EXISTS ix_dispenses_pump_finished
+                    ON dispenses(pump_address, finished_at);
+
                 CREATE INDEX IF NOT EXISTS ix_outbox_status_retry
                     ON outbox_queue(status, next_retry_at);
                 """
@@ -301,6 +304,19 @@ class EdgeDatabase:
             return {}
         return {int(row["pump_address"]): int(row["recorded_stop_volume_ml"]) for row in rows}
 
+    def get_known_prices(self) -> dict[int, float]:
+        """Возвращает карту `{pump_address: price_kzt_per_liter}` из последнего состояния колонок."""
+        if self._read_only and not self.db_path.is_file():
+            return {}
+        try:
+            with self._lock, self._session() as conn:
+                rows = conn.execute(
+                    "SELECT pump_address, price_kzt_per_liter FROM pump_live_state WHERE price_kzt_per_liter > 0"
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {int(row["pump_address"]): float(row["price_kzt_per_liter"]) for row in rows}
+
     def record_counter_audit(
         self,
         pump_address: int,
@@ -330,9 +346,16 @@ class EdgeDatabase:
                 prev_val = float(prev["total_counter_liters"])
                 prev_dt = parse_iso_datetime(str(prev["recorded_at"]))
                 counter_delta = round(total_counter_liters - prev_val, 3)
+                where_parts = ["pump_address = ?"]
+                params: list[object] = [pump_address]
+                if prev_dt is not None:
+                    where_parts.append("datetime(finished_at) >= datetime(?)")
+                    params.append((prev_dt - timedelta(seconds=1)).isoformat())
+                where_parts.append("datetime(finished_at) <= datetime(?)")
+                params.append((stamp_dt + timedelta(seconds=1)).isoformat())
                 disp_rows = conn.execute(
-                    "SELECT finished_at, volume_liters FROM dispenses WHERE pump_address = ?",
-                    (pump_address,),
+                    f"SELECT finished_at, volume_liters FROM dispenses WHERE {' AND '.join(where_parts)}",
+                    params,
                 ).fetchall()
                 acc = 0.0
                 for d_row in disp_rows:
@@ -425,6 +448,7 @@ class EdgeDatabase:
         dispenser_id: str,
         tank_id: str | None,
         now: datetime | None = None,
+        mark_stop_vol: int | None = None,
     ) -> bool:
         """Атомарно сохраняет закрытую заправку в `dispenses` и ставит пакет в `outbox_queue`.
 
@@ -492,6 +516,11 @@ class EdgeDatabase:
                     """,
                     (dispense.external_txn_id, payload_json, now_iso, now_iso),
                 )
+                if mark_stop_vol is not None:
+                    conn.execute(
+                        "UPDATE pump_live_state SET recorded_stop_volume_ml = ? WHERE pump_address = ?",
+                        (max(0, int(mark_stop_vol)), dispense.pump_address),
+                    )
                 return True
             except sqlite3.IntegrityError:
                 return False
@@ -565,6 +594,7 @@ class EdgeDatabase:
         error_text: str,
         *,
         now: datetime | None = None,
+        permanent: bool = False,
     ) -> None:
         base_now = now or datetime.now(timezone.utc)
         with self._lock, self._session() as conn:
@@ -573,6 +603,19 @@ class EdgeDatabase:
                 (external_txn_id,),
             ).fetchone()
             attempts = (int(row["attempts"]) if row else 0) + 1
+            if permanent:
+                conn.execute(
+                    """
+                    UPDATE outbox_queue
+                    SET status = 'failed',
+                        attempts = ?,
+                        last_error = ?,
+                        next_retry_at = ?
+                    WHERE external_txn_id = ?
+                    """,
+                    (attempts, error_text[:1000], base_now.isoformat(), external_txn_id),
+                )
+                return
             # Экспоненциальная задержка повтора: от 5 секунд до 5 минут
             backoff_sec = min(300, 5 * (2 ** min(attempts - 1, 6)))
             next_retry = (base_now + timedelta(seconds=backoff_sec)).isoformat()

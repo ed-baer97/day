@@ -81,7 +81,7 @@ def _record_frame(
         observed_at=datetime.now(timezone.utc),
         state_code=frame.state_code,
         state_name=frame.state_name,
-        volume_ml=frame.reported_volume_ml,
+        volume_ml=frame.effective_volume_ml,
         price_kzt_per_liter=frame.price_kzt_per_liter,
         error_code=frame.error_code,
         raw_hex=frame.raw_hex,

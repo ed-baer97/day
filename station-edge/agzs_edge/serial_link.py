@@ -186,8 +186,9 @@ class SerialAskaLink:
 
     def _next_read_size(self, buf: bytearray, expected_len: int) -> int:
         soh = self.layout.soh_byte
-        for pos in range(len(buf) - 1, -1, -1):
-            if buf[pos] == soh and (len(buf) - pos) < expected_len:
+        start = max(0, len(buf) - expected_len + 1)
+        for pos in range(start, len(buf)):
+            if buf[pos] == soh and ((len(buf) - pos) <= 4 or buf[pos + 4] == STX):
                 return expected_len - (len(buf) - pos)
         return expected_len
 
@@ -422,6 +423,24 @@ class EmulatorAskaLink:
                 volume_digits=0,
                 status_ascii="00",
                 sost_ascii=STATE_IDLE,
+                checksum_mode=mode,
+            )
+            return PollRawResult(address=address, request_bytes=request, response_bytes=reply)
+
+        if (
+            cmd == CMD_STOP_ASCII
+            and address in self._step_by_addr
+            and address not in self._controlled_state
+            and not self._initial_locked
+        ):
+            mode = self.layout.tx_checksum_mode
+            reply = build_command_frame(
+                address,
+                CMD_STOP_ASCII,
+                price_digits=self.price_digits,
+                volume_digits=0,
+                status_ascii="00",
+                sost_ascii=STATE_COMPLETED,
                 checksum_mode=mode,
             )
             return PollRawResult(address=address, request_bytes=request, response_bytes=reply)

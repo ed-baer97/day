@@ -297,7 +297,7 @@ class Uzsg01PsuController:
                 return None
             raise PsuControlError(
                 f"Колонка #{address} не ответила (RX=0 байт) на команду 0x{request[3]:02X}. "
-                "Проверьте питание АСКА-02, БП УЗСГ-01 и полярность пары на «К АСКА 01»."
+                "Проверьте питание АСКА-02, БП УЗСГ-01 и полярность пары в кабеле RJ-11."
             )
         try:
             frame = parse_iskra_frame(res.response_bytes, self.layout)

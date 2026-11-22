@@ -150,6 +150,7 @@ class EdgeSettings:
     protocol: str = "iskra_172"  # только подтверждённые: iskra_172
     checksum_mode: str = "xor"
     read_only: bool = False
+    auto_stop_on_finish: bool = True
     auto_reset_on_stop: bool = True
     auto_reset_delay_sec: float = 15.0
     auto_reset_stopped_delay_sec: float = 0.0
@@ -183,6 +184,7 @@ class EdgeSettings:
     def __post_init__(self) -> None:
         if self.read_only:
             self.auto_reset_on_stop = False
+            self.auto_stop_on_finish = False
 
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "EdgeSettings":
@@ -209,6 +211,7 @@ class EdgeSettings:
                 "aska02_native не активирован — нет подтверждённой спецификации прошивки АСКА-02 07.2026"
             )
         read_only = _parse_bool(os.environ.get("AGZS_READ_ONLY"), default=False)
+        auto_stop_on_finish = _parse_bool(os.environ.get("AGZS_AUTO_STOP_ON_FINISH"), default=True)
         auto_reset_on_stop = _parse_bool(os.environ.get("AGZS_AUTO_RESET"), default=True)
         auto_reset_delay_sec = float(os.environ.get("AGZS_AUTO_RESET_DELAY_SEC", "15.0").strip() or "15.0")
         if auto_reset_delay_sec < 0:
@@ -228,6 +231,7 @@ class EdgeSettings:
             raise ValueError("AGZS_COUNTER_RECONCILE_INTERVAL_SEC должен быть >= 0")
         if read_only:
             auto_reset_on_stop = False
+            auto_stop_on_finish = False
 
         checksum_mode = os.environ.get("AGZS_ISKRA_CHECKSUM_MODE", "xor").strip().lower() or "xor"
         if checksum_mode not in {"xor", "sum7", "sum8", "any"}:
@@ -304,6 +308,7 @@ class EdgeSettings:
             protocol=protocol,
             checksum_mode=checksum_mode,
             read_only=read_only,
+            auto_stop_on_finish=auto_stop_on_finish,
             auto_reset_on_stop=auto_reset_on_stop,
             auto_reset_delay_sec=auto_reset_delay_sec,
             auto_reset_stopped_delay_sec=auto_reset_stopped_delay_sec,

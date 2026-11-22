@@ -206,6 +206,13 @@ class IskraTelemetryFrame:
         """True, если колонка в останове ('04'/'07') при выключенной кнопке СБРОС (бит 5 = 0)."""
         return self.state_code in {STATE_COMPLETED, STATE_STOPPED} and not self.reset_button_enabled
 
+    @property
+    def is_parameter_readout(self) -> bool:
+        """True, если кадр несёт ответ чтения/установки параметров (cmd 0x38 или маркеры 16h, 18h..1Bh в байте 17)."""
+        return self.command_code == CMD_PARAMS_ASCII or (
+            self.is_v310_status and self.dose_type_bits in {0x16, 0x18, 0x19, 0x1A, 0x1B}
+        )
+
 
 def compute_bcc(payload_after_soh_including_etx: bytes, mode: str = "xor") -> int:
     """Вычисляет байт контрольной суммы (BCC) для кадра Искра 1.72.
@@ -530,7 +537,11 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
         cmd_code=cmd_code,
     )
 
-    if cmd_code != CMD_PARAMS_ASCII:
+    is_param_frame = cmd_code == CMD_PARAMS_ASCII or (
+        flags_raw.startswith("P") and (raw[17] & 0x1F) in {0x16, 0x18, 0x19, 0x1A, 0x1B}
+    )
+
+    if not is_param_frame:
         if not price_raw.isdigit() or len(price_raw) != 6:
             raise IskraFrameError(f"Поле цены должно содержать 6 цифр, получено: {price_raw!r}")
         if not volume_raw.isdigit() or len(volume_raw) != 6:
@@ -540,13 +551,14 @@ def parse_iskra_frame(raw: bytes, layout: FrameLayout | None = None) -> IskraTel
     completed_volume_ml = _completed_volume_in_price_field(state_code, flags_raw, price_raw, volume_raw) if price_raw.isdigit() and volume_raw.isdigit() else None
     is_mass_frame = len(raw) > 19 and (raw[19] & 0xC0) == 0x40
     # На живой колонке УЗСГ-01 (статус P..) по п. 3.2.1 Протокола v3.10 цена за литр передаётся
-    # только в состоянии сброса ('05'), а в состояниях '01'/'03'/'04'/'07' в поле Price стоит уставка дозы
-    # (или плотность СУГ при режиме массы в байте 19).
+    # только в состоянии сброса ('05') с маркером 0x10, а в состояниях '01'/'03'/'04'/'07' в поле Price стоит уставка дозы
+    # (или плотность СУГ при режиме массы в байте 19, или счётчик/датчик при маркере != 0x10).
     is_volume_in_price_slot = (
-        cmd_code == CMD_PARAMS_ASCII
+        is_param_frame
         or not price_raw.isdigit()
         or completed_volume_ml is not None
         or is_mass_frame
+        or (flags_raw.startswith("P") and (raw[17] & 0x1F) != 0x10)
         or (state_code != STATE_IDLE and flags_raw.startswith("P"))
     )
     price_kzt = 0.0 if is_volume_in_price_slot else _decode_price(price_raw)

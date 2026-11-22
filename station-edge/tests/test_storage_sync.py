@@ -380,3 +380,75 @@ def test_storage_read_only_empty_sqlite_and_parse_iso_datetime(tmp_path: Path) -
         2026, 11, 18, 10, 0, 0, tzinfo=timezone.utc
     )
 
+
+def test_outbox_dead_letter_on_422_and_corrupted_json(tmp_path: Path) -> None:
+    """HTTP 422 и битый JSON переводят запись outbox в status='failed' и не блокируют пакеты."""
+    import sqlite3
+
+    db_path = tmp_path / "dead_letter.db"
+    db = EdgeDatabase(db_path)
+    t0 = datetime(2026, 11, 22, 9, 0, 0, tzinfo=timezone.utc)
+
+    for idx in range(1, 4):
+        disp = CompletedDispense(
+            external_txn_id=f"dl-txn-{idx}",
+            pump_address=1,
+            mode="dose",
+            preset_ml=5000,
+            dispensed_ml=5000,
+            volume_liters=5.0,
+            price_kzt_per_liter=72.0,
+            final_state_code="07",
+            error_code="00",
+            started_at=t0,
+            finished_at=t0,
+            last_raw_frame_hex="01 30 31",
+        )
+        db.record_completed_dispense(
+            disp,
+            station_id="a2222222-2222-2222-2222-222222222201",
+            dispenser_id="d2222222-2222-2222-2222-222222222201",
+            tank_id="b2222222-2222-2222-2222-222222222201",
+            now=t0,
+        )
+
+    # Повреждаем JSON у первой записи
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE outbox_queue SET payload_json = '{broken' WHERE external_txn_id = 'dl-txn-1'")
+    conn.commit()
+    conn.close()
+
+    batch_calls: list[list[str]] = []
+
+    def _batch_sender(_url: str, _tok: str, items: list[dict]) -> VpsSendResult:
+        batch_calls.append([str(it["external_txn_id"]) for it in items])
+        return VpsSendResult(ok=False, status_code=422, error_text="HTTP 422: batch invalid")
+
+    def _single_sender(_url: str, _tok: str, payload_json: str) -> VpsSendResult:
+        txn = json.loads(payload_json)["external_txn_id"]
+        if txn == "dl-txn-2":
+            return VpsSendResult(ok=False, status_code=422, error_text="HTTP 422: bad field")
+        return VpsSendResult(ok=True, status_code=200, response_text='{"accepted":true}')
+
+    worker = OutboxSyncWorker(
+        db,
+        vps_base_url="http://93.171.232.47",
+        device_token="tok",
+        sender=_single_sender,
+        batch_sender=_batch_sender,
+    )
+    sent, failed = worker.flush_due(limit=10, now=t0)
+    assert batch_calls == [["dl-txn-2", "dl-txn-3"]]
+    assert sent == 1
+    assert failed == 2
+    assert db.fetch_due_outbox(limit=10, now=t0) == []
+
+    conn = sqlite3.connect(db_path)
+    statuses = dict(conn.execute("SELECT external_txn_id, status FROM outbox_queue").fetchall())
+    conn.close()
+    assert statuses == {
+        "dl-txn-1": "failed",
+        "dl-txn-2": "failed",
+        "dl-txn-3": "sent",
+    }
+

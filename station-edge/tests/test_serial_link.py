@@ -216,3 +216,33 @@ def test_serial_link_noise_before_delayed_frame_false_soh_and_inter_frame_delay(
     clock[0] += 0.02
     assert link_gap.poll_test(1).response_bytes == frame
     assert any(abs(s - 0.03) < 1e-6 for s in sleeps)
+
+
+def test_serial_link_next_read_size_ignores_0x01_inside_frame_body() -> None:
+    """Байт 0x01 внутри тела уже принимаемого кадра (позиция 18) не сбрасывает расчёт добора байтов."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, SOH, STX
+
+    body = b"01" + bytes([CMD_TEST_ASCII, STX]) + b"007200" + b"000000" + bytes([0x50, 0x01, 0x30, ord("5"), ETX])
+    frame = bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+    assert frame[18] == 0x01
+
+    read_sizes: list[int] = []
+
+    class _TrackingSerial(_FakeSerial):
+        def read(self, size: int) -> bytes:
+            read_sizes.append(size)
+            return super().read(size)
+
+    fake_ser = _TrackingSerial([frame[:19], frame[19:]])
+    link = SerialAskaLink(
+        port="COM7",
+        timeout_sec=0.3,
+        min_wait_sec=0.3,
+        inter_byte_timeout_sec=0.05,
+        inter_frame_delay_sec=0.0,
+    )
+    link._serial = fake_ser  # noqa: SLF001
+
+    res = link.poll_test(1)
+    assert res.response_bytes == frame
+    assert read_sizes == [23, 4]

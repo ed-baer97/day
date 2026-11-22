@@ -254,3 +254,39 @@ def test_tracker_pause_04_resume_manual_reset_and_recover_untracked_stop() -> No
         initial_committed_by_addr={1: 15000},
     )
     assert tracker_restarted.recover_untracked_stop(stop_frame, observed_at=t0 + timedelta(seconds=2)) is None
+
+
+def test_live_v310_preset_dose_recorded_as_dose_mode_with_rising_volume() -> None:
+    """На живой колонке v3.10 доза 20 л (0x51/0xD1, price=002000) с растущим Volume пишется с mode='dose' и preset_ml=20000."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+
+    def _v310_frame(state: str, price: str, volume: str, byte17: int) -> bytes:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + price.encode("ascii")
+            + volume.encode("ascii")
+            + bytes([byte17, 0x8E])
+            + state.encode("ascii")
+            + bytes([ETX])
+        )
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    tracker = PumpDispenseTracker(station_code="AKT-12", pause_on_stopped=True)
+    t0 = datetime(2026, 11, 22, 10, 0, 0, tzinfo=timezone.utc)
+
+    assert tracker.process_frame(parse_iskra_frame(_v310_frame("05", "007200", "000000", 0x50)), observed_at=t0) is None
+    assert tracker.process_frame(parse_iskra_frame(_v310_frame("01", "002000", "000000", 0x51)), observed_at=t0 + timedelta(seconds=2)) is None
+    assert tracker.process_frame(parse_iskra_frame(_v310_frame("03", "002000", "000000", 0xD1)), observed_at=t0 + timedelta(seconds=4)) is None
+    assert tracker.process_frame(parse_iskra_frame(_v310_frame("03", "002000", "012500", 0xD1)), observed_at=t0 + timedelta(seconds=8)) is None
+    done = tracker.process_frame(
+        parse_iskra_frame(_v310_frame("07", "002000", "020000", 0x51)),
+        observed_at=t0 + timedelta(seconds=12),
+    )
+
+    assert done is not None
+    assert done.mode == MODE_DOSE
+    assert done.preset_ml == 20_000
+    assert done.dispensed_ml == 20_000
+    assert done.volume_liters == 20.0
+    assert done.price_kzt_per_liter == 72.0

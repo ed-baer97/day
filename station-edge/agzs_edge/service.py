@@ -7,14 +7,13 @@ import logging
 import signal
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
     CMD_TEST_ASCII,
     STATE_COMPLETED,
-    STATE_DISPENSING,
     STATE_IDLE,
     STATE_STOPPED,
     IskraFrameError,
@@ -33,18 +32,6 @@ from agzs_edge.updater import read_update_state, write_update_state
 
 logger = logging.getLogger(__name__)
 
-_COLUMN_STOP_ATTEMPTS = 3
-
-
-@dataclass
-class _ColumnStopWatch:
-    """Следит за одним пуском колонки, пока состояние ещё '03'."""
-
-    dose: int | None
-    valve_seen: bool
-    sent: bool = False
-    attempts: int = 0
-
 
 class StationEdgeService:
     """Координирует опрос колонок УЗГС-01 через АСКА-02, трекер налива, БД и синхронизацию с VPS."""
@@ -61,10 +48,12 @@ class StationEdgeService:
         self.link = link or build_link(settings)
         self.db = db or EdgeDatabase(settings.db_path)
         initial_committed = self.db.get_recorded_stop_volumes()
+        initial_prices = self.db.get_known_prices()
         self.tracker = PumpDispenseTracker(
             station_code=settings.station_code,
-            pause_on_stopped=True,
+            pause_on_stopped=False,
             initial_committed_by_addr=initial_committed,
+            initial_prices_by_addr=initial_prices,
         )
         self.sync_worker = sync_worker or OutboxSyncWorker(
             self.db,
@@ -72,7 +61,7 @@ class StationEdgeService:
             device_token=settings.device_token,
         )
         self._last_sync_ts = 0.0
-        self._last_seen: dict[int, tuple[str, str, int]] = {}
+        self._last_seen: dict[int, tuple[str, str, int, int]] = {}
         self._last_frame_by_addr: dict[int, IskraTelemetryFrame] = {}
         self._stop_07_since: dict[int, float] = {}
         self._stop_04_since: dict[int, float] = {}
@@ -82,7 +71,7 @@ class StationEdgeService:
         self._buttons_restore_attempts: int = 0
         self._buttons_verify_pending: set[int] = set()
         self._operator_button_attempts: dict[int, int] = {}
-        self._column_stop: dict[int, _ColumnStopWatch] = {}
+        self._dispensing_seen: set[int] = set()
         self._last_counter_reconcile_ts: float = 0.0
         self._sync_wake_event = threading.Event()
         self._sync_stop_event = threading.Event()
@@ -233,9 +222,8 @@ class StationEdgeService:
             station_id=self.settings.station_id,
             dispenser_id=dispenser_id,
             tank_id=self.settings.tank_id or None,
+            mark_stop_vol=mark_stop_vol,
         )
-        if mark_stop_vol is not None:
-            self.db.mark_stop_volume_recorded(completed.pump_address, mark_stop_vol)
         if inserted:
             logger.info(
                 "Зафиксирован уход по колонке #%d (%s): %d мл (%.3f л), цена %.2f ₸/л, txn=%s",
@@ -318,7 +306,15 @@ class StationEdgeService:
                     note=f"state={frame.state_code} err={frame.error_code} ml={frame.effective_volume_ml}",
                 )
 
-            self.db.update_live_state(frame, observed_at=now)
+            if not frame.is_parameter_readout:
+                self.db.update_live_state(frame, observed_at=now)
+                was_dispensing = address in self._dispensing_seen
+                if frame.is_dispensing:
+                    self._dispensing_seen.add(address)
+                else:
+                    self._dispensing_seen.discard(address)
+            else:
+                was_dispensing = False
             signature = (frame.state_code, frame.price_raw, frame.effective_volume_ml, frame.status_byte17)
             if self._last_seen.get(address) != signature:
                 self._last_seen[address] = signature
@@ -348,16 +344,22 @@ class StationEdgeService:
                         button_note,
                     )
             completed = self.tracker.process_frame(frame, observed_at=now)
-            if completed is None and frame.state_code == STATE_COMPLETED and not frame.valve_open:
+            if (
+                completed is None
+                and not frame.is_parameter_readout
+                and frame.state_code in {STATE_COMPLETED, STATE_STOPPED}
+                and not frame.valve_open
+            ):
                 completed = self.tracker.recover_untracked_stop(frame, observed_at=now)
             if completed is not None:
                 if self._record_dispense_to_db(completed, mark_stop_vol=frame.effective_volume_ml):
                     closed_dispenses.append(completed)
 
+            self._maybe_stop_on_finish(address, frame, was_dispensing=was_dispensing)
+
             auto_closed = self._maybe_auto_reset(address, frame, completed=completed, observed_at=now)
             if auto_closed is not None:
                 closed_dispenses.append(auto_closed)
-            self._mirror_column_button(address, frame)
 
         self._sync_pump_buttons_with_update_state()
         self._ensure_operator_buttons()
@@ -392,76 +394,45 @@ class StationEdgeService:
             dose_note,
         )
 
-    def _mirror_column_button(self, address: int, frame: IskraTelemetryFrame) -> None:
-        """Из пуска колонки один раз шлёт «Стоп» (0x36), пока состояние ещё '03'.
-
-        Пуск с корпуса уже включает БУН, поэтому 0x35 не отправляется.
-        «Стоп» виден в кадре '03' как рост поля дозы (кнопка шагает дозу)
-        или как закрытие клапана, который в этом пуске уже открывался.
-        Первый кадр '03' и набор дозы в '01' команду не вызывают: ранний 0x36
-        возвращал колонку в '07' до того, как оператор успевал задать дозу.
-        """
-        if frame.state_code != STATE_DISPENSING or not frame.is_v310_status:
-            self._column_stop.pop(address, None)
+    def _maybe_stop_on_finish(
+        self,
+        address: int,
+        frame: IskraTelemetryFrame,
+        *,
+        was_dispensing: bool,
+    ) -> None:
+        """При выходе колонки из пуска ('03' -> '07'/'04') шлёт один ОСТАНОВ (0x36) для отключения насоса на АСКА-02."""
+        if not was_dispensing or frame.state_code not in {STATE_COMPLETED, STATE_STOPPED}:
             return
-
-        dose = int(frame.price_raw) if frame.price_raw.isdigit() and not frame.is_mass_mode else None
-        watch = self._column_stop.get(address)
-        if watch is None:
-            self._column_stop[address] = _ColumnStopWatch(dose=dose, valve_seen=frame.valve_open)
-            if frame.valve_open:
-                logger.info("Колонка #%d: пуск с колонки, клапан открыт, жду кнопку Стоп", address)
+        if self.settings.read_only or not self.settings.auto_stop_on_finish:
             return
-        if watch.sent or watch.attempts >= _COLUMN_STOP_ATTEMPTS:
-            return
-
-        pressed = False
-        reason = ""
-        if dose is not None and watch.dose is not None and dose > watch.dose:
-            pressed = True
-            reason = f"доза {watch.dose} → {dose}"
-        elif watch.valve_seen and not frame.valve_open:
-            pressed = True
-            reason = "клапан закрылся в пуске"
-
-        if not pressed:
-            if frame.valve_open and not watch.valve_seen:
-                watch.valve_seen = True
-                logger.info("Колонка #%d: пуск с колонки, клапан открыт, жду кнопку Стоп", address)
-            elif frame.valve_open:
-                watch.valve_seen = True
-            if dose is not None:
-                watch.dose = dose
-            return
-
-        watch.attempts += 1
-        if self._send_column_stop(address, reason):
-            watch.sent = True
-
-    def _send_column_stop(self, address: int, reason: str) -> bool:
-        """Отправляет один «Останов» (0x36) по нажатию «Стоп» на колонке."""
         req = build_stop_command(address, checksum_mode=self._tx_checksum_mode())
         try:
             res = self.link.send_command(address, req)
         except Exception as exc:
             logger.warning(
-                "Колонка #%d: не удалось отправить СТОП (0x36) (%s): %s",
+                "Колонка #%d: не удалось отправить ОСТАНОВ (0x36) при выходе в '%s': %s",
                 address,
-                reason,
+                frame.state_code,
                 exc,
             )
-            return False
-        logger.info("Колонка #%d: Стоп с колонки (%s), отправлен ОСТАНОВ (0x36)", address, reason)
+            return
+        logger.info(
+            "Колонка #%d: выход из пуска в '%s' — отправлен ОСТАНОВ (0x36) для отключения насоса на АСКА-02",
+            address,
+            frame.state_code,
+        )
         if res.error_message:
-            logger.warning("Колонка #%d: ответ на СТОП (0x36): %s", address, res.error_message)
-        return True
+            logger.warning("Колонка #%d: ответ на ОСТАНОВ (0x36): %s", address, res.error_message)
 
     def _ensure_operator_buttons(self) -> None:
         """В готовности '05' шлёт 000016, если «ПУСК/СТОП» или «СБРОС» на корпусе выключены.
 
         000018 не используется: он блокирует «СБРОС». После 000016 команда 0x37 не уходит.
-        При AGZS_TRACE_FRAMES=1 команда не отправляется: журнал должен видеть только нажатия.
+        При AGZS_READ_ONLY=1 или AGZS_TRACE_FRAMES=1 команда не отправляется.
         """
+        if self.settings.read_only:
+            return
         if self.settings.source_mode == "emulator":
             return
         if self.settings.trace_frames:
@@ -551,6 +522,7 @@ class StationEdgeService:
                         reset_frame.state_code,
                         reset_frame.price_raw,
                         reset_frame.effective_volume_ml,
+                        reset_frame.status_byte17,
                     )
                     if reset_frame.state_code == STATE_IDLE:
                         self.tracker.mark_reset(address)
@@ -565,6 +537,27 @@ class StationEdgeService:
         elif res.error_message:
             logger.warning("Колонка #%d: ошибка при автосбросе (%s)", address, res.error_message)
 
+    def _close_paused_04(
+        self,
+        address: int,
+        frame: IskraTelemetryFrame,
+        *,
+        observed_at: datetime,
+        send_reset: bool,
+        reason: str,
+    ) -> CompletedDispense | None:
+        self._stop_04_since.pop(address, None)
+        paused_done = self.tracker.finish_paused_session(address, observed_at=observed_at)
+        if paused_done is None:
+            paused_done = self.tracker.recover_untracked_stop(frame, observed_at=observed_at)
+        recorded_closed: CompletedDispense | None = None
+        if paused_done is not None:
+            if self._record_dispense_to_db(paused_done, mark_stop_vol=frame.effective_volume_ml):
+                recorded_closed = paused_done
+        if send_reset:
+            self._send_auto_reset_command(address, observed_at=observed_at, reason=reason)
+        return recorded_closed
+
     def _maybe_auto_reset(
         self,
         address: int,
@@ -574,14 +567,15 @@ class StationEdgeService:
         observed_at: datetime,
     ) -> CompletedDispense | None:
         del completed
-        if self.settings.read_only or frame.address != address or frame.valve_open:
+        if frame.address != address or frame.valve_open:
             self._stop_07_since.pop(address, None)
             self._stop_04_since.pop(address, None)
             return None
 
         if frame.state_code == STATE_COMPLETED:
             self._stop_04_since.pop(address, None)
-            if not self.settings.auto_reset_on_stop:
+            if self.settings.read_only or not self.settings.auto_reset_on_stop:
+                self._stop_07_since.pop(address, None)
                 return None
 
             now_mono = time.monotonic()
@@ -604,7 +598,26 @@ class StationEdgeService:
 
         if frame.state_code == STATE_STOPPED:
             self._stop_07_since.pop(address, None)
-            if not self.settings.auto_reset_on_stop or self.settings.auto_reset_stopped_delay_sec <= 0:
+            if self._stop_requested:
+                can_reset = (
+                    not self.settings.read_only
+                    and self.settings.auto_reset_on_stop
+                    and self.settings.auto_reset_stopped_delay_sec > 0
+                )
+                return self._close_paused_04(
+                    address,
+                    frame,
+                    observed_at=observed_at,
+                    send_reset=can_reset,
+                    reason="остановка службы при паузе 04",
+                )
+
+            if (
+                self.settings.read_only
+                or not self.settings.auto_reset_on_stop
+                or self.settings.auto_reset_stopped_delay_sec <= 0
+            ):
+                self._stop_04_since.pop(address, None)
                 return None
 
             now_mono = time.monotonic()
@@ -612,20 +625,13 @@ class StationEdgeService:
             if (now_mono - first_seen) < self.settings.auto_reset_stopped_delay_sec:
                 return None
 
-            self._stop_04_since.pop(address, None)
-            paused_done = self.tracker.finish_paused_session(address, observed_at=observed_at)
-            if paused_done is None:
-                paused_done = self.tracker.recover_untracked_stop(frame, observed_at=observed_at)
-            recorded_closed: CompletedDispense | None = None
-            if paused_done is not None:
-                if self._record_dispense_to_db(paused_done, mark_stop_vol=frame.effective_volume_ml):
-                    recorded_closed = paused_done
-            self._send_auto_reset_command(
+            return self._close_paused_04(
                 address,
+                frame,
                 observed_at=observed_at,
+                send_reset=True,
                 reason="таймаут паузы 04",
             )
-            return recorded_closed
 
         self._stop_07_since.pop(address, None)
         self._stop_04_since.pop(address, None)
@@ -758,13 +764,14 @@ class StationEdgeService:
         """Непрерывный цикл работы на станции с мягким завершением при остановке."""
         logger.info(
             "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s), "
-            "сброс 07=%s через %.0f с, пауза 04=%s, кнопки=%s, кадры=%s",
+            "стоп 0x36=%s, сброс 07=%s через %.0f с, пауза 04=%s, кнопки=%s, кадры=%s",
             self.settings.source_mode,
             self.settings.serial_port,
             self.settings.pump_addresses,
             self.settings.db_path,
             self.settings.vps_base_url,
             self.settings.sync_enabled,
+            self.settings.auto_stop_on_finish,
             self.settings.auto_reset_on_stop,
             self.settings.auto_reset_delay_sec,
             "выкл" if self.settings.auto_reset_stopped_delay_sec <= 0 else f"{self.settings.auto_reset_stopped_delay_sec:.0f} с",

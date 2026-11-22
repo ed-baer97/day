@@ -222,3 +222,51 @@ def test_edge_release_signing_and_admin_route_guard(monkeypatch):
         assert published.signature == ext_sig
     finally:
         get_settings.cache_clear()
+
+
+def test_edge_fleet_persists_and_restores_via_memory_state(tmp_path, monkeypatch):
+    from app.services import boot
+
+    state_file = tmp_path / "fleet_state.json"
+    monkeypatch.setenv("STATE_PATH", str(state_file))
+    monkeypatch.setenv("ACCOUNT_STORE", "memory")
+    get_settings.cache_clear()
+    try:
+        sha = "e" * 64
+        put_edge_release(
+            EdgeReleaseManifest(
+                version="0.5.0",
+                artifact_url="https://cdn.example.com/agzs_edge-0.5.0-py3-none-any.whl",
+                sha256=sha,
+                channel="ring0",
+                notes="canary persist",
+            ),
+            canary_stations=["AKT-PERSIST-1"],
+            _=None,
+        )
+        post_edge_heartbeat(
+            EdgeHeartbeatIn(
+                station_code="AKT-PERSIST-1",
+                current_version="0.5.0",
+                channel="ring0",
+                outbox_pending=2,
+                active_pumps=0,
+                update_status="updated",
+            ),
+            _=None,
+        )
+        assert state_file.is_file()
+
+        reset_edge_fleet()
+        assert get_edge_fleet(_=None).total_nodes == 0
+        assert get_edge_release(channel="ring0", station_code="AKT-PERSIST-1", _=None).version == "0.1.0"
+
+        boot.restore_memory_state()
+        restored = get_edge_fleet(_=None)
+        assert restored.canary_stations == ["AKT-PERSIST-1"]
+        assert restored.releases["ring0"].version == "0.5.0"
+        assert restored.total_nodes == 1
+        assert restored.nodes[0].station_code == "AKT-PERSIST-1"
+        assert restored.nodes[0].outbox_pending == 2
+    finally:
+        get_settings.cache_clear()

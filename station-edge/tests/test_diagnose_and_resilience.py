@@ -301,8 +301,8 @@ def test_service_corrupted_frames_delayed_auto_reset_and_announce_vps(monkeypatc
 
 
 def test_auto_reset_respects_delay_after_real_dispense(monkeypatch, tmp_path: Path) -> None:
-    """После реального налива 03 -> 07 заправка сразу пишется в БД, а СБРОС 0x37 ждёт заданную паузу."""
-    from agzs_edge.iskra import CMD_RESET_ASCII, STATE_COMPLETED, STATE_DISPENSING
+    """После реального налива 03 -> 07 заправка сразу пишется в БД, сразу уходит 0x36, а СБРОС 0x37 ждёт паузу."""
+    from agzs_edge.iskra import CMD_RESET_ASCII, CMD_STOP_ASCII, STATE_COMPLETED, STATE_DISPENSING
     from agzs_edge.serial_link import PollRawResult
 
     disp_frame = build_test_response_frame(
@@ -349,12 +349,12 @@ def test_auto_reset_respects_delay_after_real_dispense(monkeypatch, tmp_path: Pa
     monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
 
     assert svc.poll_cycle_once() == []  # 03 (идёт налив)
-    closed = svc.poll_cycle_once()      # 07 (закрытие налива; время 100.0 -> старт паузы 2.0 с)
+    closed = svc.poll_cycle_once()      # 07 (закрытие налива; сразу 0x36, время 100.0 -> старт паузы 2.0 с)
     assert len(closed) == 1
     assert closed[0].dispensed_ml == 5000
-    assert link.commands == []
+    assert [req[3] for req in link.commands] == [CMD_STOP_ASCII]
     assert svc.poll_cycle_once() == []  # время 102.5 >= 100.0 + 2.0 -> отправка 0x37
-    assert [req[3] for req in link.commands] == [CMD_RESET_ASCII]
+    assert [req[3] for req in link.commands] == [CMD_STOP_ASCII, CMD_RESET_ASCII]
 
 
 def test_foreign_address_frame_ignored_without_reset(tmp_path: Path) -> None:
@@ -553,8 +553,8 @@ def test_missed_03_recovered_before_auto_reset_and_no_duplicate_on_restart(tmp_p
 
 
 def test_stopped_04_auto_reset_timeout_records_and_resets(monkeypatch, tmp_path: Path) -> None:
-    """Таймаут паузы '04' закрывает заправку в SQLite и только после этого отправляет 0x37."""
-    from agzs_edge.iskra import CMD_RESET_ASCII, STATE_DISPENSING, STATE_STOPPED
+    """На переходе 03 -> 04 налив сразу пишется в SQLite и шлётся 0x36, а по таймауту 04 уходит 0x37 без дубля."""
+    from agzs_edge.iskra import CMD_RESET_ASCII, CMD_STOP_ASCII, STATE_DISPENSING, STATE_STOPPED
     from agzs_edge.serial_link import PollRawResult
 
     f_disp = build_test_response_frame(address=1, state_code=STATE_DISPENSING, price_digits=7200, volume_ml=5000)
@@ -596,15 +596,16 @@ def test_stopped_04_auto_reset_timeout_records_and_resets(monkeypatch, tmp_path:
     monkeypatch.setattr("agzs_edge.service.time.monotonic", lambda: next(ticks))
 
     assert svc.poll_cycle_once() == []  # 03 (5000 мл)
-    assert svc.poll_cycle_once() == []  # 04 -> старт таймера 60 с (t=100.0)
-    assert svc.is_idle_for_update() is False
-    assert link.commands == []
-    assert db.summary()["total_dispenses"] == 0
-
-    closed = svc.poll_cycle_once()      # 04 (t=165.0 >= 100.0 + 60.0) -> запись в БД + 0x37
+    closed = svc.poll_cycle_once()      # 04 -> сразу запись в БД + 0x36 + старт таймера 60 с (t=100.0)
     assert len(closed) == 1
     assert closed[0].dispensed_ml == 5000
-    assert [req[3] for req in link.commands] == [CMD_RESET_ASCII]
+    assert svc.tracker.has_active_sessions() is False
+    assert svc.is_idle_for_update() is False
+    assert [req[3] for req in link.commands] == [CMD_STOP_ASCII]
+    assert db.summary()["total_dispenses"] == 1
+
+    assert svc.poll_cycle_once() == []  # 04 (t=165.0 >= 100.0 + 60.0) -> 0x37 без дублирования записи
+    assert [req[3] for req in link.commands] == [CMD_STOP_ASCII, CMD_RESET_ASCII]
     assert db.summary()["total_dispenses"] == 1
     assert db.summary()["total_dispensed_ml"] == 5000
 
@@ -696,3 +697,98 @@ def test_counter_reconciliation_writes_counter_audits(monkeypatch, tmp_path: Pat
     assert len(rows) == 2
     assert rows[0] == (100.0, None, 0.0, None)
     assert rows[1] == (125.0, 25.0, 20.0, 5.0)
+
+
+def test_restart_preserves_live_price_and_recovers_paused_04_dispense(tmp_path: Path) -> None:
+    """После рестарта службы цена подтягивается из pump_live_state, а пауза '04' восстанавливается в БД."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+    from agzs_edge.serial_link import PollRawResult
+
+    def _v310(state: str, price: bytes, volume: bytes, byte17: int) -> bytes:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + price
+            + volume
+            + bytes([byte17, 0x8E])
+            + state.encode("ascii")
+            + bytes([ETX])
+        )
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    class _ReplayLink:
+        def __init__(self, frames: list[bytes]) -> None:
+            self._frames = list(frames)
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            resp = self._frames.pop(0)
+            return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    db_path = tmp_path / "restart_04_price.db"
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=db_path,
+        sync_enabled=False,
+        read_only=True,
+    )
+
+    # 1. До рестарта видели '05' с ценой 72.00 ₸/л -> цена сохранена в pump_live_state
+    svc1 = StationEdgeService(
+        settings,
+        link=_ReplayLink([_v310("05", b"007200", b"000000", 0x50)]),
+        db=EdgeDatabase(db_path),
+    )
+    assert svc1.poll_cycle_once() == []
+
+    # 2. После рестарта первый кадр — сразу пауза '04' с 8.5 л и уставкой 090000 (цены в кадре нет)
+    svc2 = StationEdgeService(
+        settings,
+        link=_ReplayLink([_v310("04", b"090000", b"008500", 0x50)]),
+        db=EdgeDatabase(db_path),
+    )
+    closed = svc2.poll_cycle_once()
+    assert len(closed) == 1
+    assert closed[0].dispensed_ml == 8500
+    assert closed[0].price_kzt_per_liter == 72.0
+    assert EdgeDatabase(db_path).get_recorded_stop_volumes() == {1: 8500}
+
+    # 3. Проверка немедленного закрытия '04' без паузы (в т.ч. при read_only=True)
+    db_path_stop = tmp_path / "stop_04_immediate.db"
+    ro_settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        poll_interval_sec=0.0,
+        db_path=db_path_stop,
+        sync_enabled=False,
+        read_only=True,
+    )
+    svc3 = StationEdgeService(
+        ro_settings,
+        link=_ReplayLink(
+            [
+                _v310("05", b"007200", b"000000", 0x50),
+                _v310("03", b"090000", b"004200", 0xD0),
+                _v310("04", b"090000", b"004200", 0x50),
+            ]
+        ),
+        db=EdgeDatabase(db_path_stop),
+    )
+    assert svc3.poll_cycle_once() == []
+    assert svc3.poll_cycle_once() == []
+    closed_04 = svc3.poll_cycle_once()
+    assert len(closed_04) == 1
+    assert closed_04[0].dispensed_ml == 4200
+    assert svc3.tracker.has_active_sessions() is False
+    summary = EdgeDatabase(db_path_stop).summary()
+    assert summary["total_dispenses"] == 1
+    assert summary["total_dispensed_ml"] == 4200

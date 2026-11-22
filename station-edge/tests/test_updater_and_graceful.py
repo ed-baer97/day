@@ -936,4 +936,65 @@ def test_restore_pump_buttons_retries_after_partial_error(tmp_path: Path) -> Non
     assert link.param_calls == ["000016", "000016"]
 
 
+def test_write_update_state_refreshes_updated_at_and_skips_direct_port_after_restart(tmp_path: Path, monkeypatch) -> None:
+    """write_update_state всегда обновляет updated_at после replace(), а при restart_cmd апдейтер не лезет в порт."""
+    from dataclasses import replace
+
+    db_path = tmp_path / "upd_ts.db"
+    EdgeDatabase(db_path)
+    db_ro = EdgeDatabase(db_path, read_only=True)
+    settings = EdgeSettings(
+        db_path=db_path,
+        releases_dir=tmp_path / "releases",
+        lock_buttons_on_update=True,
+        read_only=False,
+        update_idle_quiet_sec=0.0,
+    )
+    initial = UpdateProgressState(
+        in_progress=True,
+        phase="installing",
+        current_version="0.1.0",
+        target_version="0.2.0",
+        channel="stable",
+        message="test",
+        updated_at="2020-01-01T00:00:00+00:00",
+    )
+    write_update_state(settings, replace(initial, buttons_locked=True))
+    loaded = read_update_state(settings)
+    assert loaded is not None
+    assert loaded.buttons_locked is True
+    assert loaded.updated_at != "2020-01-01T00:00:00+00:00"
+    clear_update_state(settings)
+
+    wheel_v2 = b"wheel-v2-norace"
+    sha_v2 = hashlib.sha256(wheel_v2).hexdigest()
+    send_calls: list[str] = []
+    monkeypatch.setattr(EdgeUpdater, "_send_buttons_param", lambda self, code: send_calls.append(code) or True)
+
+    def _dl(url: str, dest: Path, *, device_token: str = "") -> Path:
+        del url, device_token
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(wheel_v2)
+        return dest
+
+    updater = EdgeUpdater(
+        settings,
+        db=db_ro,
+        current_version="0.1.0",
+        manifest_fetcher=lambda *a, **kw: ReleaseManifest(
+            version="0.2.0",
+            artifact_url="https://example.com/agzs_edge-0.2.0.whl",
+            sha256=sha_v2,
+        ),
+        artifact_downloader=_dl,
+        installer_fn=lambda _p: None,
+        self_test_fn=lambda: True,
+        restart_fn=lambda _cmd: None,
+        heartbeat_fn=lambda *a, **kw: True,
+    )
+    res = updater.run_update(restart_cmd="systemctl restart station-edge.service")
+    assert res.status == "updated"
+    assert send_calls == ["0.17"]
+
+
 

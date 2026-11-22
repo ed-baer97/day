@@ -271,3 +271,9 @@ def test_v310_price_below_10_mass_mode_money_dose_and_byte17_status() -> None:
     assert status_31.error_code == "00"
     assert status_31.flags_raw == "P32"
     assert status_31.has_protocol_alarm is False
+
+    # 5. Кадр в состоянии '05' с маркером параметра/счётчика (0x5A, 0x58, 0x16) не портит цену
+    for byte17 in (0x5A, 0x58, 0x16):
+        param_idle = parse_iskra_frame(_raw_frame(b"018800", b"004500", byte17, 0x8A, 0x30, "5"))
+        assert param_idle.is_parameter_readout is True
+        assert param_idle.price_kzt_per_liter == 0.0

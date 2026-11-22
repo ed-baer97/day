@@ -121,26 +121,22 @@ def write_update_state(settings: EdgeSettings, state: UpdateProgressState) -> No
     """Атомарно записывает состояние обновления на диск (переживает отключение питания)."""
     path = update_state_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
-    stamped = (
-        state
-        if state.updated_at
-        else UpdateProgressState(
-            in_progress=state.in_progress,
-            phase=state.phase,
-            current_version=state.current_version,
-            target_version=state.target_version,
-            channel=state.channel,
-            message=state.message,
-            artifact_url=state.artifact_url,
-            sha256=state.sha256,
-            min_version=state.min_version,
-            signature=state.signature,
-            artifact_path=state.artifact_path,
-            previous_wheel=state.previous_wheel,
-            interrupted_count=state.interrupted_count,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            buttons_locked=state.buttons_locked,
-        )
+    stamped = UpdateProgressState(
+        in_progress=state.in_progress,
+        phase=state.phase,
+        current_version=state.current_version,
+        target_version=state.target_version,
+        channel=state.channel,
+        message=state.message,
+        artifact_url=state.artifact_url,
+        sha256=state.sha256,
+        min_version=state.min_version,
+        signature=state.signature,
+        artifact_path=state.artifact_path,
+        previous_wheel=state.previous_wheel,
+        interrupted_count=state.interrupted_count,
+        updated_at=datetime.now(timezone.utc).isoformat(),
+        buttons_locked=state.buttons_locked,
     )
     tmp_path = path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(asdict(stamped), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -534,10 +530,10 @@ class EdgeUpdater:
             ),
         )
 
-    def _cleanup_interrupted(self, interrupted: bool) -> None:
+    def _cleanup_interrupted(self, interrupted: bool, *, service_restarted: bool = False) -> None:
         if interrupted:
             clear_update_state(self.settings)
-            self._unlock_pumps_after_install()
+            self._unlock_pumps_after_install(service_restarted=service_restarted)
 
     def _fail_update(
         self,
@@ -578,14 +574,14 @@ class EdgeUpdater:
                     return
                 self._sleep_fn(0.2)
 
-    def _unlock_pumps_after_install(self) -> None:
+    def _unlock_pumps_after_install(self, *, service_restarted: bool = False) -> None:
         if self._unlock_pumps_fn is not None:
             try:
                 self._unlock_pumps_fn()
             except Exception as exc:
                 logger.warning("Ошибка включения кнопок колонок после обновления: %s", exc)
             return
-        if self.settings.read_only or not self.settings.lock_buttons_on_update:
+        if service_restarted or self.settings.read_only or not self.settings.lock_buttons_on_update:
             return
         param_code = "0.16"
         with contextlib.suppress(Exception):
@@ -625,9 +621,10 @@ class EdgeUpdater:
                 clear_interrupted=True,
             )
 
+        restarted = bool(restart_cmd.strip())
         try:
             self._installer_fn(previous_wheel)
-            if restart_cmd.strip():
+            if restarted:
                 self._restart_fn(restart_cmd)
         except Exception as rb_exc:
             return self._fail_update(
@@ -635,7 +632,7 @@ class EdgeUpdater:
                 clear_interrupted=True,
             )
 
-        self._cleanup_interrupted(True)
+        self._cleanup_interrupted(True, service_restarted=restarted)
         self._send_heartbeat(
             version=self.current_version,
             update_status="rolled_back",
@@ -702,7 +699,7 @@ class EdgeUpdater:
             return self._rollback(previous_wheel, restart_cmd, str(exc))
 
         self._save_current_wheel(wheel_path)
-        self._cleanup_interrupted(True)
+        self._cleanup_interrupted(True, service_restarted=bool(restart_cmd.strip()))
         self._send_heartbeat(
             version=target_version,
             update_status="updated",

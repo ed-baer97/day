@@ -100,3 +100,29 @@ def test_watch_fill_handles_empty_corrupted_callback_and_idle_stop(monkeypatch) 
     with pytest.raises(RuntimeError, match="port disconnected"):
         watch_fill(err_link, 1, layout=FrameLayout(), max_seconds=10.0, idle_seconds=2.0)
     assert err_link.closed is True
+
+
+def test_consume_frames_mass_mode_uses_effective_volume() -> None:
+    """В режиме килограммов (байт 19 = 0x70) watch-fill использует effective_volume_ml, как и трекер."""
+    from agzs_edge.iskra import CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+
+    def _mass_frame(state: str, kg_milli: str) -> bytes:
+        body = (
+            b"01"
+            + bytes([CMD_TEST_ASCII, STX])
+            + b"000540"
+            + kg_milli.encode("ascii")
+            + bytes([0xD1, 0x8F, 0x70])
+            + state.encode("ascii")
+            + bytes([ETX])
+        )
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    frames = [
+        parse_iskra_frame(_mass_frame("3", "002700")),
+        parse_iskra_frame(_mass_frame("7", "005400")),
+    ]
+    report = consume_frames(1, frames)
+    assert report.column_total_ml == 10_000
+    assert report.tracker_total_ml == 10_000
+    assert "Учёт совпал со счётчиком колонки." in report.render()
