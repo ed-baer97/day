@@ -715,6 +715,119 @@ def test_stop_0x36_sent_once_immediately_on_03_to_07_even_with_zero_volume(
     assert [req[3] for req in link_start07.sent if req[3] != CMD_TEST_ASCII] == []
 
 
+def test_stop_0x36_sent_once_on_03_to_01_while_finish_stop_stays_off(tmp_path: Path) -> None:
+    """Переход 03 -> 01 прерывает налив одним 0x36, даже если автостоп на 07 выключен.
+
+    Повторный 01 и набор дозы из 05 команду не дублируют. В режиме только чтения 0x36 нет.
+    """
+    from agzs_edge.iskra import CMD_RESET_ASCII, CMD_START_ASCII, CMD_STOP_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+    from agzs_edge.serial_link import PollRawResult
+
+    def _frame(state: str, price: bytes, volume: bytes, status: int) -> bytes:
+        body = b"01" + bytes([0x34, STX]) + price + volume + bytes([status, 0x8D]) + state.encode("ascii") + bytes([ETX])
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    class _Link:
+        def __init__(self, frames: list[bytes]) -> None:
+            self.sent: list[bytes] = []
+            self._polls = list(frames)
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            from agzs_edge.iskra import build_test_command
+
+            req = build_test_command(address, checksum_mode=checksum_mode or "xor")
+            self.sent.append(req)
+            resp = self._polls.pop(0)
+            return PollRawResult(address=address, request_bytes=req, response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.sent.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    def _commands(link: _Link) -> list[int]:
+        return [req[3] for req in link.sent if req[3] != CMD_TEST_ASCII]
+
+    now = datetime.now(timezone.utc)
+    rising = [
+        _frame("05", b"007200", b"000000", 0x50),
+        _frame("03", b"090000", b"010000", 0xD0),
+        _frame("03", b"090000", b"012000", 0xD0),
+        _frame("01", b"001000", b"012500", 0x50),
+        _frame("01", b"002000", b"012500", 0x50),
+    ]
+    link = _Link(rising)
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "stop_on_03_01.db",
+        sync_enabled=False,
+        read_only=False,
+        trace_frames=True,
+        auto_stop_on_finish=False,
+        auto_reset_on_stop=False,
+    )
+    svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
+    for _ in range(3):
+        svc.poll_cycle_once(observed_at=now)
+    assert _commands(link) == []
+
+    svc.poll_cycle_once(observed_at=now)
+    assert _commands(link) == [CMD_STOP_ASCII]
+
+    svc.poll_cycle_once(observed_at=now)
+    assert _commands(link) == [CMD_STOP_ASCII]
+    assert CMD_START_ASCII not in _commands(link)
+    assert CMD_RESET_ASCII not in _commands(link)
+
+    idle_dose = [
+        _frame("05", b"007200", b"000000", 0x50),
+        _frame("01", b"001000", b"000000", 0x50),
+    ]
+    link_idle = _Link(idle_dose)
+    svc_idle = StationEdgeService(
+        EdgeSettings(
+            source_mode="serial",
+            pump_addresses=(1,),
+            db_path=tmp_path / "dose_from_idle.db",
+            sync_enabled=False,
+            read_only=False,
+            trace_frames=True,
+            auto_stop_on_finish=False,
+            auto_reset_on_stop=False,
+        ),
+        link=link_idle,
+        db=EdgeDatabase(tmp_path / "dose_from_idle.db"),
+    )
+    for _ in range(2):
+        svc_idle.poll_cycle_once(observed_at=now)
+    assert _commands(link_idle) == []
+
+    link_ro = _Link(rising)
+    svc_ro = StationEdgeService(
+        EdgeSettings(
+            source_mode="serial",
+            pump_addresses=(1,),
+            db_path=tmp_path / "stop_01_ro.db",
+            sync_enabled=False,
+            read_only=True,
+            trace_frames=True,
+            auto_stop_on_finish=False,
+            auto_reset_on_stop=False,
+        ),
+        link=link_ro,
+        db=EdgeDatabase(tmp_path / "stop_01_ro.db"),
+    )
+    for _ in range(5):
+        svc_ro.poll_cycle_once(observed_at=now)
+    assert _commands(link_ro) == []
+
+
 def test_stop_04_closes_dispense_immediately_and_sends_0x36(tmp_path: Path) -> None:
     """Переход 03 -> 04 сразу закрывает заправку в SQLite (без паузы) и шлёт один 0x36."""
     from agzs_edge.iskra import CMD_STOP_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc

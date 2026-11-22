@@ -65,9 +65,16 @@ def require_station_and_tank(
     return station_id, tank_id
 
 
-def require_calibration_points(low_volts: float, high_volts: float) -> None:
+def require_calibration_points(
+    low_volts: float,
+    high_volts: float,
+    low_percent: float | None = None,
+    high_percent: float | None = None,
+) -> None:
     if low_volts == high_volts:
         raise ValidationError("точки калибровки совпадают по напряжению")
+    if low_percent is not None and high_percent is not None and low_percent == high_percent:
+        raise ValidationError("точки калибровки совпадают по проценту")
 
 
 def clean_owner_username(

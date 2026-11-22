@@ -289,7 +289,7 @@ def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
     station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id, "укажите резервуар")
-    require_calibration_points(body.low_volts, body.high_volts)
+    require_calibration_points(body.low_volts, body.high_volts, body.low_percent, body.high_percent)
     store = backend()
     state = store.set_calibration(body.model_copy(update={"station_id": station_id, "tank_id": tank_id}))
     invalidate_public_board_cache()

@@ -23,8 +23,10 @@ type Row = {
   path: string;
   shellyHost: string;
   shelly: ShellyLink | null;
-  zeroVolts: string;
-  fullVolts: string;
+  lowVolts: string;
+  lowPercent: string;
+  highVolts: string;
+  highPercent: string;
   calibrated: boolean;
   calSummary: string | null;
   manualLiters: string;
@@ -280,11 +282,25 @@ export default function TankDeviceRows({
   }
 
   async function submitCalibration(row: Row) {
-    const z = Number(row.zeroVolts.replace(",", "."));
-    const f = Number(row.fullVolts.replace(",", "."));
-    const cap = Number(row.capacity.replace(",", "."));
-    if (!Number.isFinite(z) || !Number.isFinite(f) || z === f) {
-      setError("Напряжения 0% и 100% должны быть разными числами");
+    const lowV = parseDecimal(row.lowVolts);
+    const lowP = parseDecimal(row.lowPercent);
+    const highV = parseDecimal(row.highVolts);
+    const highP = parseDecimal(row.highPercent);
+    const cap = parseDecimal(row.capacity);
+    if (![lowV, lowP, highV, highP].every(Number.isFinite)) {
+      setError("В каждой точке укажите напряжение и процент");
+      return;
+    }
+    if (lowP < 0 || lowP > 100 || highP < 0 || highP > 100) {
+      setError("Процент заполнения от 0 до 100");
+      return;
+    }
+    if (lowV === highV) {
+      setError("Напряжения двух точек должны отличаться");
+      return;
+    }
+    if (lowP === highP) {
+      setError("Проценты двух точек должны отличаться");
       return;
     }
     setSavingId(`cal:${row.id}`);
@@ -293,26 +309,35 @@ export default function TankDeviceRows({
       const st = await api.calibrateTank({
         station_id: stationId,
         tank_id: row.id,
-        low_volts: z,
-        low_percent: 0,
-        high_volts: f,
-        high_percent: 100,
+        low_volts: lowV,
+        low_percent: lowP,
+        high_volts: highV,
+        high_percent: highP,
         capacity_liters: Number.isFinite(cap) && cap > 0 ? cap : undefined,
       });
+      const summary = calibrationSummary(
+        st.cal_low_volts ?? lowV,
+        st.cal_low_percent ?? lowP,
+        st.cal_high_volts ?? highV,
+        st.cal_high_percent ?? highP
+      );
       setRows((current) =>
         current.map((item) =>
           item.id === row.id
             ? {
                 ...item,
                 calibrated: st.calibrated,
-                zeroVolts: st.cal_low_volts != null ? String(st.cal_low_volts) : String(z),
-                fullVolts: st.cal_high_volts != null ? String(st.cal_high_volts) : String(f),
-                calSummary: `${z} В … ${f} В`,
+                lowVolts: st.cal_low_volts != null ? String(st.cal_low_volts) : String(lowV),
+                lowPercent: st.cal_low_percent != null ? String(st.cal_low_percent) : String(lowP),
+                highVolts: st.cal_high_volts != null ? String(st.cal_high_volts) : String(highV),
+                highPercent:
+                  st.cal_high_percent != null ? String(st.cal_high_percent) : String(highP),
+                calSummary: summary,
               }
             : item
         )
       );
-      toast.ok(`Калибровка ${row.code} сохранена (${z} В … ${f} В)`);
+      toast.ok(`Калибровка ${row.code} сохранена (${summary})`);
       onChanged?.();
     } catch (err) {
       setError(messageOf(err, "Не удалось сохранить калибровку"));
@@ -622,31 +647,76 @@ export default function TankDeviceRows({
                     </div>
 
                     <div className="tank-tool-box">
-                      <strong>Калибровка датчика напряжения (0% … 100%)</strong>
+                      <strong>Калибровка датчика</strong>
+                      <p className="dash-muted">
+                        Две точки со шкалы резервуара: напряжение с датчика и процент на циферблате.
+                      </p>
+                      {row.shelly?.volts != null ? (
+                        <p className="dash-muted">
+                          Сейчас на датчике{" "}
+                          {row.shelly.volts.toLocaleString("ru-RU", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}{" "}
+                          В
+                        </p>
+                      ) : null}
                       <div className="tank-tool-inline">
                         <label>
-                          0% (В)
+                          Точка 1, В
                           <input
                             inputMode="decimal"
-                            value={row.zeroVolts}
+                            placeholder="1,2"
+                            value={row.lowVolts}
                             onChange={(e) =>
                               setRows((cur) =>
                                 cur.map((it) =>
-                                  it.id === row.id ? { ...it, zeroVolts: e.target.value } : it
+                                  it.id === row.id ? { ...it, lowVolts: e.target.value } : it
                                 )
                               )
                             }
                           />
                         </label>
                         <label>
-                          100% (В)
+                          Точка 1, %
                           <input
                             inputMode="decimal"
-                            value={row.fullVolts}
+                            placeholder="20"
+                            value={row.lowPercent}
                             onChange={(e) =>
                               setRows((cur) =>
                                 cur.map((it) =>
-                                  it.id === row.id ? { ...it, fullVolts: e.target.value } : it
+                                  it.id === row.id ? { ...it, lowPercent: e.target.value } : it
+                                )
+                              )
+                            }
+                          />
+                        </label>
+                        <label>
+                          Точка 2, В
+                          <input
+                            inputMode="decimal"
+                            placeholder="3,8"
+                            value={row.highVolts}
+                            onChange={(e) =>
+                              setRows((cur) =>
+                                cur.map((it) =>
+                                  it.id === row.id ? { ...it, highVolts: e.target.value } : it
+                                )
+                              )
+                            }
+                          />
+                        </label>
+                        <label>
+                          Точка 2, %
+                          <input
+                            inputMode="decimal"
+                            placeholder="80"
+                            value={row.highPercent}
+                            onChange={(e) =>
+                              setRows((cur) =>
+                                cur.map((it) =>
+                                  it.id === row.id ? { ...it, highPercent: e.target.value } : it
                                 )
                               )
                             }
@@ -658,7 +728,7 @@ export default function TankDeviceRows({
                           disabled={savingId === `cal:${row.id}`}
                           onClick={() => submitCalibration(row)}
                         >
-                          Калибровать
+                          Сохранить калибровку
                         </button>
                       </div>
                     </div>
@@ -759,7 +829,9 @@ function toRow(
 ): Row {
   const actual = state?.actual_remainder_liters ?? null;
   const lowV = state?.cal_low_volts;
+  const lowP = state?.cal_low_percent;
   const highV = state?.cal_high_volts;
+  const highP = state?.cal_high_percent;
   const calibrated = state?.calibrated ?? false;
   return {
     id: device.id,
@@ -769,11 +841,12 @@ function toRow(
     path: device.ingest_url || device.level_path,
     shellyHost: device.shelly?.host ?? "",
     shelly: device.shelly,
-    zeroVolts: lowV != null ? String(lowV) : "0.5",
-    fullVolts: highV != null ? String(highV) : "4.5",
+    lowVolts: lowV != null ? String(lowV) : "",
+    lowPercent: lowP != null ? String(lowP) : "",
+    highVolts: highV != null ? String(highV) : "",
+    highPercent: highP != null ? String(highP) : "",
     calibrated,
-    calSummary:
-      calibrated && lowV != null && highV != null ? `${lowV} В … ${highV} В` : null,
+    calSummary: calibrated ? calibrationSummary(lowV, lowP, highV, highP) : null,
     manualLiters:
       actual != null
         ? String(Math.round(actual))
@@ -782,6 +855,24 @@ function toRow(
     actualLiters: actual,
     online: state && "online" in state ? state.online : false,
   };
+}
+
+function parseDecimal(raw: string): number {
+  const text = raw.trim().replace(",", ".");
+  if (!text) return Number.NaN;
+  return Number(text);
+}
+
+function calibrationSummary(
+  lowV: number | null | undefined,
+  lowP: number | null | undefined,
+  highV: number | null | undefined,
+  highP: number | null | undefined
+): string | null {
+  if (lowV == null || highV == null) return null;
+  const left = lowP != null ? `${lowV} В = ${lowP}%` : `${lowV} В`;
+  const right = highP != null ? `${highV} В = ${highP}%` : `${highV} В`;
+  return `${left} … ${right}`;
 }
 
 function shellyText(link: ShellyLink | null, pending: boolean): string {

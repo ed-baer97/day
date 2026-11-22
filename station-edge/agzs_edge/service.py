@@ -14,6 +14,7 @@ from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
     CMD_TEST_ASCII,
     STATE_COMPLETED,
+    STATE_DOSE_SET,
     STATE_IDLE,
     STATE_STOPPED,
     IskraFrameError,
@@ -356,6 +357,7 @@ class StationEdgeService:
                     closed_dispenses.append(completed)
 
             self._maybe_stop_on_finish(address, frame, was_dispensing=was_dispensing)
+            self._maybe_stop_on_dose_entry(address, frame, was_dispensing=was_dispensing)
 
             auto_closed = self._maybe_auto_reset(address, frame, completed=completed, observed_at=now)
             if auto_closed is not None:
@@ -406,22 +408,41 @@ class StationEdgeService:
             return
         if self.settings.read_only or not self.settings.auto_stop_on_finish:
             return
+        self._send_stop_command(
+            address,
+            reason=f"выход из пуска в '{frame.state_code}' для отключения насоса на АСКА-02",
+        )
+
+    def _maybe_stop_on_dose_entry(
+        self,
+        address: int,
+        frame: IskraTelemetryFrame,
+        *,
+        was_dispensing: bool,
+    ) -> None:
+        """При переходе '03' -> '01' шлёт один ОСТАНОВ (0x36), чтобы прервать налив.
+
+        Набор дозы в этом переходе начинается, пока БУН ещё может гудеть и объём
+        ещё рос. Команда не ждёт остановки объёма и не зависит от автостопа на '07'.
+        Повторный кадр '01' команду не дублирует: флаг пуска уже снят.
+        """
+        if not was_dispensing or frame.state_code != STATE_DOSE_SET:
+            return
+        if self.settings.read_only:
+            return
+        self._send_stop_command(
+            address,
+            reason="переход из пуска '03' в набор дозы '01', чтобы прервать налив и отключить БУН",
+        )
+
+    def _send_stop_command(self, address: int, *, reason: str) -> None:
         req = build_stop_command(address, checksum_mode=self._tx_checksum_mode())
         try:
             res = self.link.send_command(address, req)
         except Exception as exc:
-            logger.warning(
-                "Колонка #%d: не удалось отправить ОСТАНОВ (0x36) при выходе в '%s': %s",
-                address,
-                frame.state_code,
-                exc,
-            )
+            logger.warning("Колонка #%d: не удалось отправить ОСТАНОВ (0x36), %s: %s", address, reason, exc)
             return
-        logger.info(
-            "Колонка #%d: выход из пуска в '%s' — отправлен ОСТАНОВ (0x36) для отключения насоса на АСКА-02",
-            address,
-            frame.state_code,
-        )
+        logger.info("Колонка #%d: %s — отправлен ОСТАНОВ (0x36)", address, reason)
         if res.error_message:
             logger.warning("Колонка #%d: ответ на ОСТАНОВ (0x36): %s", address, res.error_message)
 
@@ -762,16 +783,20 @@ class StationEdgeService:
         graceful_timeout_sec: float = 120.0,
     ) -> None:
         """Непрерывный цикл работы на станции с мягким завершением при остановке."""
+        # Опрос не шлёт «Пуск» (0x35). В режиме только чтения команда остаётся выключенной.
+        computer_sends_start = False
         logger.info(
             "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s), "
-            "стоп 0x36=%s, сброс 07=%s через %.0f с, пауза 04=%s, кнопки=%s, кадры=%s",
+            "пуск 0x35=%s, стоп 0x36 при 07=%s, стоп 0x36 при 03→01=%s, сброс 07=%s через %.0f с, пауза 04=%s, кнопки=%s, кадры=%s",
             self.settings.source_mode,
             self.settings.serial_port,
             self.settings.pump_addresses,
             self.settings.db_path,
             self.settings.vps_base_url,
             self.settings.sync_enabled,
+            computer_sends_start,
             self.settings.auto_stop_on_finish,
+            not self.settings.read_only,
             self.settings.auto_reset_on_stop,
             self.settings.auto_reset_delay_sec,
             "выкл" if self.settings.auto_reset_stopped_delay_sec <= 0 else f"{self.settings.auto_reset_stopped_delay_sec:.0f} с",

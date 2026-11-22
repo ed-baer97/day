@@ -467,7 +467,7 @@ export default function AdminStationsTab({
                 <h3>Резервуары, датчики Shelly и ручные операции</h3>
                 <p className="dash-muted">
                   Подключение локального IP датчика Shelly Plus Uni, калибровка вольтметра
-                  (0%…100%), ручной ввод замера или прихода, а также управление X-Device-Token.
+                  (две точки: вольты и процент), ручной ввод замера или прихода, а также управление X-Device-Token.
                 </p>
                 <TankDeviceRows
                   stationId={station.id}

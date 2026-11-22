@@ -797,7 +797,11 @@ export default function StationDetailPage({
                               <strong>
                                 {st?.last_volts == null ? "—" : `${st.last_volts.toFixed(2)} В`}
                                 {st?.calibrated && st.cal_low_volts != null && st.cal_high_volts != null
-                                  ? ` (${st.cal_low_volts}…${st.cal_high_volts} В)`
+                                  ? ` (${st.cal_low_volts} В${
+                                      st.cal_low_percent != null ? ` = ${st.cal_low_percent}%` : ""
+                                    } … ${st.cal_high_volts} В${
+                                      st.cal_high_percent != null ? ` = ${st.cal_high_percent}%` : ""
+                                    })`
                                   : ""}
                               </strong>
                             </div>

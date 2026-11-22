@@ -129,6 +129,22 @@ def test_volts_need_calibration_then_convert():
     assert state.json()["last_volts"] == 2.5
 
 
+def test_calibration_rejects_the_same_percent_on_both_points():
+    same = client.put(
+        "/api/v1/ingest/calibration",
+        json={
+            "station_id": STATION,
+            "tank_id": TANK,
+            "capacity_liters": 10000,
+            "low_volts": 1.2,
+            "low_percent": 40,
+            "high_volts": 3.8,
+            "high_percent": 40,
+        },
+    )
+    assert same.status_code == 422
+
+
 def test_receipt_moves_the_book():
     client.post(
         "/api/v1/ingest/level",

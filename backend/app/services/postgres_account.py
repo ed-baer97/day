@@ -490,7 +490,7 @@ def has_calibration(station_id: UUID, tank_id: UUID) -> bool:
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
     station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id, "укажите резервуар")
-    require_calibration_points(body.low_volts, body.high_volts)
+    require_calibration_points(body.low_volts, body.high_volts, body.low_percent, body.high_percent)
     with session() as db:
         row = db.scalar(select(Tank).where(Tank.id == tank_id).with_for_update())
         if row is None or row.station_id != station_id:

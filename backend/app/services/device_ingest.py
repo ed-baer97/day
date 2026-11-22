@@ -275,7 +275,7 @@ def tank_remainder(tank_id: UUID) -> tuple[float | None, datetime | None]:
 
 def set_calibration(body: CalibrationIn) -> TankIngestState:
     station_id, tank_id = require_station_and_tank(body.station_id, body.tank_id, "укажите резервуар")
-    require_calibration_points(body.low_volts, body.high_volts)
+    require_calibration_points(body.low_volts, body.high_volts, body.low_percent, body.high_percent)
     with _lock:
         device = _devices_by_tank.get(tank_id)
         capacity = device.capacity_liters if device is not None else body.capacity_liters
