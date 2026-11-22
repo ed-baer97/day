@@ -7,19 +7,22 @@ import logging
 import signal
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from agzs_edge.config import EdgeSettings
 from agzs_edge.iskra import (
     CMD_TEST_ASCII,
     STATE_COMPLETED,
+    STATE_DISPENSING,
     STATE_IDLE,
     STATE_STOPPED,
     IskraFrameError,
     IskraTelemetryFrame,
     build_reset_command,
+    build_stop_command,
     parse_iskra_frame,
+    verify_frame_checksum,
 )
 from agzs_edge.psu_controller import PsuControlError, Uzsg01PsuController, send_buttons_param_to_pumps
 from agzs_edge.serial_link import AskaLink, build_link
@@ -29,6 +32,18 @@ from agzs_edge.tracker import CompletedDispense, PumpDispenseTracker
 from agzs_edge.updater import read_update_state, write_update_state
 
 logger = logging.getLogger(__name__)
+
+_COLUMN_STOP_ATTEMPTS = 3
+
+
+@dataclass
+class _ColumnStopWatch:
+    """Следит за одним пуском колонки, пока состояние ещё '03'."""
+
+    dose: int | None
+    valve_seen: bool
+    sent: bool = False
+    attempts: int = 0
 
 
 class StationEdgeService:
@@ -66,6 +81,8 @@ class StationEdgeService:
         self._restore_buttons_pending: bool = False
         self._buttons_restore_attempts: int = 0
         self._buttons_verify_pending: set[int] = set()
+        self._operator_button_attempts: dict[int, int] = {}
+        self._column_stop: dict[int, _ColumnStopWatch] = {}
         self._last_counter_reconcile_ts: float = 0.0
         self._sync_wake_event = threading.Event()
         self._sync_stop_event = threading.Event()
@@ -130,7 +147,7 @@ class StationEdgeService:
         return locked
 
     def restore_pump_buttons(self) -> list[int]:
-        """Включает физические кнопки на колонках (0.16 или 0.18) с проверкой живых битов и повторами."""
+        """Включает физические кнопки на колонках командой 000016, без сброса 0x37."""
         if not self._can_control_buttons():
             return []
 
@@ -178,13 +195,14 @@ class StationEdgeService:
             self._buttons_verify_pending.clear()
             return []
 
-        param_code = "0.16" if self.settings.pump_buttons_mode == "enable" else "0.18"
+        param_code = "0.16"
         restored, errors = send_buttons_param_to_pumps(
             self.link,
             addresses_to_update,
             param_code,
             checksum_mode=self._tx_checksum_mode(),
             last_frames=self._last_frame_by_addr,
+            reset_after=False,
         )
         for address, err in errors:
             logger.warning("Колонка #%d: ошибка включения кнопок (%s): %s", address, param_code, err)
@@ -248,6 +266,12 @@ class StationEdgeService:
                     valid=False,
                     note=raw_res.error_message or "нет ответа от УЗГС-01",
                 )
+                if self.settings.trace_frames:
+                    logger.info(
+                        "Кадр #%d TEST нет ответа hex_tx=%s",
+                        address,
+                        raw_res.request_bytes.hex(" ").upper(),
+                    )
                 continue
 
             try:
@@ -283,8 +307,9 @@ class StationEdgeService:
                 continue
 
             self._last_frame_by_addr[address] = frame
+            self._trace_test_frame(frame)
 
-            if self.settings.save_raw_frames or frame.has_protocol_alarm:
+            if self.settings.save_raw_frames or self.settings.trace_frames or frame.has_protocol_alarm:
                 self.db.log_raw_frame(
                     pump_address=address,
                     request_bytes=raw_res.request_bytes,
@@ -294,25 +319,33 @@ class StationEdgeService:
                 )
 
             self.db.update_live_state(frame, observed_at=now)
-            signature = (frame.state_code, frame.price_raw, frame.effective_volume_ml)
+            signature = (frame.state_code, frame.price_raw, frame.effective_volume_ml, frame.status_byte17)
             if self._last_seen.get(address) != signature:
                 self._last_seen[address] = signature
+                button_note = ""
+                if frame.is_v310_status:
+                    button_note = (
+                        f", пуск/стоп={'вкл' if frame.start_stop_buttons_enabled else 'выкл'}"
+                        f", сброс={'вкл' if frame.reset_button_enabled else 'выкл'}"
+                    )
                 if frame.completed_volume_ml is not None:
                     logger.info(
-                        "Колонка #%d на связи: сост=%s(%s), итог налива=%d мл, цены в кадре нет",
+                        "Колонка #%d на связи: сост=%s(%s), итог налива=%d мл, цены в кадре нет%s",
                         address,
                         frame.state_code,
                         frame.state_name,
                         frame.completed_volume_ml,
+                        button_note,
                     )
                 else:
                     logger.info(
-                        "Колонка #%d на связи: сост=%s(%s), цена=%.2f ₸/л, объём=%d мл",
+                        "Колонка #%d на связи: сост=%s(%s), цена=%.2f ₸/л, объём=%d мл%s",
                         address,
                         frame.state_code,
                         frame.state_name,
                         frame.price_kzt_per_liter,
                         frame.effective_volume_ml,
+                        button_note,
                     )
             completed = self.tracker.process_frame(frame, observed_at=now)
             if completed is None and frame.state_code == STATE_COMPLETED and not frame.valve_open:
@@ -324,10 +357,170 @@ class StationEdgeService:
             auto_closed = self._maybe_auto_reset(address, frame, completed=completed, observed_at=now)
             if auto_closed is not None:
                 closed_dispenses.append(auto_closed)
+            self._mirror_column_button(address, frame)
 
         self._sync_pump_buttons_with_update_state()
+        self._ensure_operator_buttons()
         self._maybe_reconcile_counters(observed_at=now)
         return closed_dispenses
+
+    def _trace_test_frame(self, frame: IskraTelemetryFrame) -> None:
+        """Пишет каждый ответ TEST: HEX, оба байта Status и Sost, поле, объём, BCC."""
+        if not self.settings.trace_frames:
+            return
+        raw = frame.raw_bytes
+        status = raw[17:19]
+        sost = raw[19:21]
+        bcc_ok = verify_frame_checksum(raw, self.settings.layout)
+        dose_note = ""
+        if frame.preset_dose_ml is not None:
+            dose_note = f" доза_мл={frame.preset_dose_ml}"
+        logger.info(
+            "Кадр #%d TEST hex=%s status=%02X %02X sost=%02X %02X field=%s vol=%s bcc=%02X ok=%d клапан=%d сост=%s%s",
+            frame.address,
+            frame.raw_hex,
+            status[0],
+            status[1] if len(status) > 1 else 0,
+            sost[0] if sost else 0,
+            sost[1] if len(sost) > 1 else 0,
+            frame.price_raw,
+            frame.volume_raw,
+            frame.checksum_byte,
+            1 if bcc_ok else 0,
+            1 if frame.valve_open else 0,
+            frame.state_code,
+            dose_note,
+        )
+
+    def _mirror_column_button(self, address: int, frame: IskraTelemetryFrame) -> None:
+        """Из пуска колонки один раз шлёт «Стоп» (0x36), пока состояние ещё '03'.
+
+        Пуск с корпуса уже включает БУН, поэтому 0x35 не отправляется.
+        «Стоп» виден в кадре '03' как рост поля дозы (кнопка шагает дозу)
+        или как закрытие клапана, который в этом пуске уже открывался.
+        Первый кадр '03' и набор дозы в '01' команду не вызывают: ранний 0x36
+        возвращал колонку в '07' до того, как оператор успевал задать дозу.
+        """
+        if frame.state_code != STATE_DISPENSING or not frame.is_v310_status:
+            self._column_stop.pop(address, None)
+            return
+
+        dose = int(frame.price_raw) if frame.price_raw.isdigit() and not frame.is_mass_mode else None
+        watch = self._column_stop.get(address)
+        if watch is None:
+            self._column_stop[address] = _ColumnStopWatch(dose=dose, valve_seen=frame.valve_open)
+            if frame.valve_open:
+                logger.info("Колонка #%d: пуск с колонки, клапан открыт, жду кнопку Стоп", address)
+            return
+        if watch.sent or watch.attempts >= _COLUMN_STOP_ATTEMPTS:
+            return
+
+        pressed = False
+        reason = ""
+        if dose is not None and watch.dose is not None and dose > watch.dose:
+            pressed = True
+            reason = f"доза {watch.dose} → {dose}"
+        elif watch.valve_seen and not frame.valve_open:
+            pressed = True
+            reason = "клапан закрылся в пуске"
+
+        if not pressed:
+            if frame.valve_open and not watch.valve_seen:
+                watch.valve_seen = True
+                logger.info("Колонка #%d: пуск с колонки, клапан открыт, жду кнопку Стоп", address)
+            elif frame.valve_open:
+                watch.valve_seen = True
+            if dose is not None:
+                watch.dose = dose
+            return
+
+        watch.attempts += 1
+        if self._send_column_stop(address, reason):
+            watch.sent = True
+
+    def _send_column_stop(self, address: int, reason: str) -> bool:
+        """Отправляет один «Останов» (0x36) по нажатию «Стоп» на колонке."""
+        req = build_stop_command(address, checksum_mode=self._tx_checksum_mode())
+        try:
+            res = self.link.send_command(address, req)
+        except Exception as exc:
+            logger.warning(
+                "Колонка #%d: не удалось отправить СТОП (0x36) (%s): %s",
+                address,
+                reason,
+                exc,
+            )
+            return False
+        logger.info("Колонка #%d: Стоп с колонки (%s), отправлен ОСТАНОВ (0x36)", address, reason)
+        if res.error_message:
+            logger.warning("Колонка #%d: ответ на СТОП (0x36): %s", address, res.error_message)
+        return True
+
+    def _ensure_operator_buttons(self) -> None:
+        """В готовности '05' шлёт 000016, если «ПУСК/СТОП» или «СБРОС» на корпусе выключены.
+
+        000018 не используется: он блокирует «СБРОС». После 000016 команда 0x37 не уходит.
+        При AGZS_TRACE_FRAMES=1 команда не отправляется: журнал должен видеть только нажатия.
+        """
+        if self.settings.source_mode == "emulator":
+            return
+        if self.settings.trace_frames:
+            return
+        if self._can_control_buttons() or self._pumps_locked_for_update:
+            return
+        update_state = read_update_state(self.settings)
+        if update_state is not None and update_state.in_progress:
+            return
+        if not self.is_idle_for_update():
+            return
+
+        pending: list[int] = []
+        for address in self.settings.pump_addresses:
+            frame = self._last_frame_by_addr.get(address)
+            if frame is None or not frame.is_v310_status:
+                continue
+            if frame.state_code != STATE_IDLE or frame.valve_open or frame.is_dispensing:
+                continue
+            if frame.start_stop_buttons_enabled and frame.reset_button_enabled:
+                self._operator_button_attempts.pop(address, None)
+                continue
+            if self._operator_button_attempts.get(address, 0) >= 5:
+                continue
+            pending.append(address)
+        if not pending:
+            return
+
+        param_code = "0.16"
+        restored, errors = send_buttons_param_to_pumps(
+            self.link,
+            tuple(pending),
+            param_code,
+            checksum_mode=self._tx_checksum_mode(),
+            last_frames=self._last_frame_by_addr,
+            reset_after=False,
+        )
+        failed = {address for address, _err in errors}
+        for address, err in errors:
+            attempt = self._operator_button_attempts.get(address, 0) + 1
+            self._operator_button_attempts[address] = attempt
+            logger.warning(
+                "Колонка #%d: ошибка включения кнопок (%s), попытка %d: %s",
+                address,
+                param_code,
+                attempt,
+                err,
+            )
+            if attempt >= 5:
+                logger.warning(
+                    "Колонка #%d: кнопки не включились за 5 попыток (возможна прошивка «только под ККМ»).",
+                    address,
+                )
+        for address in restored:
+            if address in failed:
+                continue
+            attempt = self._operator_button_attempts.get(address, 0) + 1
+            self._operator_button_attempts[address] = attempt
+            logger.info("Колонка #%d: отправлено включение кнопок (%s)", address, param_code)
 
     def _sync_pump_buttons_with_update_state(self) -> None:
         if not self._can_control_buttons():
@@ -565,7 +758,7 @@ class StationEdgeService:
         """Непрерывный цикл работы на станции с мягким завершением при остановке."""
         logger.info(
             "Запуск станционного узла АГЗС: режим=%s, порт=%s, адреса=%s, БД=%s, VPS=%s (sync=%s), "
-            "сброс 07=%s через %.0f с, пауза 04=%s, кнопки 0x38=%s",
+            "сброс 07=%s через %.0f с, пауза 04=%s, кнопки=%s, кадры=%s",
             self.settings.source_mode,
             self.settings.serial_port,
             self.settings.pump_addresses,
@@ -575,7 +768,8 @@ class StationEdgeService:
             self.settings.auto_reset_on_stop,
             self.settings.auto_reset_delay_sec,
             "выкл" if self.settings.auto_reset_stopped_delay_sec <= 0 else f"{self.settings.auto_reset_stopped_delay_sec:.0f} с",
-            self.settings.lock_buttons_on_update,
+            self.settings.pump_buttons_mode,
+            "все" if self.settings.trace_frames else "смена",
         )
         self._start_sync_thread()
         if self._can_control_buttons():

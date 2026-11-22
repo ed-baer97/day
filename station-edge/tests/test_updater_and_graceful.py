@@ -547,19 +547,16 @@ def test_physical_pump_buttons_locked_during_update_and_restored_on_start(tmp_pa
     # Снимаем файл состояния обновления (будто обновление завершилось без рестарта) -> возврат 0.18
     clear_update_state(settings)
     service.poll_cycle_once()
-    assert param_codes_sent == ["000017", "000018"]
+    assert param_codes_sent == ["000017", "000016"]
 
-    # 2. Старт новой (обновлённой) службы serve() сразу включает кнопки 0.18 (явно задан lock-reset)
+    # 2. Старт новой службы включает кнопки 000016 и не блокирует СБРОС через 000018
     param_codes_sent.clear()
     restarted_service = StationEdgeService(settings, link=_ButtonTrackingLink([idle_resp]), db=db)
     restarted_service.serve(max_cycles=1)
-    assert param_codes_sent == ["000018"]
+    assert param_codes_sent == ["000016"]
 
-    # 3. По умолчанию безопасные настройки: auto_reset_stopped_delay_sec == 0.0
-    # и lock_buttons_on_update is False (автоматическая отправка 0x38 отключена);
-    # при явном lock_buttons_on_update=True и pump_buttons_mode == "enable" (0.16):
-    # при Status[17]=0x70 (биты 6 и 5 уже = 1) лишний 0x38 не отправляется,
-    # а при Status[17]=0x50 (СБРОС заблокирован) отправляется 0.16.
+    # 3. Кадр 0x50 (СБРОС выключен) получает 000016 без 0x37.
+    # Кадр 0x70 (ПУСК/СТОП и СБРОС уже включены) команду не получает.
     defaults = EdgeSettings()
     assert defaults.auto_reset_on_stop is True
     assert defaults.read_only is False
@@ -592,7 +589,22 @@ def test_physical_pump_buttons_locked_during_update_and_restored_on_start(tmp_pa
     )
     param_codes_sent.clear()
     StationEdgeService(default_safe_settings, link=_ButtonTrackingLink([live_05_locked_rst])).serve(max_cycles=1)
-    assert param_codes_sent == []
+    assert param_codes_sent == ["000016"]
+
+    start_off = _live_05_frame(0x10)
+    param_codes_sent.clear()
+    StationEdgeService(
+        EdgeSettings(
+            source_mode="serial",
+            pump_addresses=(1,),
+            poll_interval_sec=0.0,
+            auto_reset_on_stop=True,
+            db_path=tmp_path / "buttons_start_off.db",
+            sync_enabled=False,
+        ),
+        link=_ButtonTrackingLink([start_off]),
+    ).serve(max_cycles=1)
+    assert param_codes_sent == ["000016"]
 
     explicit_settings = EdgeSettings(
         source_mode="serial",

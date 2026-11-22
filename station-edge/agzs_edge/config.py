@@ -157,6 +157,7 @@ class EdgeSettings:
     counter_reconcile_interval_sec: float = 0.0
     db_path: Path = field(default_factory=lambda: Path("station_edge.db"))
     save_raw_frames: bool = False
+    trace_frames: bool = False
     vps_base_url: str = "http://93.171.232.47"
     device_token: str = ""
     station_code: str = "AKT-12MKR"
@@ -234,6 +235,7 @@ class EdgeSettings:
 
         db_path = Path(os.environ.get("AGZS_DB_PATH", "station_edge.db").strip() or "station_edge.db")
         save_raw = _parse_bool(os.environ.get("AGZS_SAVE_RAW_FRAMES"), default=False)
+        trace_frames = _parse_bool(os.environ.get("AGZS_TRACE_FRAMES"), default=False)
         vps_base_url = (
             os.environ.get("AGZS_VPS_BASE_URL", "http://93.171.232.47").strip().rstrip("/")
             or "http://93.171.232.47"
@@ -309,6 +311,7 @@ class EdgeSettings:
             counter_reconcile_interval_sec=counter_reconcile_interval_sec,
             db_path=db_path,
             save_raw_frames=save_raw,
+            trace_frames=trace_frames,
             vps_base_url=vps_base_url,
             device_token=device_token,
             station_code=station_code,

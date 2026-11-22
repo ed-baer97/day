@@ -184,8 +184,9 @@ def test_auto_reset_on_stop_in_service_poll_cycle(tmp_path: Path) -> None:
 
     svc.poll_cycle_once(observed_at=datetime.now(timezone.utc))
 
-    assert len(link.sent) == 2
     assert link.sent[1] == build_reset_command(1)
+    from agzs_edge.iskra import build_param_command
+    assert link.sent[2] == build_param_command(1, "0.16")
     pumps = db.summary()["pumps"]
     assert isinstance(pumps, list) and len(pumps) == 1
     assert pumps[0]["state_code"] == STATE_IDLE
@@ -522,3 +523,160 @@ def test_set_price_handshake_retries_cancel_and_read_counters_reset_retry() -> N
     assert ok_addrs == []
     assert len(errs) == 1 and "налив" in errs[0][1]
     assert len(link_busy.sent) == 1 and link_busy.sent[0][3] == CMD_TEST_ASCII
+
+
+def test_column_start_and_stop_are_repeated_once_from_the_computer(tmp_path: Path) -> None:
+    """Пуск колонки и набор дозы не вызывают 0x35. Без шага дозы и без закрытия клапана 0x36 нет."""
+    from agzs_edge.iskra import CMD_SET_DOSE_ASCII, CMD_START_ASCII, CMD_STOP_ASCII, ETX, SOH, STX, compute_bcc
+
+    def _frame(state: str, price: bytes, volume: bytes, status: int) -> bytes:
+        body = b"01" + bytes([0x34, STX]) + price + volume + bytes([status, 0x8D]) + state.encode("ascii") + bytes([ETX])
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    frame_01_empty = _frame("01", b"000000", b"000000", 0x51)
+    frame_01 = _frame("01", b"001000", b"000000", 0x51)
+    frame_03 = _frame("03", b"001000", b"000000", 0x51)
+    frame_03_flow = _frame("03", b"001000", b"000000", 0xD1)
+    frame_05 = _frame("05", b"007200", b"000000", 0x50)
+    frame_07 = _frame("07", b"001000", b"000000", 0x51)
+    link = _ScriptedLink(
+        [
+            frame_01_empty,
+            frame_01,
+            frame_01,
+            frame_03,
+            frame_03_flow,
+            frame_07,
+            frame_05,
+            frame_03,
+        ]
+    )
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "mirror.db",
+        sync_enabled=False,
+        read_only=True,
+        trace_frames=True,
+    )
+    svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
+    now = datetime.now(timezone.utc)
+    for _ in range(8):
+        svc.poll_cycle_once(observed_at=now)
+
+    commands = [req[3] for req in link.sent]
+    assert commands.count(CMD_START_ASCII) == 0
+    assert commands.count(CMD_STOP_ASCII) == 0
+    assert commands.count(CMD_SET_DOSE_ASCII) == 0
+
+
+def test_column_stop_while_running_sends_one_stop(tmp_path: Path) -> None:
+    """Из пуска '03' кнопка «Стоп» (шаг дозы) шлёт один 0x36. Набор в '01' и повтор кадра — нет."""
+    from agzs_edge.iskra import CMD_START_ASCII, CMD_STOP_ASCII, CMD_TEST_ASCII, ETX, SOH, STX, compute_bcc
+    from agzs_edge.serial_link import PollRawResult
+
+    def _frame(state: str, price: bytes, status: int) -> bytes:
+        body = b"01" + bytes([0x34, STX]) + price + b"000000" + bytes([status, 0x8D]) + state.encode("ascii") + bytes([ETX])
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    polls = [
+        _frame("01", b"000000", 0x51),
+        _frame("01", b"001000", 0x51),
+        _frame("03", b"001000", 0x51),
+        _frame("03", b"001000", 0xD1),
+        _frame("03", b"002000", 0xD1),
+        _frame("03", b"003000", 0xD1),
+    ]
+
+    class _Link:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+            self._polls = list(polls)
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            from agzs_edge.iskra import build_test_command
+
+            req = build_test_command(address, checksum_mode=checksum_mode or "xor")
+            self.sent.append(req)
+            resp = self._polls.pop(0)
+            return PollRawResult(address=address, request_bytes=req, response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.sent.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    link = _Link()
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "stop-button.db",
+        sync_enabled=False,
+        read_only=True,
+        trace_frames=True,
+    )
+    svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
+    now = datetime.now(timezone.utc)
+    for _ in range(len(polls)):
+        svc.poll_cycle_once(observed_at=now)
+
+    commands = [req[3] for req in link.sent]
+    assert commands.count(CMD_TEST_ASCII) == len(polls)
+    assert commands.count(CMD_START_ASCII) == 0
+    assert commands.count(CMD_STOP_ASCII) == 1
+
+
+def test_column_stop_when_open_valve_closes_sends_one_stop(tmp_path: Path) -> None:
+    """Клапан, открытый в пуске, закрылся, а состояние ещё '03' — один 0x36 и не больше."""
+    from agzs_edge.iskra import CMD_STOP_ASCII, ETX, SOH, STX, compute_bcc
+    from agzs_edge.serial_link import PollRawResult
+
+    def _frame(status: int) -> bytes:
+        body = b"01" + bytes([0x34, STX]) + b"001000" + b"000000" + bytes([status, 0x8D]) + b"03" + bytes([ETX])
+        return bytes([SOH]) + body + bytes([compute_bcc(body, "xor")])
+
+    polls = [_frame(0xD1), _frame(0x51), _frame(0x51)]
+
+    class _Link:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+            self._polls = list(polls)
+
+        def open(self) -> None:
+            return
+
+        def close(self) -> None:
+            return
+
+        def poll_test(self, address: int, *, checksum_mode: str | None = None) -> PollRawResult:
+            from agzs_edge.iskra import build_test_command
+
+            req = build_test_command(address, checksum_mode=checksum_mode or "xor")
+            self.sent.append(req)
+            resp = self._polls.pop(0)
+            return PollRawResult(address=address, request_bytes=req, response_bytes=resp)
+
+        def send_command(self, address: int, request: bytes) -> PollRawResult:
+            self.sent.append(request)
+            return PollRawResult(address=address, request_bytes=request, response_bytes=b"")
+
+    link = _Link()
+    settings = EdgeSettings(
+        source_mode="serial",
+        pump_addresses=(1,),
+        db_path=tmp_path / "valve-stop.db",
+        sync_enabled=False,
+        read_only=True,
+        trace_frames=True,
+    )
+    svc = StationEdgeService(settings, link=link, db=EdgeDatabase(settings.db_path))
+    now = datetime.now(timezone.utc)
+    for _ in range(len(polls)):
+        svc.poll_cycle_once(observed_at=now)
+
+    assert [req[3] for req in link.sent].count(CMD_STOP_ASCII) == 1

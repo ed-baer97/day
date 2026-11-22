@@ -51,8 +51,12 @@ def send_buttons_param_to_pumps(
     *,
     checksum_mode: str,
     last_frames: dict[int, IskraTelemetryFrame] | None = None,
+    reset_after: bool = True,
 ) -> tuple[list[int], list[tuple[int, str]]]:
-    """Отправляет команду режима кнопок (0.16/0.17/0.18) на список адресов колонок."""
+    """Отправляет команду режима кнопок (0.16/0.17/0.18) на список адресов колонок.
+
+    reset_after=False не шлёт 0x37 после 000016: штатный опрос не сбрасывает колонку.
+    """
     succeeded: list[int] = []
     errors: list[tuple[int, str]] = []
     for address in addresses:
@@ -85,7 +89,7 @@ def send_buttons_param_to_pumps(
         if res.error_message:
             errors.append((address, res.error_message))
             continue
-        if param_code == "0.16":
+        if reset_after and param_code == "0.16":
             reset_req = build_reset_command(address, checksum_mode=checksum_mode)
             reset_after = link.send_command(address, reset_req)
             if reset_after.error_message:

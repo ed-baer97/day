@@ -43,13 +43,22 @@ from agzs_edge.storage import EdgeDatabase
 from agzs_edge.sync import OutboxSyncWorker
 
 
+class _MsFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        base = time.strftime(datefmt or "%Y-%m-%d %H:%M:%S", self.converter(record.created))
+        return f"{base}.{int(record.msecs):03d}"
+
+
 def _setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        _MsFormatter(
+            fmt="%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
+    logging.basicConfig(level=level, handlers=[handler])
 
 
 def _describe_fields(frame) -> str:

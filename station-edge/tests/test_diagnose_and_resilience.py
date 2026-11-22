@@ -352,10 +352,9 @@ def test_auto_reset_respects_delay_after_real_dispense(monkeypatch, tmp_path: Pa
     closed = svc.poll_cycle_once()      # 07 (закрытие налива; время 100.0 -> старт паузы 2.0 с)
     assert len(closed) == 1
     assert closed[0].dispensed_ml == 5000
-    assert link.commands == []          # 0x37 ещё не отправлен, на табло виден итог
+    assert link.commands == []
     assert svc.poll_cycle_once() == []  # время 102.5 >= 100.0 + 2.0 -> отправка 0x37
-    assert len(link.commands) == 1
-    assert link.commands[0][3] == CMD_RESET_ASCII
+    assert [req[3] for req in link.commands] == [CMD_RESET_ASCII]
 
 
 def test_foreign_address_frame_ignored_without_reset(tmp_path: Path) -> None:
@@ -605,7 +604,7 @@ def test_stopped_04_auto_reset_timeout_records_and_resets(monkeypatch, tmp_path:
     closed = svc.poll_cycle_once()      # 04 (t=165.0 >= 100.0 + 60.0) -> запись в БД + 0x37
     assert len(closed) == 1
     assert closed[0].dispensed_ml == 5000
-    assert len(link.commands) == 1 and link.commands[0][3] == CMD_RESET_ASCII
+    assert [req[3] for req in link.commands] == [CMD_RESET_ASCII]
     assert db.summary()["total_dispenses"] == 1
     assert db.summary()["total_dispensed_ml"] == 5000
 
@@ -641,7 +640,7 @@ def test_counter_reconciliation_writes_counter_audits(monkeypatch, tmp_path: Pat
             return PollRawResult(address=address, request_bytes=build_test_command(address), response_bytes=idle_05)
 
         def send_command(self, address: int, request: bytes) -> PollRawResult:
-            if request[3] == CMD_PARAMS_ASCII:
+            if request[3] == CMD_PARAMS_ASCII and request[5:11] == b"000011":
                 return PollRawResult(address=address, request_bytes=request, response_bytes=self.cnt_frames.pop(0))
             if request[3] == CMD_RESET_ASCII:
                 return PollRawResult(address=address, request_bytes=request, response_bytes=rst_ok)

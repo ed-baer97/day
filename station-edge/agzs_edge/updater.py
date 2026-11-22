@@ -587,7 +587,7 @@ class EdgeUpdater:
             return
         if self.settings.read_only or not self.settings.lock_buttons_on_update:
             return
-        param_code = "0.16" if self.settings.pump_buttons_mode == "enable" else "0.18"
+        param_code = "0.16"
         with contextlib.suppress(Exception):
             self._send_buttons_param(param_code)
 
