@@ -10,7 +10,16 @@ import {
 import { useAuth } from "../auth";
 import { messageOf, useCatalog } from "../catalog";
 import { stationColumnCount } from "../columnReport";
-import { dateTime, liters, signedLiters, stationRegion, tenge } from "../format";
+import {
+  dateTime,
+  dateTimeSeconds,
+  dispenseModeLabel,
+  liters,
+  litersPrecise,
+  signedLiters,
+  stationRegion,
+  tenge,
+} from "../format";
 import {
   isLowFill,
   SensorStatusBadge,
@@ -33,10 +42,6 @@ function formatDuration(startIso: string, endIso?: string | null): string {
   const hours = Math.floor(diffMin / 60);
   const mins = diffMin % 60;
   return hours === 0 ? `${mins} мин` : `${hours} ч ${mins} мин`;
-}
-
-function formatVol(value: number): string {
-  return `${value.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} л`;
 }
 
 export default function CashierPage() {
@@ -415,7 +420,7 @@ export default function CashierPage() {
               </div>
               <div className="dash-kpi">
                 <span>Отпуск по колонкам (ТРК)</span>
-                <strong>{formatVol(currentShift.dispensed_liters)}</strong>
+                <strong>{litersPrecise(currentShift.dispensed_liters)}</strong>
                 <em>операций за смену: {currentShift.dispense_count}</em>
               </div>
               <div className="dash-kpi">
@@ -567,7 +572,7 @@ export default function CashierPage() {
                       </h4>
                     </div>
                     <p className="stage-vol" style={{ marginBottom: 8 }}>
-                      Фактический расход: <strong>{formatVol(col.volume)}</strong>
+                      Фактический расход: <strong>{litersPrecise(col.volume)}</strong>
                     </p>
                     <dl className="kv">
                       <dt>Операций</dt>
@@ -581,7 +586,7 @@ export default function CashierPage() {
                       <dt>Последний налив</dt>
                       <dd>
                         {col.lastLiters != null
-                          ? `${formatVol(col.lastLiters)}${col.lastAt ? ` · ${dateTime(col.lastAt)}` : ""}`
+                          ? `${litersPrecise(col.lastLiters)}${col.lastAt ? ` · ${dateTimeSeconds(col.lastAt)}` : ""}`
                           : "не было"}
                       </dd>
                     </dl>
@@ -610,12 +615,12 @@ export default function CashierPage() {
                         </td>
                         <td>{col.ops}</td>
                         <td>
-                          <strong>{formatVol(col.volume)}</strong>
+                          <strong>{litersPrecise(col.volume)}</strong>
                         </td>
                         <td>{col.hasPrice ? tenge(col.amount) : "—"}</td>
                         <td className="dash-muted">
                           {col.lastLiters != null
-                            ? `${formatVol(col.lastLiters)}${col.lastAt ? ` · ${dateTime(col.lastAt)}` : ""}`
+                            ? `${litersPrecise(col.lastLiters)}${col.lastAt ? ` · ${dateTimeSeconds(col.lastAt)}` : ""}`
                             : "нет данных"}
                         </td>
                       </tr>
@@ -623,7 +628,7 @@ export default function CashierPage() {
                     <tr className="dash-total">
                       <td>Итого</td>
                       <td>{columnRows.totalOps}</td>
-                      <td>{formatVol(columnRows.totalVolume)}</td>
+                      <td>{litersPrecise(columnRows.totalVolume)}</td>
                       <td>{columnRows.totalAmount != null ? tenge(columnRows.totalAmount) : "—"}</td>
                       <td />
                     </tr>
@@ -655,21 +660,15 @@ export default function CashierPage() {
                               : null;
                           return (
                             <tr key={item.id}>
-                              <td>{dateTime(item.finished_at ?? item.started_at)}</td>
+                              <td>{dateTimeSeconds(item.finished_at ?? item.started_at)}</td>
                               <td>
                                 <strong>
                                   {item.pump_address ? `ТРК-${item.pump_address}` : "ТРК"}
                                 </strong>
                               </td>
-                              <td className="dash-muted">
-                                {item.mode === "full_tank"
-                                  ? "До полного"
-                                  : item.mode === "dose"
-                                    ? "Доза"
-                                    : item.mode || "—"}
-                              </td>
+                              <td className="dash-muted">{dispenseModeLabel(item.mode)}</td>
                               <td>
-                                <strong>{formatVol(item.volume_liters)}</strong>
+                                <strong>{litersPrecise(item.volume_liters)}</strong>
                               </td>
                               <td>
                                 {item.price_kzt_per_liter != null
@@ -752,7 +751,7 @@ export default function CashierPage() {
                         {liters(sh.opening_tank_liters)} → {liters(sh.closing_tank_liters)}
                       </td>
                       <td>
-                        <strong>{formatVol(sh.dispensed_liters)}</strong>
+                        <strong>{litersPrecise(sh.dispensed_liters)}</strong>
                         <div className="dash-muted">
                           оп.: {sh.dispense_count}
                           {sh.total_amount_kzt != null ? ` · ${tenge(sh.total_amount_kzt)}` : ""}

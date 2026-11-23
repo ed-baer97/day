@@ -61,6 +61,11 @@ export function liters(v?: number | null) {
   return `${Math.round(v).toLocaleString("ru-RU")} л`;
 }
 
+export function litersPrecise(v?: number | null): string {
+  if (v == null || Number.isNaN(v)) return "—";
+  return `${v.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} л`;
+}
+
 export function signedLiters(v: number) {
   const r = Math.round(v);
   return `${r > 0 ? "+" : ""}${r.toLocaleString("ru-RU")} л`;
@@ -115,6 +120,15 @@ export function timeHM(iso: string) {
   return new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
+export function timeHMS(iso?: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function shortStationName(name: string) {
   return name.replace(/^АГЗС\s+/, "");
 }
@@ -127,6 +141,24 @@ export function dateTime(iso?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+export function dateTimeSeconds(iso?: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+export function dispenseModeLabel(mode?: string | null): string {
+  if (mode === "full_tank") return "До полного";
+  if (mode === "dose") return "Доза";
+  if (mode === "recovered_stop") return "После останова";
+  return mode || "—";
 }
 
 export function celsius(v?: number | null) {

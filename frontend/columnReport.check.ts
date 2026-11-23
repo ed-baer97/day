@@ -302,4 +302,160 @@ assert.equal(activeSensorOverTolerance.tankOutflowLiters, 100);
 assert.equal(activeSensorOverTolerance.discrepancyLiters, 60);
 assert.equal(activeSensorOverTolerance.status, "ok");
 
+assert.deepEqual(report.operations, []);
+
+const sameHourStart1 = new Date(2026, 10, 18, 2, 10, 5);
+const sameHourEnd1 = new Date(2026, 10, 18, 2, 11, 12);
+const sameHourStart2 = new Date(2026, 10, 18, 2, 35, 0);
+const sameHourEnd2 = new Date(2026, 10, 18, 2, 35, 45);
+const thirdStart = new Date(2026, 10, 18, 4, 20, 0);
+const thirdEnd = new Date(2026, 10, 18, 4, 21, 0);
+const noFinishStart = new Date(2026, 10, 18, 3, 15, 20);
+const nullPriceStart = new Date(2026, 10, 18, 1, 5, 10);
+
+const detailedDispenses: DispenseReading[] = [
+  {
+    id: "op-1",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-1",
+    pump_address: 1,
+    mode: "dose",
+    volume_liters: 18.5,
+    price_kzt_per_liter: 72,
+    started_at: sameHourStart1.toISOString(),
+    finished_at: sameHourEnd1.toISOString(),
+    external_txn_id: "aska-op-1",
+  },
+  {
+    id: "op-2",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-1",
+    pump_address: 1,
+    mode: "full_tank",
+    volume_liters: 12.25,
+    price_kzt_per_liter: 72,
+    started_at: sameHourStart2.toISOString(),
+    finished_at: sameHourEnd2.toISOString(),
+    external_txn_id: "aska-op-2",
+  },
+  {
+    id: "op-3",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-2",
+    pump_address: 2,
+    mode: "dose",
+    volume_liters: 25,
+    price_kzt_per_liter: 74,
+    started_at: thirdStart.toISOString(),
+    finished_at: thirdEnd.toISOString(),
+    external_txn_id: "aska-op-3",
+  },
+  {
+    id: "op-no-finish",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-1",
+    pump_address: 1,
+    mode: null,
+    volume_liters: 5.5,
+    price_kzt_per_liter: 0,
+    started_at: noFinishStart.toISOString(),
+    finished_at: null,
+    external_txn_id: "aska-op-no-finish",
+  },
+  {
+    id: "op-null-price",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-2",
+    pump_address: 2,
+    mode: "recovered_stop",
+    volume_liters: 7,
+    price_kzt_per_liter: null,
+    started_at: nullPriceStart.toISOString(),
+    finished_at: null,
+    external_txn_id: "aska-op-null-price",
+  },
+  {
+    id: "op-zero-vol",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-1",
+    pump_address: 1,
+    mode: "dose",
+    volume_liters: 0,
+    price_kzt_per_liter: 72,
+    started_at: sameHourStart1.toISOString(),
+    finished_at: sameHourEnd1.toISOString(),
+    external_txn_id: "aska-op-zero",
+  },
+  {
+    id: "op-outside",
+    station_id: "st-1",
+    tank_id: "tank-r1",
+    dispenser_id: "disp-1",
+    pump_address: 1,
+    mode: "dose",
+    volume_liters: 30,
+    price_kzt_per_liter: 72,
+    started_at: new Date(2026, 10, 17, 23, 50, 0).toISOString(),
+    finished_at: new Date(2026, 10, 17, 23, 51, 0).toISOString(),
+    external_txn_id: "aska-op-outside",
+  },
+];
+
+const detailedReport = columnDispenseReport([], today, [], now, 0, detailedDispenses);
+assert.equal(detailedReport.operations.length, 5);
+assert.deepEqual(
+  detailedReport.operations.map((op) => op.id),
+  ["op-3", "op-no-finish", "op-2", "op-1", "op-null-price"],
+);
+for (let i = 1; i < detailedReport.operations.length; i++) {
+  assert.ok(detailedReport.operations[i - 1].occurredAtMs >= detailedReport.operations[i].occurredAtMs);
+}
+
+const op3 = detailedReport.operations[0];
+assert.equal(op3.columnNumber, 2);
+assert.equal(op3.columnCode, "ТРК-2");
+assert.equal(op3.columnName, "Колонка 2");
+assert.equal(op3.startedAt, thirdStart.toISOString());
+assert.equal(op3.finishedAt, thirdEnd.toISOString());
+assert.equal(op3.occurredAt, thirdEnd.toISOString());
+assert.equal(op3.occurredAtMs, thirdEnd.getTime());
+assert.equal(op3.volumeLiters, 25);
+assert.equal(op3.mode, "dose");
+assert.equal(op3.priceKztPerLiter, 74);
+assert.equal(op3.amountKzt, 1850);
+
+const opNoFinish = detailedReport.operations[1];
+assert.equal(opNoFinish.startedAt, noFinishStart.toISOString());
+assert.equal(opNoFinish.finishedAt, null);
+assert.equal(opNoFinish.occurredAt, noFinishStart.toISOString());
+assert.equal(opNoFinish.priceKztPerLiter, null);
+assert.equal(opNoFinish.amountKzt, null);
+
+const op2 = detailedReport.operations[2];
+const op1 = detailedReport.operations[3];
+assert.equal(op2.columnNumber, 1);
+assert.equal(op2.columnCode, "ТРК-1");
+assert.equal(op2.columnName, "Колонка 1");
+assert.equal(op2.occurredAt, sameHourEnd2.toISOString());
+assert.equal(op2.volumeLiters, 12.25);
+assert.equal(op2.mode, "full_tank");
+assert.equal(op2.priceKztPerLiter, 72);
+assert.equal(op2.amountKzt, 882);
+
+assert.equal(op1.columnNumber, 1);
+assert.equal(op1.occurredAt, sameHourEnd1.toISOString());
+assert.equal(op1.volumeLiters, 18.5);
+assert.equal(op1.amountKzt, 1332);
+
+const opNullPrice = detailedReport.operations[4];
+assert.equal(opNullPrice.priceKztPerLiter, null);
+assert.equal(opNullPrice.amountKzt, null);
+assert.equal(opNullPrice.mode, "recovered_stop");
+
 console.log("columnReport.check ok");

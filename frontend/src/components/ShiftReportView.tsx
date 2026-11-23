@@ -1,5 +1,13 @@
 import type { ShiftDetail, ShiftRecord, ShiftTankSnapshot } from "../api/client";
-import { dateTime, liters, signedLiters, tenge } from "../format";
+import {
+  dateTime,
+  dateTimeSeconds,
+  dispenseModeLabel,
+  liters,
+  litersPrecise,
+  signedLiters,
+  tenge,
+} from "../format";
 import { sensorCue } from "../sensorBand";
 
 function formatDuration(startIso: string, endIso?: string | null): string {
@@ -10,11 +18,6 @@ function formatDuration(startIso: string, endIso?: string | null): string {
   const mins = diffMin % 60;
   if (hours === 0) return `${mins} мин`;
   return `${hours} ч ${mins} мин`;
-}
-
-function formatVolumePrecise(value?: number | null): string {
-  if (value == null || Number.isNaN(value)) return "—";
-  return `${value.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} л`;
 }
 
 function renderTankSnapshotLines(tanks: ShiftTankSnapshot[]) {
@@ -224,7 +227,7 @@ export default function ShiftReportView({
       <div className="fiscal-chain" style={{ marginBottom: 16 }}>
         <div className="fiscal-step">
           <span>Отпуск по колонкам (ТРК)</span>
-          <strong>{formatVolumePrecise(report.dispensed_liters)}</strong>
+          <strong>{litersPrecise(report.dispensed_liters)}</strong>
           <em>
             операций: {report.dispense_count}
             {report.total_amount_kzt != null ? ` · ${tenge(report.total_amount_kzt)}` : ""}
@@ -234,7 +237,7 @@ export default function ShiftReportView({
         <div className="fiscal-step">
           <span>Уход по датчику цистерны</span>
           <strong>
-            {report.tank_delta_liters == null ? "нет данных" : formatVolumePrecise(report.tank_delta_liters)}
+            {report.tank_delta_liters == null ? "нет данных" : litersPrecise(report.tank_delta_liters)}
           </strong>
           <em>ориентир, не учёт продажи</em>
         </div>
@@ -273,12 +276,12 @@ export default function ShiftReportView({
                   </td>
                   <td>{col.ops_count}</td>
                   <td>
-                    <strong>{formatVolumePrecise(col.volume_liters)}</strong>
+                    <strong>{litersPrecise(col.volume_liters)}</strong>
                   </td>
                   <td>{col.amount_kzt != null ? tenge(col.amount_kzt) : "—"}</td>
                   <td className="dash-muted">
                     {col.last_liters != null
-                      ? `${formatVolumePrecise(col.last_liters)}${col.last_at ? ` · ${dateTime(col.last_at)}` : ""}`
+                      ? `${litersPrecise(col.last_liters)}${col.last_at ? ` · ${dateTimeSeconds(col.last_at)}` : ""}`
                       : "наливов не было"}
                   </td>
                 </tr>
@@ -286,7 +289,7 @@ export default function ShiftReportView({
               <tr className="dash-total">
                 <td>Итого за смену</td>
                 <td>{report.dispense_count}</td>
-                <td>{formatVolumePrecise(report.dispensed_liters)}</td>
+                <td>{litersPrecise(report.dispensed_liters)}</td>
                 <td>{report.total_amount_kzt != null ? tenge(report.total_amount_kzt) : "—"}</td>
                 <td />
               </tr>
@@ -323,21 +326,15 @@ export default function ShiftReportView({
                       : null;
                   return (
                     <tr key={item.id}>
-                      <td>{dateTime(item.finished_at ?? item.started_at)}</td>
+                      <td>{dateTimeSeconds(item.finished_at ?? item.started_at)}</td>
                       <td>
                         <strong>
                           {item.pump_address ? `ТРК-${item.pump_address}` : "ТРК"}
                         </strong>
                       </td>
-                      <td className="dash-muted">
-                        {item.mode === "full_tank"
-                          ? "До полного"
-                          : item.mode === "dose"
-                            ? "Доза"
-                            : item.mode || "—"}
-                      </td>
+                      <td className="dash-muted">{dispenseModeLabel(item.mode)}</td>
                       <td>
-                        <strong>{formatVolumePrecise(item.volume_liters)}</strong>
+                        <strong>{litersPrecise(item.volume_liters)}</strong>
                       </td>
                       <td>
                         {item.price_kzt_per_liter != null

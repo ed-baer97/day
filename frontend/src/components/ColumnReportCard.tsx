@@ -1,16 +1,38 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnsMode, DispenseReading, LevelReading, TankDevice } from "../api/client";
 import {
   bucketCaption,
   buildLiveTankSamples,
   columnDispenseReport,
+  type ColumnOperation,
   type ColumnReport,
 } from "../columnReport";
-import { dateTime, liters, signedLiters } from "../format";
+import {
+  dateTimeSeconds,
+  dispenseModeLabel,
+  liters,
+  litersPrecise,
+  signedLiters,
+  tenge,
+  timeHMS,
+} from "../format";
 import type { LiveLevel } from "../liveLevels";
 import type { TimeRange } from "../period";
 import { BarChart } from "./Charts";
 import PeriodSwitch from "./PeriodSwitch";
+
+const OPS_PREVIEW_LIMIT = 100;
+const COLUMN_COLORS = ["var(--sea)", "var(--dust)", "var(--coral)", "var(--ok)"];
+
+function operationStartNote(op: ColumnOperation): string | null {
+  if (!op.finishedAt) return null;
+  const startedMs = new Date(op.startedAt).getTime();
+  if (!Number.isFinite(startedMs) || op.occurredAtMs - startedMs < 1000) return null;
+  if (new Date(startedMs).toDateString() === new Date(op.occurredAtMs).toDateString()) {
+    return `начало ${timeHMS(op.startedAt)}`;
+  }
+  return `начало ${dateTimeSeconds(op.startedAt)}`;
+}
 
 export default function ColumnReportCard({
   points,
@@ -44,10 +66,16 @@ export default function ColumnReportCard({
   }, [precomputedReport, live, devices, points, range, outflow, dispenses, columnsMode]);
 
   const report = precomputedReport ?? computedReport;
-  const rows = report.labels
-    .map((label, index) => ({ label, index, total: report.totals[index] ?? 0 }))
-    .filter((row) => row.total > 0);
+  const [showAllOps, setShowAllOps] = useState(false);
+  const rangeResetKey = `${range.preset}:${range.start.getTime()}:${range.end.getTime()}`;
+  useEffect(() => {
+    setShowAllOps(false);
+  }, [rangeResetKey]);
+
   const effectiveMode = columnsMode ?? (report.source === "edge" ? "edge" : "virtual");
+  const visibleOps = showAllOps
+    ? report.operations
+    : report.operations.slice(0, OPS_PREVIEW_LIMIT);
 
   return (
     <section className="dash-card" style={{ marginBottom: 18 }}>
@@ -97,8 +125,16 @@ export default function ColumnReportCard({
         <div className="fiscal-link">→</div>
         <div className="fiscal-step">
           <span>Счётчики ТРК ({report.columnCount})</span>
-          <strong>{loading && points.length === 0 ? "…" : liters(report.total)}</strong>
-          <em>{report.columns.map((column) => `${column.name}: ${liters(column.total)}`).join(" · ")}</em>
+          <strong>
+            {loading && points.length === 0 && report.opsTotal === 0
+              ? "…"
+              : litersPrecise(report.total)}
+          </strong>
+          <em>
+            {report.columns
+              .map((column) => `${column.name}: ${litersPrecise(column.total)}`)
+              .join(" · ")}
+          </em>
         </div>
         {report.source === "edge" ? (
           <>
@@ -124,7 +160,7 @@ export default function ColumnReportCard({
             </div>
             <p className="stage-vol" style={{ marginBottom: 10 }}>
               Отпуск ТРК:{" "}
-              <strong>{liters(column.total)}</strong>
+              <strong>{litersPrecise(column.total)}</strong>
             </p>
             <dl className="kv">
               <dt>Операций отпуска</dt>
@@ -132,7 +168,7 @@ export default function ColumnReportCard({
               <dt>Последний отпуск</dt>
               <dd>
                 {column.lastLiters != null
-                  ? `${liters(column.lastLiters)}${column.lastAt ? ` · ${dateTime(column.lastAt)}` : ""}`
+                  ? `${litersPrecise(column.lastLiters)}${column.lastAt ? ` · ${dateTimeSeconds(column.lastAt)}` : ""}`
                   : "за период не было"}
               </dd>
             </dl>
@@ -162,11 +198,11 @@ export default function ColumnReportCard({
                 <td>{column.opsCount}</td>
                 <td className="dash-muted">
                   {column.lastLiters != null
-                    ? `${liters(column.lastLiters)}${column.lastAt ? ` · ${dateTime(column.lastAt)}` : ""}`
+                    ? `${litersPrecise(column.lastLiters)}${column.lastAt ? ` · ${dateTimeSeconds(column.lastAt)}` : ""}`
                     : "нет данных"}
                 </td>
                 <td>
-                  <strong>{liters(column.total)}</strong>
+                  <strong>{litersPrecise(column.total)}</strong>
                 </td>
               </tr>
             ))}
@@ -174,7 +210,7 @@ export default function ColumnReportCard({
               <td>Итого</td>
               <td>{report.opsTotal}</td>
               <td />
-              <td>{liters(report.total)}</td>
+              <td>{litersPrecise(report.total)}</td>
             </tr>
             {report.source === "edge" ? (
               <tr>
@@ -203,48 +239,85 @@ export default function ColumnReportCard({
         </table>
       </div>
 
-      <h3 style={{ marginTop: 0 }}>Расход по времени</h3>
-      {loading && points.length === 0 ? (
-        <p className="dash-muted">Загрузка замеров резервуара…</p>
-      ) : report.total > 0 ? (
-        <BarChart
-          labels={report.labels.map((label) => bucketCaption(range, label))}
-          series={report.columns.map((column, index) => ({
-            name: column.name,
-            color: index === 0 ? "var(--sea)" : "var(--dust)",
-            values: column.liters,
-          }))}
-        />
-      ) : (
+      <h3 style={{ marginTop: 0 }}>Заправки за период ({report.operations.length})</h3>
+      {loading && points.length === 0 && report.opsTotal === 0 ? (
+        <p className="dash-muted">Загрузка данных по колонкам…</p>
+      ) : report.operations.length === 0 ? (
         <p className="dash-muted">За этот срок наливов с колонок не было.</p>
-      )}
-      {rows.length > 0 ? (
-        <div className="dash-table-wrap" style={{ marginTop: 12 }}>
-          <table className="dash-table">
-            <thead>
-              <tr>
-                <th>Время</th>
-                {report.columns.map((column) => (
-                  <th key={column.number}>{column.name}</th>
-                ))}
-                <th>Всего</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.label}>
-                  <td>{bucketCaption(range, row.label)}</td>
-                  {report.columns.map((column) => (
-                    <td key={column.number}>{liters(column.liters[row.index] ?? 0)}</td>
-                  ))}
-                  <td>
-                    <strong>{liters(row.total)}</strong>
-                  </td>
+      ) : (
+        <>
+          <div className="dash-table-wrap" style={{ maxHeight: 460 }}>
+            <table className="dash-table">
+              <thead>
+                <tr>
+                  <th>Время заправки</th>
+                  <th>Колонка</th>
+                  <th>Режим</th>
+                  <th>Объём</th>
+                  <th>Цена / Сумма</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {visibleOps.map((op) => {
+                  const startNote = operationStartNote(op);
+                  return (
+                    <tr key={op.id}>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <div>{dateTimeSeconds(op.occurredAt)}</div>
+                        {startNote ? <div className="dash-muted">{startNote}</div> : null}
+                      </td>
+                      <td>
+                        <strong>
+                          {op.columnName} ({op.columnCode})
+                        </strong>
+                      </td>
+                      <td className="dash-muted">{dispenseModeLabel(op.mode)}</td>
+                      <td>
+                        <strong>{litersPrecise(op.volumeLiters)}</strong>
+                      </td>
+                      <td>
+                        {op.priceKztPerLiter != null
+                          ? `${op.priceKztPerLiter} ₸/л · ${op.amountKzt != null ? tenge(op.amountKzt) : ""}`
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {report.operations.length > OPS_PREVIEW_LIMIT ? (
+            <div style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn secondary small"
+                onClick={() => setShowAllOps((prev) => !prev)}
+              >
+                {showAllOps
+                  ? `Свернуть до ${OPS_PREVIEW_LIMIT}`
+                  : `Показать все (${report.operations.length})`}
+              </button>
+            </div>
+          ) : null}
+        </>
+      )}
+
+      {report.total > 0 ? (
+        <>
+          <h3 style={{ marginTop: 18 }}>
+            {range.preset === "today" || range.preset === "day"
+              ? "График расхода по часам"
+              : "График расхода по дням"}
+          </h3>
+          <BarChart
+            labels={report.labels.map((label) => bucketCaption(range, label))}
+            series={report.columns.map((column, index) => ({
+              name: column.name,
+              color: COLUMN_COLORS[index % COLUMN_COLORS.length],
+              values: column.liters,
+            }))}
+          />
+        </>
       ) : null}
     </section>
   );

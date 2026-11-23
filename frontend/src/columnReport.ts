@@ -18,9 +18,25 @@ export type ColumnSeries = {
   lastAt: string | null;
 };
 
+export type ColumnOperation = {
+  id: string;
+  columnNumber: number;
+  columnCode: string;
+  columnName: string;
+  startedAt: string;
+  finishedAt: string | null;
+  occurredAt: string;
+  occurredAtMs: number;
+  volumeLiters: number;
+  mode: string | null;
+  priceKztPerLiter: number | null;
+  amountKzt: number | null;
+};
+
 export type ColumnReport = {
   columnCount: number;
   columns: ColumnSeries[];
+  operations: ColumnOperation[];
   totals: number[];
   total: number;
   tankOutflowLiters: number | null;
@@ -126,6 +142,7 @@ export function columnDispenseReport(
     .sort((a, b) => a.atMs - b.atMs);
 
   const source: "edge" | "level" = "edge";
+  const operations: ColumnOperation[] = [];
 
   inRangeDispenses.forEach(({ item, atMs, bucket }, index) => {
     const addr = item.pump_address;
@@ -133,12 +150,32 @@ export function columnDispenseReport(
       addr != null && addr >= 1 ? (addr - 1) % colCount : index % colCount;
     const column = columns[colIdx];
     const vol = Math.round(item.volume_liters * 1000) / 1000;
+    const occurredAt = new Date(atMs).toISOString();
+    const price =
+      item.price_kzt_per_liter != null && item.price_kzt_per_liter > 0
+        ? item.price_kzt_per_liter
+        : null;
     column.liters[bucket] = Math.round((column.liters[bucket] + vol) * 1000) / 1000;
     column.total = Math.round((column.total + vol) * 1000) / 1000;
     column.opsCount += 1;
     column.lastLiters = vol;
-    column.lastAt = new Date(atMs).toISOString();
+    column.lastAt = occurredAt;
+    operations.push({
+      id: item.id || `${item.external_txn_id ?? "op"}-${index}`,
+      columnNumber: column.number,
+      columnCode: column.code,
+      columnName: column.name,
+      startedAt: item.started_at,
+      finishedAt: item.finished_at ?? null,
+      occurredAt,
+      occurredAtMs: atMs,
+      volumeLiters: vol,
+      mode: item.mode ?? null,
+      priceKztPerLiter: price,
+      amountKzt: price != null ? Math.round(vol * price * 100) / 100 : null,
+    });
   });
+  operations.reverse();
 
   const totals = range.labels.map((_, index) =>
     Math.round(columns.reduce((sum, column) => sum + column.liters[index], 0) * 1000) / 1000,
@@ -172,6 +209,7 @@ export function columnDispenseReport(
   return {
     columnCount: colCount,
     columns,
+    operations,
     totals,
     total,
     tankOutflowLiters,
