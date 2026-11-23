@@ -550,7 +550,6 @@ export default function StationDetailPage({
                       <th>Уровень %</th>
                       <th>Факт (датчик)</th>
                       <th>Ёмкость / Свободно</th>
-                      <th>Книжный остаток</th>
                       <th>Напряжение / Замер</th>
                     </tr>
                   </thead>
@@ -596,19 +595,6 @@ export default function StationDetailPage({
                             <div className="dash-muted">
                               своб. {free == null ? "—" : liters(free)}
                             </div>
-                          </td>
-                          <td>
-                            {st?.calculated_remainder_liters != null ? (
-                              <>
-                                <strong>{liters(st.calculated_remainder_liters)}</strong>
-                                <div className="dash-muted">
-                                  приход {liters(st.receipts_liters)} · ТРК{" "}
-                                  {liters(st.dispense_liters)}
-                                </div>
-                              </>
-                            ) : (
-                              <span className="dash-muted">—</span>
-                            )}
                           </td>
                           <td>
                             <div>
@@ -740,29 +726,19 @@ export default function StationDetailPage({
                           </strong>
                         </div>
                         {st ? (
-                          <>
-                            <div>
-                              <span>Книжный остаток</span>
-                              <strong>
-                                {st.calculated_remainder_liters == null
-                                  ? "—"
-                                  : liters(st.calculated_remainder_liters)}
-                              </strong>
-                            </div>
-                            <div>
-                              <span>Напряжение / Калибровка</span>
-                              <strong>
-                                {st?.last_volts == null ? "—" : `${st.last_volts.toFixed(2)} В`}
-                                {st?.calibrated && st.cal_low_volts != null && st.cal_high_volts != null
-                                  ? ` (${st.cal_low_volts} В${
-                                      st.cal_low_percent != null ? ` = ${st.cal_low_percent}%` : ""
-                                    } … ${st.cal_high_volts} В${
-                                      st.cal_high_percent != null ? ` = ${st.cal_high_percent}%` : ""
-                                    })`
-                                  : ""}
-                              </strong>
-                            </div>
-                          </>
+                          <div>
+                            <span>Напряжение / Калибровка</span>
+                            <strong>
+                              {st?.last_volts == null ? "—" : `${st.last_volts.toFixed(2)} В`}
+                              {st?.calibrated && st.cal_low_volts != null && st.cal_high_volts != null
+                                ? ` (${st.cal_low_volts} В${
+                                    st.cal_low_percent != null ? ` = ${st.cal_low_percent}%` : ""
+                                  } … ${st.cal_high_volts} В${
+                                    st.cal_high_percent != null ? ` = ${st.cal_high_percent}%` : ""
+                                  })`
+                                : ""}
+                            </strong>
+                          </div>
                         ) : null}
                       </div>
                     </article>
