@@ -78,8 +78,16 @@ export function LineChart({
 }) {
   const max = niceMax(Math.max(1, ...series.flatMap((s) => s.values)));
   const n = labels.length;
-  const x = (i: number) => PAD.l + (n <= 1 ? 0 : (i * (W - PAD.l - PAD.r)) / (n - 1));
+  const plotW = W - PAD.l - PAD.r;
+  const x = (i: number) => (n <= 1 ? PAD.l + plotW / 2 : PAD.l + (i * plotW) / (n - 1));
   const y = (v: number) => PAD.t + (height - PAD.t - PAD.b) * (1 - v / max);
+  const pointsOf = (values: number[]) => {
+    if (values.length <= 1) {
+      const yy = y(values[0] ?? 0);
+      return `${PAD.l},${yy} ${W - PAD.r},${yy}`;
+    }
+    return values.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+  };
 
   return (
     <div className="chart">
@@ -93,7 +101,8 @@ export function LineChart({
             strokeWidth={2.5}
             strokeDasharray={s.dashed ? "6 5" : undefined}
             strokeLinejoin="round"
-            points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ")}
+            strokeLinecap="round"
+            points={pointsOf(s.values)}
           />
         ))}
         <XLabels labels={labels} x={x} h={height} />

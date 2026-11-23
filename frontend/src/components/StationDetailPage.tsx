@@ -38,7 +38,7 @@ import {
 } from "../columnReport";
 import { chartOf } from "../sensorDay";
 import type { DiscrepancyEvent } from "../types";
-import { BarChart, LineChart } from "./Charts";
+import { LineChart } from "./Charts";
 import ColumnReportCard from "./ColumnReportCard";
 import LevelChangesToday from "./LevelChangesToday";
 import PeriodSwitch from "./PeriodSwitch";
@@ -477,12 +477,7 @@ export default function StationDetailPage({
               </p>
               {historyLoading && levelChart.labels.length === 0 ? (
                 <p className="dash-muted">Загрузка замеров…</p>
-              ) : levelChart.labels.length === 1 ? (
-                <BarChart
-                  labels={levelChart.labels}
-                  series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
-                />
-              ) : levelChart.labels.length > 1 ? (
+              ) : levelChart.labels.length > 0 ? (
                 <LineChart
                   labels={levelChart.labels}
                   series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}

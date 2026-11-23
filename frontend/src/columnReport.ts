@@ -14,6 +14,8 @@ export type ColumnSeries = {
   liters: number[];
   total: number;
   opsCount: number;
+  /** Сумма отпусков с известной ценой. null, если цены не было ни у одной операции. */
+  amountKzt: number | null;
   lastLiters: number | null;
   lastAt: string | null;
 };
@@ -128,6 +130,7 @@ export function columnDispenseReport(
     liters: Array(range.labels.length).fill(0),
     total: 0,
     opsCount: 0,
+    amountKzt: null,
     lastLiters: null,
     lastAt: null,
   }));
@@ -155,9 +158,13 @@ export function columnDispenseReport(
       item.price_kzt_per_liter != null && item.price_kzt_per_liter > 0
         ? item.price_kzt_per_liter
         : null;
+    const amount = price != null ? Math.round(vol * price * 100) / 100 : null;
     column.liters[bucket] = Math.round((column.liters[bucket] + vol) * 1000) / 1000;
     column.total = Math.round((column.total + vol) * 1000) / 1000;
     column.opsCount += 1;
+    if (amount != null) {
+      column.amountKzt = Math.round(((column.amountKzt ?? 0) + amount) * 100) / 100;
+    }
     column.lastLiters = vol;
     column.lastAt = occurredAt;
     operations.push({
@@ -172,7 +179,7 @@ export function columnDispenseReport(
       volumeLiters: vol,
       mode: item.mode ?? null,
       priceKztPerLiter: price,
-      amountKzt: price != null ? Math.round(vol * price * 100) / 100 : null,
+      amountKzt: amount,
     });
   });
   operations.reverse();

@@ -177,10 +177,11 @@ export default function ColumnReportCard({
               </h3>
             </div>
             <p className="stage-vol" style={{ marginBottom: 10 }}>
-              Отпуск ТРК:{" "}
-              <strong>{litersPrecise(column.total)}</strong>
+              Отпуск ТРК: <strong>{litersPrecise(column.total)}</strong>
             </p>
             <dl className="kv">
+              <dt>Сумма</dt>
+              <dd>{column.amountKzt != null ? tenge(column.amountKzt) : "—"}</dd>
               <dt>Операций отпуска</dt>
               <dd>{column.opsCount}</dd>
               <dt>Последний отпуск</dt>
@@ -203,6 +204,7 @@ export default function ColumnReportCard({
               <th>Операций</th>
               <th>Последний отпуск</th>
               <th>Счётчик ТРК</th>
+              <th>Сумма</th>
             </tr>
           </thead>
           <tbody>
@@ -222,6 +224,9 @@ export default function ColumnReportCard({
                 <td>
                   <strong>{litersPrecise(column.total)}</strong>
                 </td>
+                <td>
+                  <strong>{column.amountKzt != null ? tenge(column.amountKzt) : "—"}</strong>
+                </td>
               </tr>
             ))}
             <tr className="dash-total">
@@ -229,6 +234,11 @@ export default function ColumnReportCard({
               <td>{report.opsTotal}</td>
               <td />
               <td>{litersPrecise(report.total)}</td>
+              <td>
+                {report.columns.some((column) => column.amountKzt != null)
+                  ? tenge(report.columns.reduce((sum, column) => sum + (column.amountKzt ?? 0), 0))
+                  : "—"}
+              </td>
             </tr>
             {report.source === "edge" ? (
               <tr>
@@ -251,6 +261,7 @@ export default function ColumnReportCard({
                     <span className="dash-muted">нет данных</span>
                   )}
                 </td>
+                <td />
               </tr>
             ) : null}
           </tbody>

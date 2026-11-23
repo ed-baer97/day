@@ -394,11 +394,6 @@ function Overview({ onOpenStation }: { onOpenStation: (id: string) => void }) {
             <p className="dash-muted">Загрузка замеров…</p>
           ) : levelChart.labels.length === 0 ? (
             <p className="dash-muted">Замера датчика за этот срок ещё нет.</p>
-          ) : levelChart.labels.length === 1 ? (
-            <BarChart
-              labels={levelChart.labels}
-              series={[{ name: "Остаток", color: "var(--sea)", values: levelChart.values }]}
-            />
           ) : (
             <LineChart
               labels={levelChart.labels}

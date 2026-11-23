@@ -452,6 +452,8 @@ assert.equal(op1.columnNumber, 1);
 assert.equal(op1.occurredAt, sameHourEnd1.toISOString());
 assert.equal(op1.volumeLiters, 18.5);
 assert.equal(op1.amountKzt, 1332);
+assert.equal(detailedReport.columns[0].amountKzt, 2214);
+assert.equal(detailedReport.columns[1].amountKzt, 1850);
 
 const opNullPrice = detailedReport.operations[4];
 assert.equal(opNullPrice.priceKztPerLiter, null);
