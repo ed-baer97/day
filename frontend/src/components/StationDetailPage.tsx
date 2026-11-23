@@ -403,21 +403,6 @@ export default function StationDetailPage({
               : "ожидание телеметрии"}
           </em>
         </div>
-        <div className="dash-kpi">
-          <span>Книжный баланс и ТРК</span>
-          <strong>
-            {bookSummary?.calcSum != null ? liters(bookSummary.calcSum) : "—"}
-          </strong>
-          <em>
-            {dispensedLiters != null
-              ? `отпуск ТРК за период: ${liters(dispensedLiters)}`
-              : bookSummary?.delta != null
-                ? `датчик к книге: ${signedLiters(bookSummary.delta)}`
-                : bookSummary && bookSummary.dispenseSum > 0
-                  ? `отпуск ТРК: ${liters(bookSummary.dispenseSum)}`
-                  : "сверка по приходу и ТРК"}
-          </em>
-        </div>
       </div>
 
       <div className="admin-tabs" role="tablist" style={{ marginBottom: 20, flexWrap: "wrap" }}>
