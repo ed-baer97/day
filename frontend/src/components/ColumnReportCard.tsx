@@ -150,6 +150,24 @@ export default function ColumnReportCard({
         ) : null}
       </div>
 
+      {report.total > 0 ? (
+        <div style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>
+            {range.preset === "today" || range.preset === "day"
+              ? "График расхода по часам"
+              : "График расхода по дням"}
+          </h3>
+          <BarChart
+            labels={report.labels.map((label) => bucketCaption(range, label))}
+            series={report.columns.map((column, index) => ({
+              name: column.name,
+              color: COLUMN_COLORS[index % COLUMN_COLORS.length],
+              values: column.liters,
+            }))}
+          />
+        </div>
+      ) : null}
+
       <div className="col-grid" style={{ marginBottom: 16 }}>
         {report.columns.map((column) => (
           <article className="column-card" key={column.number}>
@@ -301,24 +319,6 @@ export default function ColumnReportCard({
           ) : null}
         </>
       )}
-
-      {report.total > 0 ? (
-        <>
-          <h3 style={{ marginTop: 18 }}>
-            {range.preset === "today" || range.preset === "day"
-              ? "График расхода по часам"
-              : "График расхода по дням"}
-          </h3>
-          <BarChart
-            labels={report.labels.map((label) => bucketCaption(range, label))}
-            series={report.columns.map((column, index) => ({
-              name: column.name,
-              color: COLUMN_COLORS[index % COLUMN_COLORS.length],
-              values: column.liters,
-            }))}
-          />
-        </>
-      ) : null}
     </section>
   );
 }
